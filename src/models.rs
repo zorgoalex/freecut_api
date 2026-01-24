@@ -8,14 +8,14 @@ pub struct OptimizeRequest {
     pub items: Vec<Item>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Units {
     #[serde(rename = "mm")]
     Mm,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Params {
     pub kerf_mm: f64,
     pub spacing_mm: f64,
@@ -26,14 +26,14 @@ pub struct Params {
     pub seed: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Objective {
     MinWaste,
     MinSheets,
 }
 
-#[derive(Debug, Deserialize, Clone, Copy)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy)]
 pub struct Trim {
     pub left: f64,
     pub right: f64,
@@ -59,14 +59,14 @@ pub struct Item {
     pub pattern_direction: PatternDirection,
 }
 
-#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Rotation {
     Forbid,
     Allow90,
 }
 
-#[derive(Debug, Deserialize, Clone, Copy)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum PatternDirection {
     None,
@@ -81,4 +81,50 @@ pub struct ErrorResponse {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OptimizeResponse {
+    pub status: &'static str,
+    pub summary: Summary,
+    pub solutions: Vec<Solution>,
+    pub artifacts: Artifacts,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Summary {
+    pub objective: Objective,
+    pub used_stock_count: u32,
+    pub total_waste_area_mm2: f64,
+    pub waste_percent: f64,
+    pub time_ms: u64,
+    pub restarts_used: u32,
+    pub seed: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Solution {
+    pub stock_id: String,
+    pub index: u32,
+    pub width_mm: f64,
+    pub height_mm: f64,
+    pub trim_mm: Trim,
+    pub placements: Vec<Placement>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Placement {
+    pub item_id: String,
+    pub instance: u32,
+    pub x_mm: f64,
+    pub y_mm: f64,
+    pub width_mm: f64,
+    pub height_mm: f64,
+    pub rotated: bool,
+    pub pattern_direction: PatternDirection,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Artifacts {
+    pub svg: String,
 }

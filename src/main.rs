@@ -1,7 +1,7 @@
 use axum::{
-    extract::{DefaultBodyLimit, State},
+    extract::{rejection::JsonRejection, DefaultBodyLimit, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -69,8 +69,13 @@ async fn version() -> Json<VersionResponse> {
 
 async fn optimize(
     State(state): State<AppState>,
-    Json(req): Json<OptimizeRequest>,
+    payload: Result<Json<OptimizeRequest>, JsonRejection>,
 ) -> impl IntoResponse {
+    let req = match payload {
+        Ok(Json(req)) => req,
+        Err(rejection) => return json_rejection(rejection),
+    };
+
     let limits = ValidationLimits {
         max_instances: state.config.max_instances,
         max_stock_types: 50,
@@ -87,4 +92,14 @@ async fn optimize(
         details: None,
     };
     (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
+}
+
+fn json_rejection(rejection: JsonRejection) -> Response {
+    let body = ErrorResponse {
+        status: "error",
+        error_code: "VALIDATION_ERROR",
+        message: rejection.to_string(),
+        details: None,
+    };
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
