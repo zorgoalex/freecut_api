@@ -152,5 +152,6 @@ fn item_fits_stock(item: &Item, trim: &Trim, stock: &StockItem) -> bool {
         return true;
     }
 
-    item.rotation == Rotation::Allow90 && item.height_mm <= usable_w && item.width_mm <= usable_h
+    let can_rotate = item.rotation == Rotation::Allow90 && item.pattern_direction == crate::models::PatternDirection::None;
+    can_rotate && item.height_mm <= usable_w && item.width_mm <= usable_h
 }

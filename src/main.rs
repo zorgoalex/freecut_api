@@ -15,11 +15,13 @@ use utoipa_swagger_ui::SwaggerUi;
 mod config;
 mod models;
 mod openapi;
+mod optimizer;
 mod validation;
 
 use config::AppConfig;
 use models::{ErrorResponse, OptimizeRequest};
 use openapi::ApiDoc;
+use optimizer::optimize_request;
 use validation::{validate_request, ValidationLimits};
 
 #[derive(Clone)]
@@ -112,6 +114,7 @@ pub(crate) async fn version() -> Json<VersionResponse> {
         (status = 200, description = "Optimization result", body = models::OptimizeResponse),
         (status = 400, description = "Invalid JSON", body = ErrorResponse),
         (status = 422, description = "Validation error", body = ErrorResponse),
+        (status = 408, description = "Optimization timeout", body = ErrorResponse),
         (status = 500, description = "Internal error", body = ErrorResponse)
     )
 )]
@@ -133,13 +136,10 @@ pub(crate) async fn optimize(
         return err.into_response();
     }
 
-    let body = ErrorResponse {
-        status: "error",
-        error_code: "INTERNAL",
-        message: "optimization not implemented".to_string(),
-        details: None,
-    };
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
+    match optimize_request(req, &state.config).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => err.into_response(),
+    }
 }
 
 pub(crate) async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
