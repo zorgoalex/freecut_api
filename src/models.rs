@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct OptimizeRequest {
     pub units: Units,
     pub params: Params,
@@ -8,14 +9,14 @@ pub struct OptimizeRequest {
     pub items: Vec<Item>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Units {
     #[serde(rename = "mm")]
     Mm,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct Params {
     pub kerf_mm: f64,
     pub spacing_mm: f64,
@@ -26,14 +27,14 @@ pub struct Params {
     pub seed: u64,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Objective {
     MinWaste,
     MinSheets,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Copy)]
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy)]
 pub struct Trim {
     pub left: f64,
     pub right: f64,
@@ -41,7 +42,7 @@ pub struct Trim {
     pub bottom: f64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct StockItem {
     pub id: String,
     pub width_mm: f64,
@@ -49,7 +50,7 @@ pub struct StockItem {
     pub qty: u32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct Item {
     pub id: String,
     pub width_mm: f64,
@@ -59,14 +60,14 @@ pub struct Item {
     pub pattern_direction: PatternDirection,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Rotation {
     Forbid,
     Allow90,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Copy)]
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum PatternDirection {
     None,
@@ -74,7 +75,7 @@ pub enum PatternDirection {
     AlongHeight,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ErrorResponse {
     pub status: &'static str,
     pub error_code: &'static str,
@@ -83,7 +84,7 @@ pub struct ErrorResponse {
     pub details: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct OptimizeResponse {
     pub status: &'static str,
     pub summary: Summary,
@@ -91,7 +92,7 @@ pub struct OptimizeResponse {
     pub artifacts: Artifacts,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct Summary {
     pub objective: Objective,
     pub used_stock_count: u32,
@@ -102,7 +103,7 @@ pub struct Summary {
     pub seed: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct Solution {
     pub stock_id: String,
     pub index: u32,
@@ -112,7 +113,7 @@ pub struct Solution {
     pub placements: Vec<Placement>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct Placement {
     pub item_id: String,
     pub instance: u32,
@@ -124,7 +125,7 @@ pub struct Placement {
     pub pattern_direction: PatternDirection,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct Artifacts {
     pub svg: String,
 }
