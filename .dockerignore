@@ -1,0 +1,9 @@
+.git
+.gitignore
+/target
+/ai_docs
+/tests
+
+*.rs.bk
+*.swp
+*.swo
