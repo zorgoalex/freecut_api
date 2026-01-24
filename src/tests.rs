@@ -88,6 +88,26 @@ fn placement_rect_snippet(placement: &Value) -> Option<String> {
     ))
 }
 
+fn escape_xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('\"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn placement_text_snippet(placement: &Value, item_id: &str) -> Option<String> {
+    let x = placement.get("x_mm")?.as_f64()? + 2.0;
+    let y = placement.get("y_mm")?.as_f64()? + 12.0;
+    Some(format!(
+        "<text x=\"{}\" y=\"{}\" font-size=\"10\" fill=\"#1f4a6d\">{}</text>",
+        fmt_mm(x),
+        fmt_mm(y),
+        escape_xml(item_id)
+    ))
+}
+
 #[tokio::test]
 async fn optimize_returns_svg() {
     let app = app_for_test();
@@ -114,6 +134,7 @@ async fn optimize_returns_svg() {
     assert!(svg.contains("</svg>"));
 
     let mut placement_checks = 0;
+    let mut text_checks = 0;
     if let Some(solutions) = json.get("solutions").and_then(Value::as_array) {
         for solution in solutions {
             if let Some(placements) = solution.get("placements").and_then(Value::as_array) {
@@ -125,11 +146,21 @@ async fn optimize_returns_svg() {
                             "svg missing placement rect: {snippet}"
                         );
                     }
+                    if let Some(item_id) = placement.get("item_id").and_then(Value::as_str) {
+                        if let Some(text_snippet) = placement_text_snippet(placement, item_id) {
+                            text_checks += 1;
+                            assert!(
+                                svg.contains(&text_snippet),
+                                "svg missing placement text: {text_snippet}"
+                            );
+                        }
+                    }
                 }
             }
         }
     }
     assert!(placement_checks > 0, "no placements found for svg check");
+    assert!(text_checks > 0, "no placement labels found for svg check");
 }
 
 #[tokio::test]
