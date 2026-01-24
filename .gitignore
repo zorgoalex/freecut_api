@@ -80,6 +80,12 @@ rustc-ice-*.txt
 \#*\#
 .#*
 
+## App
+.env
+.env.*
+/logs/
+/tmp/
+
 ## Tags
 tags
 tags.*
