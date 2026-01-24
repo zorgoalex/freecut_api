@@ -146,13 +146,19 @@ pub(crate) async fn optimize(
 }
 
 fn json_rejection(rejection: JsonRejection) -> Response {
+    let status = rejection.status();
+    let error_code = if status == StatusCode::PAYLOAD_TOO_LARGE {
+        "CONSTRAINT_ERROR"
+    } else {
+        "VALIDATION_ERROR"
+    };
     let body = ErrorResponse {
         status: "error",
-        error_code: "VALIDATION_ERROR",
+        error_code,
         message: rejection.to_string(),
         details: None,
     };
-    (StatusCode::BAD_REQUEST, Json(body)).into_response()
+    (status, Json(body)).into_response()
 }
 
 #[cfg(test)]
