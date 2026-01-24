@@ -64,6 +64,7 @@ pub struct Item {
 #[serde(rename_all = "snake_case")]
 pub enum Rotation {
     Forbid,
+    #[serde(rename = "allow_90")]
     Allow90,
 }
 

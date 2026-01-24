@@ -13,3 +13,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 cut-optimizer-2d = "0.4.2"
 utoipa = { version = "4", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "7", features = ["axum"] }
+
+[dev-dependencies]
+tower = "0.5"
+http-body-util = "0.1"

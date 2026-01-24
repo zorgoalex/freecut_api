@@ -38,18 +38,7 @@ async fn main() {
         .init();
 
     let config = AppConfig::from_env();
-    let app_state = AppState { config: config.clone() };
-    let openapi = ApiDoc::openapi();
-
-    let app = Router::new()
-        .route("/health/live", get(health_live))
-        .route("/health/ready", get(health_ready))
-        .route("/version", get(version))
-        .route("/v1/optimize", post(optimize))
-        .route("/openapi.json", get(openapi_json))
-        .merge(SwaggerUi::new("/docs").url("/openapi.json", openapi.clone()))
-        .with_state(app_state)
-        .layer(DefaultBodyLimit::max(config.max_body_bytes));
+    let app = build_app(config.clone());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     tracing::info!(%addr, "listening");
@@ -58,6 +47,20 @@ async fn main() {
         .await
         .expect("bind listener");
     axum::serve(listener, app).await.expect("serve");
+}
+
+fn build_app(config: AppConfig) -> Router {
+    let app_state = AppState { config: config.clone() };
+    let openapi = ApiDoc::openapi();
+
+    Router::new()
+        .route("/health/live", get(health_live))
+        .route("/health/ready", get(health_ready))
+        .route("/version", get(version))
+        .route("/v1/optimize", post(optimize))
+        .merge(SwaggerUi::new("/docs").url("/openapi.json", openapi))
+        .with_state(app_state)
+        .layer(DefaultBodyLimit::max(config.max_body_bytes))
 }
 
 #[utoipa::path(
@@ -142,10 +145,6 @@ pub(crate) async fn optimize(
     }
 }
 
-pub(crate) async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
-    Json(ApiDoc::openapi())
-}
-
 fn json_rejection(rejection: JsonRejection) -> Response {
     let body = ErrorResponse {
         status: "error",
@@ -155,3 +154,6 @@ fn json_rejection(rejection: JsonRejection) -> Response {
     };
     (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
+
+#[cfg(test)]
+mod tests;

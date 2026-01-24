@@ -1,0 +1,23 @@
+{
+  "units": "mm",
+  "params": {
+    "kerf_mm": 2.0,
+    "spacing_mm": 1.0,
+    "trim_mm": {
+      "left": 600.0,
+      "right": 500.0,
+      "top": 0.0,
+      "bottom": 0.0
+    },
+    "time_limit_ms": 240,
+    "restarts": 3,
+    "objective": "min_waste",
+    "seed": 12345
+  },
+  "stock": [
+    { "id": "sheet-1000", "width_mm": 1000.0, "height_mm": 1000.0, "qty": 1 }
+  ],
+  "items": [
+    { "id": "A", "width_mm": 200.0, "height_mm": 300.0, "qty": 1, "rotation": "allow_90", "pattern_direction": "none" }
+  ]
+}
