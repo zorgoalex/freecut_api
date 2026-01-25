@@ -99,6 +99,71 @@ Example file: `examples/optimize_request.json`
   - `rotation`: Rotation rule: `"forbid"` or `"allow_90"`.
   - `pattern_direction`: Grain/pattern direction: `"none"`, `"along_width"`, `"along_height"`.
 
+### Example Response
+Example file: `examples/optimize_response_ok.json`
+
+```json
+{
+  "status": "ok",
+  "summary": {
+    "objective": "min_waste",
+    "used_stock_count": 1,
+    "total_waste_area_mm2": 680400.0,
+    "waste_percent": 70.8455,
+    "time_ms": 3,
+    "restarts_used": 3,
+    "seed": 12345
+  },
+  "solutions": [
+    {
+      "stock_id": "sheet-1000",
+      "index": 0,
+      "width_mm": 1000.0,
+      "height_mm": 1000.0,
+      "trim_mm": { "left": 10.0, "right": 10.0, "top": 10.0, "bottom": 10.0 },
+      "placements": [
+        {
+          "item_id": "B",
+          "instance": 1,
+          "x_mm": 0.0,
+          "y_mm": 0.0,
+          "width_mm": 400.0,
+          "height_mm": 400.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        }
+      ]
+    }
+  ],
+  "artifacts": {
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"-10 -10 1000 1000\">...</svg>"
+  }
+}
+```
+
+### Response Keys (Summary)
+- `status`: `"ok"` on success.
+- `summary`: Aggregated optimization metrics.
+  - `objective`: Chosen objective (`"min_waste"` or `"min_sheets"`).
+  - `used_stock_count`: Number of sheets used.
+  - `total_waste_area_mm2`: Total waste area in mm².
+  - `waste_percent`: Waste percentage of used stock.
+  - `time_ms`: Total runtime in milliseconds.
+  - `restarts_used`: Number of restarts actually used.
+  - `seed`: Seed from the request.
+- `solutions`: Per-sheet layouts.
+  - `stock_id`: Stock ID from request.
+  - `index`: Sheet index for that stock type.
+  - `width_mm`, `height_mm`: Sheet dimensions.
+  - `trim_mm`: Margins used.
+  - `placements`: List of placed parts.
+    - `item_id`: Item ID from request.
+    - `instance`: Instance number.
+    - `x_mm`, `y_mm`, `width_mm`, `height_mm`: Placement geometry.
+    - `rotated`: Whether part was rotated.
+    - `pattern_direction`: Direction from request.
+- `artifacts.svg`: Full SVG document of the layout.
+
 ## Environment Variables
 - `PORT` (default `8080`)
 - `RUST_LOG` (default `info`)

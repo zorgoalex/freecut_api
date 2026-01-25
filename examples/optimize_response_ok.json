@@ -1,0 +1,36 @@
+{
+  "status": "ok",
+  "summary": {
+    "objective": "min_waste",
+    "used_stock_count": 1,
+    "total_waste_area_mm2": 680400.0,
+    "waste_percent": 70.8455,
+    "time_ms": 3,
+    "restarts_used": 3,
+    "seed": 12345
+  },
+  "solutions": [
+    {
+      "stock_id": "sheet-1000",
+      "index": 0,
+      "width_mm": 1000.0,
+      "height_mm": 1000.0,
+      "trim_mm": { "left": 10.0, "right": 10.0, "top": 10.0, "bottom": 10.0 },
+      "placements": [
+        {
+          "item_id": "B",
+          "instance": 1,
+          "x_mm": 0.0,
+          "y_mm": 0.0,
+          "width_mm": 400.0,
+          "height_mm": 400.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        }
+      ]
+    }
+  ],
+  "artifacts": {
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"-10 -10 1000 1000\">...</svg>"
+  }
+}
