@@ -47,6 +47,58 @@ docker run --rm -p 8080:8080 freecut-mvp
 - All dimensions are in millimeters (`mm`).
 - Successful responses include SVG in `artifacts.svg`.
 
+### Example Request
+Example file: `examples/optimize_request.json`
+
+```json
+{
+  "units": "mm",
+  "params": {
+    "kerf_mm": 2.0,
+    "spacing_mm": 1.0,
+    "trim_mm": {
+      "left": 10.0,
+      "right": 10.0,
+      "top": 10.0,
+      "bottom": 10.0
+    },
+    "time_limit_ms": 240,
+    "restarts": 3,
+    "objective": "min_waste",
+    "seed": 12345
+  },
+  "stock": [
+    { "id": "sheet-1000", "width_mm": 1000.0, "height_mm": 1000.0, "qty": 2 }
+  ],
+  "items": [
+    { "id": "A", "width_mm": 200.0, "height_mm": 300.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "B", "width_mm": 400.0, "height_mm": 400.0, "qty": 1, "rotation": "allow_90", "pattern_direction": "none" }
+  ]
+}
+```
+
+### Field-by-Field Explanation
+- `units`: Measurement units; must be `"mm"`.
+- `params`: Optimization parameters.
+  - `kerf_mm`: Blade thickness (cut width) in mm.
+  - `spacing_mm`: Minimum gap between parts in mm.
+  - `trim_mm`: Unusable margins around the sheet in mm.
+    - `left`, `right`, `top`, `bottom`: Margin sizes in mm.
+  - `time_limit_ms`: Total time budget for optimization in milliseconds.
+  - `restarts`: Number of optimization restarts (multi-start).
+  - `objective`: Optimization goal: `"min_waste"` or `"min_sheets"`.
+  - `seed`: Deterministic seed for reproducible results.
+- `stock`: Available sheet materials.
+  - `id`: Stock identifier.
+  - `width_mm`, `height_mm`: Sheet dimensions in mm.
+  - `qty`: Quantity of sheets of this size.
+- `items`: Parts to be cut.
+  - `id`: Part identifier.
+  - `width_mm`, `height_mm`: Part dimensions in mm.
+  - `qty`: Quantity of this part.
+  - `rotation`: Rotation rule: `"forbid"` or `"allow_90"`.
+  - `pattern_direction`: Grain/pattern direction: `"none"`, `"along_width"`, `"along_height"`.
+
 ## Environment Variables
 - `PORT` (default `8080`)
 - `RUST_LOG` (default `info`)
