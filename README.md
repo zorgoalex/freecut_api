@@ -13,7 +13,7 @@ It uses Axum and the `cut-optimizer-2d` engine and always returns an SVG artifac
 ## Tech Stack
 - Rust (edition 2021)
 - Axum (HTTP)
-- cut-optimizer-2d (layout engine)
+- cut-optimizer-2d (layout engine, source: https://github.com/jasonrhansen/cut-optimizer-2d)
 - utoipa + Swagger UI (OpenAPI docs)
 
 ## Quick Start (Local)
