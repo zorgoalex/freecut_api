@@ -62,5 +62,21 @@ cargo test
 
 Note: Swagger UI assets are downloaded during build; tests/builds may require network access.
 
+## Docker Smoke Tests
+These tests validate the running container via a host-network curl image.
+
+```bash
+# Start the container first
+docker run --rm -p 8080:8080 freecut-mvp
+
+# In another terminal
+./scripts/docker_smoke.sh
+```
+
+Optional overrides:
+```bash
+BASE_URL=http://127.0.0.1:8080 CURL_IMAGE=curlimages/curl:8.6.0 ./scripts/docker_smoke.sh
+```
+
 ## Notes
 - Pattern direction flags are validated for rotation constraints, but only `none` currently affects optimization.
