@@ -4,7 +4,7 @@ use crate::models::{
     Artifacts, ErrorResponse, Item, Objective, OptimizeRequest, OptimizeResponse, Params,
     PatternDirection, Placement, Rotation, Solution, StockItem, Summary, Trim, Units,
 };
-use crate::VersionResponse;
+use crate::models::VersionResponse;
 
 #[derive(OpenApi)]
 #[openapi(

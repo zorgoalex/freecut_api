@@ -5,10 +5,8 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::Serialize;
 use std::net::SocketAddr;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use utoipa::ToSchema;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -19,7 +17,7 @@ mod optimizer;
 mod validation;
 
 use config::AppConfig;
-use models::{ErrorResponse, OptimizeRequest};
+use models::{ErrorResponse, OptimizeRequest, VersionResponse};
 use openapi::ApiDoc;
 use optimizer::optimize_request;
 use validation::{validate_request, ValidationLimits};
@@ -90,12 +88,6 @@ pub(crate) async fn health_live() -> &'static str {
 )]
 pub(crate) async fn health_ready() -> &'static str {
     "ok"
-}
-
-#[derive(Serialize, ToSchema)]
-pub(crate) struct VersionResponse {
-    service: &'static str,
-    version: &'static str,
 }
 
 #[utoipa::path(

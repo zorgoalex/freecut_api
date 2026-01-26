@@ -39,6 +39,7 @@ docker run --rm -p 8080:8080 freecut-mvp
 - `GET /version`
 - `GET /openapi.json`
 - `GET /docs`
+ - Generated schema file: `openapi.json`
 
 ## Main Endpoint
 `POST /v1/optimize`

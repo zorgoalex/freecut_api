@@ -130,3 +130,9 @@ pub struct Placement {
 pub struct Artifacts {
     pub svg: String,
 }
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct VersionResponse {
+    pub service: &'static str,
+    pub version: &'static str,
+}
