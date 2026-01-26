@@ -183,8 +183,8 @@ Example file: `examples/optimize_response_ok.json`
 - `RUST_LOG` (default `info`)
 - `MAX_BODY_BYTES` (default `5242880`)
 - `MAX_INSTANCES` (default `5000`)
-- `DEFAULT_TIME_LIMIT_MS` (default `1200`)
-- `DEFAULT_RESTARTS` (default `3`)
+- `DEFAULT_TIME_LIMIT_MS` (default `2000`)
+- `DEFAULT_RESTARTS` (default `10`)
 
 ## Testing
 ```bash

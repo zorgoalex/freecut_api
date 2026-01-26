@@ -15,8 +15,8 @@ impl AppConfig {
             port: read_env("PORT", 8080),
             max_body_bytes: read_env("MAX_BODY_BYTES", 5_242_880),
             max_instances: read_env("MAX_INSTANCES", 5_000),
-            default_time_limit_ms: read_env("DEFAULT_TIME_LIMIT_MS", 1_200),
-            default_restarts: read_env("DEFAULT_RESTARTS", 3),
+            default_time_limit_ms: read_env("DEFAULT_TIME_LIMIT_MS", 2_000),
+            default_restarts: read_env("DEFAULT_RESTARTS", 10),
         }
     }
 }

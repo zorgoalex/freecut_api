@@ -24,8 +24,8 @@ ENV PORT=8080 \
     RUST_LOG=info \
     MAX_BODY_BYTES=5242880 \
     MAX_INSTANCES=5000 \
-    DEFAULT_TIME_LIMIT_MS=1200 \
-    DEFAULT_RESTARTS=3
+    DEFAULT_TIME_LIMIT_MS=2000 \
+    DEFAULT_RESTARTS=10
 
 WORKDIR /app
 COPY --from=builder /app/target/release/freecut /app/freecut
