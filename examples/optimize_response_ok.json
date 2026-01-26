@@ -7,7 +7,8 @@
     "waste_percent": 70.8455,
     "time_ms": 3,
     "restarts_used": 3,
-    "seed": 12345
+    "seed": 12345,
+    "layout_mode": "nested"
   },
   "solutions": [
     {

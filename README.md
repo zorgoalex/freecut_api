@@ -67,7 +67,8 @@ Example file: `examples/optimize_request.json`
     "time_limit_ms": 240,
     "restarts": 3,
     "objective": "min_waste",
-    "seed": 12345
+    "seed": 12345,
+    "layout_mode": "nested"
   },
   "stock": [
     { "id": "sheet-1000", "width_mm": 1000.0, "height_mm": 1000.0, "qty": 2 }
@@ -98,6 +99,7 @@ Example file: `examples/optimize_request.json`
   - `seed`: Deterministic seed for reproducible results. For a first run, use any
     integer (e.g., `1` or `12345`). Use a fixed seed for reproducibility, or a
     changing seed (e.g., timestamp) for varied layouts.
+  - `layout_mode`: Layout mode: `"nested"` (default) or `"guillotine"` (guillotine-only cuts). Optional in the request.
 - `stock`: Available sheet materials.
   - `id`: Stock identifier (your business label for a sheet type).
   - `width_mm`, `height_mm`: Sheet dimensions in mm.
@@ -122,7 +124,8 @@ Example file: `examples/optimize_response_ok.json`
     "waste_percent": 70.8455,
     "time_ms": 3,
     "restarts_used": 3,
-    "seed": 12345
+    "seed": 12345,
+    "layout_mode": "nested"
   },
   "solutions": [
     {
@@ -161,6 +164,7 @@ Example file: `examples/optimize_response_ok.json`
   - `time_ms`: Total runtime in milliseconds.
   - `restarts_used`: Number of restarts actually used.
   - `seed`: Seed from the request.
+  - `layout_mode`: Layout mode actually used.
 - `solutions`: Per-sheet layouts.
   - `stock_id`: Stock ID from request.
   - `index`: Sheet index for that stock type.

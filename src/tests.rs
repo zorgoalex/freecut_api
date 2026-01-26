@@ -172,6 +172,22 @@ async fn optimize_reproducible_seed() {
 }
 
 #[tokio::test]
+async fn optimize_layout_mode_default_nested() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.remove("layout_mode");
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json.pointer("/summary/layout_mode").and_then(Value::as_str),
+        Some("nested")
+    );
+}
+
+#[tokio::test]
 async fn optimize_invalid_trim_returns_422() {
     let app = app_for_test();
     let (status, json) = post_json(&app, "/v1/optimize", INVALID_TRIM_REQUEST).await;
@@ -283,7 +299,8 @@ async fn max_stock_types_limit_enforced() {
             "time_limit_ms": 200,
             "restarts": 2,
             "objective": "min_waste",
-            "seed": 1
+            "seed": 1,
+            "layout_mode": "nested"
         },
         "stock": stock,
         "items": [

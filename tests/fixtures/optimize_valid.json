@@ -12,7 +12,8 @@
     "time_limit_ms": 240,
     "restarts": 3,
     "objective": "min_waste",
-    "seed": 12345
+    "seed": 12345,
+    "layout_mode": "nested"
   },
   "stock": [
     { "id": "sheet-1000", "width_mm": 1000.0, "height_mm": 1000.0, "qty": 2 }

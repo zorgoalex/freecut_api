@@ -25,6 +25,7 @@ pub struct Params {
     pub restarts: u32,
     pub objective: Objective,
     pub seed: u64,
+    pub layout_mode: Option<LayoutMode>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
@@ -32,6 +33,13 @@ pub struct Params {
 pub enum Objective {
     MinWaste,
     MinSheets,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutMode {
+    Nested,
+    Guillotine,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy)]
@@ -102,6 +110,7 @@ pub struct Summary {
     pub time_ms: u64,
     pub restarts_used: u32,
     pub seed: u64,
+    pub layout_mode: LayoutMode,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

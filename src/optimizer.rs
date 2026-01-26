@@ -8,8 +8,8 @@ use cut_optimizer_2d::{CutPiece, Optimizer, PatternDirection as CutPatternDirect
 
 use crate::config::AppConfig;
 use crate::models::{
-    Artifacts, ErrorResponse, Objective, OptimizeRequest, OptimizeResponse, PatternDirection,
-    Placement, Solution, Summary, Trim,
+    Artifacts, ErrorResponse, LayoutMode, Objective, OptimizeRequest, OptimizeResponse,
+    PatternDirection, Placement, Solution, Summary, Trim,
 };
 
 const SCALE: f64 = 1000.0;
@@ -77,6 +77,7 @@ pub async fn optimize_request(
     req: OptimizeRequest,
     _config: &AppConfig,
 ) -> Result<OptimizeResponse, OptimizeError> {
+    let layout_mode = req.params.layout_mode.unwrap_or(LayoutMode::Nested);
     let prepared = prepare_input(&req)?;
 
     let mut restarts = u64::from(req.params.restarts.max(1));
@@ -90,7 +91,7 @@ pub async fn optimize_request(
     let start = Instant::now();
 
     let candidate = tokio::time::timeout(Duration::from_millis(overall_limit), async {
-        run_restarts(&req, &prepared, restarts, slice_ms).await
+        run_restarts(&req, &prepared, restarts, slice_ms, layout_mode).await
     })
     .await
     .map_err(|_| OptimizeError::Timeout)??;
@@ -104,6 +105,7 @@ pub async fn optimize_request(
         time_ms,
         restarts_used: restarts as u32,
         seed: req.params.seed,
+        layout_mode,
     };
 
     let solutions = build_solutions(&candidate.solution, &prepared);
@@ -122,6 +124,7 @@ async fn run_restarts(
     prepared: &PreparedInput,
     restarts: u64,
     slice_ms: u64,
+    layout_mode: LayoutMode,
 ) -> Result<Candidate, OptimizeError> {
     let mut best: Option<Candidate> = None;
     let mut timed_out = false;
@@ -132,6 +135,7 @@ async fn run_restarts(
             .params
             .seed
             .wrapping_add(i.wrapping_mul(SEED_STRIDE));
+        let mode = layout_mode;
         let stock_pieces = prepared.stock_pieces.clone();
         let cut_pieces = prepared.cut_pieces.clone();
         let cut_width = prepared.cut_width;
@@ -143,7 +147,10 @@ async fn run_restarts(
                 .set_cut_width(cut_width)
                 .add_stock_pieces(stock_pieces)
                 .add_cut_pieces(cut_pieces);
-            optimizer.optimize_nested(|_| {})
+            match mode {
+                LayoutMode::Nested => optimizer.optimize_nested(|_| {}),
+                LayoutMode::Guillotine => optimizer.optimize_guillotine(|_| {}),
+            }
         });
 
         let run = tokio::time::timeout(Duration::from_millis(slice_ms), &mut handle).await;
