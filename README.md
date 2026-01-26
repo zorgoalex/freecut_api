@@ -46,6 +46,7 @@ docker run --rm -p 8080:8080 freecut-mvp
 - Request/response are JSON.
 - All dimensions are in millimeters (`mm`).
 - Successful responses include SVG in `artifacts.svg`.
+ - Coordinate system: origin (0,0) is the **top-left** of the usable area (after `trim_mm`), X to the right, Y down.
 
 ### Example Request
 Example file: `examples/optimize_request.json`
@@ -81,19 +82,27 @@ Example file: `examples/optimize_request.json`
 - `units`: Measurement units; must be `"mm"`.
 - `params`: Optimization parameters.
   - `kerf_mm`: Blade thickness (cut width) in mm.
-  - `spacing_mm`: Minimum gap between parts in mm.
+  - `spacing_mm`: Additional clearance between parts, added on top of `kerf_mm`.
+    The effective gap between parts is `kerf_mm + spacing_mm`.
   - `trim_mm`: Unusable margins around the sheet in mm.
     - `left`, `right`, `top`, `bottom`: Margin sizes in mm.
   - `time_limit_ms`: Total time budget for optimization in milliseconds.
+    The time is split across restarts; if the per-restart slice drops below ~80 ms,
+    the service reduces the actual number of restarts. Recommended starting range:
+    1000–2000 ms for typical cases, higher for large/complex inputs.
   - `restarts`: Number of optimization restarts (multi-start).
   - `objective`: Optimization goal: `"min_waste"` or `"min_sheets"`.
-  - `seed`: Deterministic seed for reproducible results.
+    With identical stock sizes, both goals typically yield the same number of sheets;
+    differences matter when multiple stock sizes are provided.
+  - `seed`: Deterministic seed for reproducible results. For a first run, use any
+    integer (e.g., `1` or `12345`). Use a fixed seed for reproducibility, or a
+    changing seed (e.g., timestamp) for varied layouts.
 - `stock`: Available sheet materials.
-  - `id`: Stock identifier.
+  - `id`: Stock identifier (your business label for a sheet type).
   - `width_mm`, `height_mm`: Sheet dimensions in mm.
   - `qty`: Quantity of sheets of this size.
 - `items`: Parts to be cut.
-  - `id`: Part identifier.
+  - `id`: Part identifier (your business label).
   - `width_mm`, `height_mm`: Part dimensions in mm.
   - `qty`: Quantity of this part.
   - `rotation`: Rotation rule: `"forbid"` or `"allow_90"`.
