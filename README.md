@@ -179,7 +179,7 @@ Example file: `examples/optimize_response_ok.json`
 - `MAX_BODY_BYTES` (default `5242880`)
 - `MAX_INSTANCES` (default `5000`)
 - `DEFAULT_TIME_LIMIT_MS` (default `1200`)
-- `DEFAULT_RESTARTS` (default `7`)
+- `DEFAULT_RESTARTS` (default `3`)
 
 ## Testing
 ```bash
@@ -203,6 +203,9 @@ Optional overrides:
 ```bash
 BASE_URL=http://127.0.0.1:8080 CURL_IMAGE=curlimages/curl:8.6.0 ./scripts/docker_smoke.sh
 ```
+
+## License
+This project is licensed under the **MIT License**. See `LICENSE`.
 
 ## Notes
 - Pattern direction flags are validated for rotation constraints, but only `none` currently affects optimization.

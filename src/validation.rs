@@ -45,6 +45,10 @@ impl IntoResponse for ValidationError {
 }
 
 pub fn validate_request(req: &OptimizeRequest, limits: &ValidationLimits) -> Result<(), ValidationError> {
+    match req.units {
+        crate::models::Units::Mm => {}
+    }
+
     if req.stock.is_empty() {
         return Err(ValidationError::new("stock must have at least one entry"));
     }

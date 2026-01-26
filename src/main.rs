@@ -38,6 +38,11 @@ async fn main() {
         .init();
 
     let config = AppConfig::from_env();
+    tracing::info!(
+        default_time_limit_ms = config.default_time_limit_ms,
+        default_restarts = config.default_restarts,
+        "defaults loaded"
+    );
     let app = build_app(config.clone());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
