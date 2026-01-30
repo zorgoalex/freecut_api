@@ -1,6 +1,6 @@
 use axum::{
     extract::{rejection::JsonRejection, DefaultBodyLimit, State},
-    http::{header, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -61,7 +61,6 @@ fn build_app(config: AppConfig) -> Router {
         .route("/health/ready", get(health_ready))
         .route("/version", get(version))
         .route("/v1/optimize", post(optimize))
-        .route("/docs", get(docs_redirect))
         .merge(SwaggerUi::new("/docs").url("/openapi.json", openapi))
         .with_state(app_state)
         .layer(DefaultBodyLimit::max(config.max_body_bytes))
@@ -89,10 +88,6 @@ pub(crate) async fn health_live() -> &'static str {
 )]
 pub(crate) async fn health_ready() -> &'static str {
     "ok"
-}
-
-async fn docs_redirect() -> impl IntoResponse {
-    (StatusCode::SEE_OTHER, [(header::LOCATION, "/docs/")])
 }
 
 #[utoipa::path(

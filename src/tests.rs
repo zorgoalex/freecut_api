@@ -282,7 +282,7 @@ async fn openapi_available() {
 async fn docs_available() {
     let app = app_for_test();
     let (status, text) = get_text(&app, "/docs").await;
-    if status == StatusCode::SEE_OTHER || status == StatusCode::MOVED_PERMANENTLY {
+    if status.is_redirection() {
         let request = Request::builder()
             .method("GET")
             .uri("/docs/")
