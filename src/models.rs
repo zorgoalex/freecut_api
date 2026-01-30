@@ -24,7 +24,7 @@ pub struct Params {
     pub time_limit_ms: Option<u64>,
     pub restarts: Option<u32>,
     pub objective: Objective,
-    pub seed: u64,
+    pub seed: Option<u64>,
     pub layout_mode: Option<LayoutMode>,
 }
 
@@ -109,7 +109,7 @@ pub struct Summary {
     pub waste_percent: f64,
     pub time_ms: u64,
     pub restarts_used: u32,
-    pub seed: u64,
+    pub used_seed: u64,
     pub layout_mode: LayoutMode,
 }
 

@@ -98,9 +98,8 @@ Example file: `examples/optimize_request.json`
   - `objective`: Optimization goal: `"min_waste"` or `"min_sheets"`.
     With identical stock sizes, both goals typically yield the same number of sheets;
     differences matter when multiple stock sizes are provided.
-  - `seed`: Deterministic seed for reproducible results. For a first run, use any
-    integer (e.g., `1` or `12345`). Use a fixed seed for reproducibility, or a
-    changing seed (e.g., timestamp) for varied layouts.
+  - `seed`: Optional deterministic seed for reproducible results. If omitted, the
+    service generates a seed per request (Unix epoch in ms) and returns it as `used_seed`.
   - `layout_mode`: Layout mode: `"nested"` (default) or `"guillotine"` (guillotine-only cuts). Optional in the request.
 - `stock`: Available sheet materials.
   - `id`: Stock identifier (your business label for a sheet type).
@@ -126,7 +125,7 @@ Example file: `examples/optimize_response_ok.json`
     "waste_percent": 70.8455,
     "time_ms": 3,
     "restarts_used": 3,
-    "seed": 12345,
+    "used_seed": 12345,
     "layout_mode": "nested"
   },
   "solutions": [
@@ -165,7 +164,7 @@ Example file: `examples/optimize_response_ok.json`
   - `waste_percent`: Waste percentage of used stock.
   - `time_ms`: Total runtime in milliseconds.
   - `restarts_used`: Number of restarts actually used.
-  - `seed`: Seed from the request.
+- `used_seed`: Seed actually used (user-provided or auto-generated).
   - `layout_mode`: Layout mode actually used.
 - `solutions`: Per-sheet layouts.
   - `stock_id`: Stock ID from request.

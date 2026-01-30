@@ -168,7 +168,31 @@ async fn optimize_reproducible_seed() {
     let app = app_for_test();
     let (_, first) = post_json(&app, "/v1/optimize", VALID_REQUEST).await;
     let (_, second) = post_json(&app, "/v1/optimize", VALID_REQUEST).await;
+    assert_eq!(
+        first.pointer("/summary/used_seed").and_then(Value::as_u64),
+        Some(12345)
+    );
     assert_eq!(strip_time(first), strip_time(second));
+}
+
+#[tokio::test]
+async fn optimize_auto_seed_changes_per_request() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.remove("seed");
+    }
+    let body = serde_json::to_string(&json).unwrap();
+
+    let (_, first) = post_json(&app, "/v1/optimize", &body).await;
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    let (_, second) = post_json(&app, "/v1/optimize", &body).await;
+
+    let first_seed = first.pointer("/summary/used_seed").and_then(Value::as_u64);
+    let second_seed = second.pointer("/summary/used_seed").and_then(Value::as_u64);
+    assert!(first_seed.is_some(), "missing used_seed in first response");
+    assert!(second_seed.is_some(), "missing used_seed in second response");
+    assert_ne!(first_seed, second_seed, "auto seed should change per request");
 }
 
 #[tokio::test]

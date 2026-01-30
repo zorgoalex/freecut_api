@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -78,6 +78,7 @@ pub async fn optimize_request(
     config: &AppConfig,
 ) -> Result<OptimizeResponse, OptimizeError> {
     let layout_mode = req.params.layout_mode.unwrap_or(LayoutMode::Nested);
+    let used_seed = req.params.seed.unwrap_or_else(generate_seed);
     let prepared = prepare_input(&req)?;
 
     let time_limit_ms = req
@@ -101,7 +102,7 @@ pub async fn optimize_request(
     let start = Instant::now();
 
     let candidate = tokio::time::timeout(Duration::from_millis(overall_limit), async {
-        run_restarts(&req, &prepared, restarts, slice_ms, layout_mode).await
+        run_restarts(&req, &prepared, restarts, slice_ms, layout_mode, used_seed).await
     })
     .await
     .map_err(|_| OptimizeError::Timeout)??;
@@ -114,7 +115,7 @@ pub async fn optimize_request(
         waste_percent: waste_percent(candidate.total_waste_area_units, candidate.total_stock_area_units),
         time_ms,
         restarts_used: restarts as u32,
-        seed: req.params.seed,
+        used_seed,
         layout_mode,
     };
 
@@ -135,16 +136,14 @@ async fn run_restarts(
     restarts: u64,
     slice_ms: u64,
     layout_mode: LayoutMode,
+    base_seed: u64,
 ) -> Result<Candidate, OptimizeError> {
     let mut best: Option<Candidate> = None;
     let mut timed_out = false;
     let mut last_constraint: Option<OptimizeError> = None;
 
     for i in 0..restarts {
-        let seed = req
-            .params
-            .seed
-            .wrapping_add(i.wrapping_mul(SEED_STRIDE));
+        let seed = base_seed.wrapping_add(i.wrapping_mul(SEED_STRIDE));
         let mode = layout_mode;
         let stock_pieces = prepared.stock_pieces.clone();
         let cut_pieces = prepared.cut_pieces.clone();
@@ -216,6 +215,13 @@ async fn run_restarts(
     }
 
     Err(OptimizeError::Internal("no solution produced".to_string()))
+}
+
+fn generate_seed() -> u64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    now.as_millis() as u64
 }
 
 fn prepare_input(req: &OptimizeRequest) -> Result<PreparedInput, OptimizeError> {
