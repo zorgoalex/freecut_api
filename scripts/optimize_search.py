@@ -36,6 +36,7 @@ GRID_MM = _env_float("FREECUT_GRID_MM", 5.0)
 USE_PADDED_GAPS = _env_bool("FREECUT_USE_PADDED_GAPS", True)
 CURLIMAGE = os.getenv("FREECUT_CURLIMAGE", "curlimages/curl:8.6.0")
 USE_CURLIMAGE = _env_bool("FREECUT_USE_CURLIMAGE", False)
+EDGE_PENALTY_POW = _env_float("FREECUT_EDGE_PENALTY_POW", 1.0)
 
 def load_request_template(filepath):
     with open(filepath, 'r') as f:
@@ -156,12 +157,17 @@ def flood_external_voids(grid, rows, cols):
             enqueue(r, c + 1)
 
 
+def distance_to_edge_mm(r, c, rows, cols, grid_mm):
+    return min(r, c, rows - 1 - r, cols - 1 - c) * grid_mm
+
+
 def calculate_internal_void_metrics(solutions, grid_mm, pad_mm=0.0):
     if not solutions:
         return float('inf'), float('inf')
 
     total_internal_area = 0.0
     total_components = 0
+    total_exposure_penalty = 0.0
 
     for solution in solutions:
         placements = solution.get('placements', [])
@@ -183,6 +189,25 @@ def calculate_internal_void_metrics(solutions, grid_mm, pad_mm=0.0):
         )
 
         flood_external_voids(grid, rows, cols)
+
+        # Penalize exposed part edges that face empty space far from the sheet edge.
+        for r in range(rows):
+            for c in range(cols):
+                if grid[r][c] != 1:
+                    continue
+                # Neighbor checks
+                if r > 0 and grid[r - 1][c] != 1:
+                    d = distance_to_edge_mm(r - 1, c, rows, cols, grid_mm)
+                    total_exposure_penalty += (d ** EDGE_PENALTY_POW) * grid_mm
+                if r + 1 < rows and grid[r + 1][c] != 1:
+                    d = distance_to_edge_mm(r + 1, c, rows, cols, grid_mm)
+                    total_exposure_penalty += (d ** EDGE_PENALTY_POW) * grid_mm
+                if c > 0 and grid[r][c - 1] != 1:
+                    d = distance_to_edge_mm(r, c - 1, rows, cols, grid_mm)
+                    total_exposure_penalty += (d ** EDGE_PENALTY_POW) * grid_mm
+                if c + 1 < cols and grid[r][c + 1] != 1:
+                    d = distance_to_edge_mm(r, c + 1, rows, cols, grid_mm)
+                    total_exposure_penalty += (d ** EDGE_PENALTY_POW) * grid_mm
 
         internal_cells = 0
         for r in range(rows):
@@ -210,9 +235,9 @@ def calculate_internal_void_metrics(solutions, grid_mm, pad_mm=0.0):
         total_internal_area += internal_cells * (grid_mm * grid_mm)
 
     if total_internal_area == 0.0:
-        return 0.0, 0
+        return 0.0, 0, total_exposure_penalty
 
-    return total_internal_area, total_components
+    return total_internal_area, total_components, total_exposure_penalty
 
 
 def run_optimization(template, restarts, time_limit, seed):
@@ -292,6 +317,7 @@ def main():
         'internal_void_mm2',
         'internal_components',
         'edge_gap_sum_mm',
+        'exposure_penalty',
         'grid_mm',
         'pad_mm'
     ]
@@ -302,7 +328,7 @@ def main():
         print(f"Starting {NUM_TESTS} optimization tests (Mode: GUILLOTINE)...")
         print(f"Target: Find Top {TOP_N_CANDIDATES} candidates by Waste % and Compactness Score.")
         print(f"Logging all runs to {LOG_FILE}")
-        print(f"{'Iter':<5} | {'Restarts':<8} | {'Time':<5} | {'Waste%':<7} | {'IntVoid':<9} | {'Gaps':<5} | {'Status'}")
+        print(f\"{'Iter':<5} | {'Restarts':<8} | {'Time':<5} | {'Waste%':<7} | {'IntVoid':<9} | {'Gaps':<5} | {'Expose':<8} | {'Status'}\")
         print("-" * 80)
 
         for i in range(1, NUM_TESTS + 1):
@@ -322,7 +348,7 @@ def main():
                 pad_mm = 0.0
                 if USE_PADDED_GAPS:
                     pad_mm = (template['params']['kerf_mm'] + template['params']['spacing_mm']) / 2.0
-                internal_void, internal_components = calculate_internal_void_metrics(
+                internal_void, internal_components, exposure_penalty = calculate_internal_void_metrics(
                     result['solutions'],
                     GRID_MM,
                     pad_mm
@@ -353,6 +379,7 @@ def main():
                     internal_void,
                     internal_components,
                     edge_gap_sum,
+                    exposure_penalty,
                     GRID_MM,
                     pad_mm
                 ])
@@ -367,15 +394,17 @@ def main():
                     'internal_void': internal_void,
                     'internal_components': internal_components,
                     'edge_gap_sum': edge_gap_sum,
+                    'exposure_penalty': exposure_penalty,
                     'svg': result['artifacts']['svg']
                 }
 
                 # Add to list and sort
                 top_candidates.append(candidate_data)
-                # Sort by waste, then by internal voids, then by gap structure.
+                # Sort by waste, internal voids, exposed edge penalty, then gap structure.
                 top_candidates.sort(key=lambda c: (
                     c['waste_percent'],
                     c['internal_void'],
+                    c['exposure_penalty'],
                     c['internal_components'],
                     c['edge_gap_sum'],
                     c['bbox_void']
@@ -386,9 +415,9 @@ def main():
                     top_candidates.pop() # Removes the worst candidate
 
                 status_str = f"OK (Waste: {waste:.2f}%)"
-                print(f"{i:<5} | {restarts:<8} | {time_limit:<5} | {waste:<7.2f} | {internal_void:<9.0f} | {internal_components:<5} | {status_str}")
+                print(f\"{i:<5} | {restarts:<8} | {time_limit:<5} | {waste:<7.2f} | {internal_void:<9.0f} | {internal_components:<5} | {exposure_penalty:<8.0f} | {status_str}\")
             else:
-                 print(f"{i:<5} | {restarts:<8} | {time_limit:<5} | {'-':<7} | {'-':<9} | {'-':<5} | {status_str}")
+                 print(f\"{i:<5} | {restarts:<8} | {time_limit:<5} | {'-':<7} | {'-':<9} | {'-':<5} | {'-':<8} | {status_str}\")
 
 
     print("\n" + "="*40)
@@ -401,7 +430,7 @@ def main():
 
     print(f"\nTop {len(top_candidates)} Candidates (Sorted by Waste, then Compactness Score):")
     print("-" * 80)
-    print(f"{'Rank':<5} | {'Waste%':<7} | {'IntVoid':<9} | {'Gaps':<5} | {'EdgeGap':<8} | {'Restarts':<8} | {'Time':<5} | {'Seed'}")
+    print(f\"{'Rank':<5} | {'Waste%':<7} | {'IntVoid':<9} | {'Gaps':<5} | {'Expose':<8} | {'EdgeGap':<8} | {'Restarts':<8} | {'Time':<5} | {'Seed'}\")
     print("-" * 80)
 
     for idx, candidate in enumerate(top_candidates):
@@ -418,10 +447,10 @@ def main():
             f.write(candidate['svg'])
 
         print(
-            f"{rank:<5} | {candidate['waste_percent']:<7.2f} | "
-            f"{candidate['internal_void']:<9.0f} | {candidate['internal_components']:<5} | "
-            f"{candidate['edge_gap_sum']:<8.1f} | {candidate['restarts']:<8} | "
-            f"{candidate['time_limit_ms']:<5} | {candidate['seed']}"
+            f\"{rank:<5} | {candidate['waste_percent']:<7.2f} | "
+            f\"{candidate['internal_void']:<9.0f} | {candidate['internal_components']:<5} | "
+            f\"{candidate['exposure_penalty']:<8.0f} | {candidate['edge_gap_sum']:<8.1f} | "
+            f\"{candidate['restarts']:<8} | {candidate['time_limit_ms']:<5} | {candidate['seed']}\"
         )
 
     print("-" * 80)
