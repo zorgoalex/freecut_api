@@ -5,34 +5,45 @@ import time
 import os
 import math
 import csv
+from collections import deque
+import subprocess
 
-# Configuration
-API_URL = "http://localhost:8088/v1/optimize"
-INPUT_FILE = "ai_docs/test_11items_optimize_request.json"
-CANDIDATES_DIR = "ai_docs/candidate_layouts"
-LOG_FILE = "ai_docs/optimization_log.csv"
-NUM_TESTS = 500  # Increased for better analysis
-TOP_N_CANDIDATES = 10
+def _env_float(name, default):
+    raw = os.getenv(name)
+    return float(raw) if raw is not None else default
+
+
+def _env_int(name, default):
+    raw = os.getenv(name)
+    return int(raw) if raw is not None else default
+
+
+def _env_bool(name, default):
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+# Configuration (overridable via environment variables)
+API_URL = os.getenv("FREECUT_API_URL", "http://localhost:8088/v1/optimize")
+INPUT_FILE = os.getenv("FREECUT_INPUT_FILE", "ai_docs/test_11items_optimize_request.json")
+CANDIDATES_DIR = os.getenv("FREECUT_CANDIDATES_DIR", "ai_docs/candidate_layouts")
+LOG_FILE = os.getenv("FREECUT_LOG_FILE", "ai_docs/optimization_log.csv")
+NUM_TESTS = _env_int("FREECUT_NUM_TESTS", 500)
+TOP_N_CANDIDATES = _env_int("FREECUT_TOP_N", 10)
+GRID_MM = _env_float("FREECUT_GRID_MM", 5.0)
+USE_PADDED_GAPS = _env_bool("FREECUT_USE_PADDED_GAPS", True)
+CURLIMAGE = os.getenv("FREECUT_CURLIMAGE", "curlimages/curl:8.6.0")
+USE_CURLIMAGE = _env_bool("FREECUT_USE_CURLIMAGE", False)
 
 def load_request_template(filepath):
     with open(filepath, 'r') as f:
         return json.load(f)
 
-def calculate_compactness_score(solutions):
-    """
-    Calculates a compactness score based on the 'internal gap area'.
-    This metric finds the bounding box of all placed items and subtracts the
-    total area of the items from the bounding box area.
-    A lower score indicates a more compact cluster of parts with fewer internal gaps.
-    """
-    if not solutions:
-        return float('inf')
-    
-    solution = solutions[0] # Assuming single sheet
-    placements = solution.get('placements', [])
-    
+def calculate_bbox_metrics(placements):
     if not placements:
-        return float('inf')
+        return None
 
     min_x = float('inf')
     min_y = float('inf')
@@ -51,15 +62,157 @@ def calculate_compactness_score(solutions):
         max_x = max(max_x, x + w)
         max_y = max(max_y, y + h)
         total_parts_area += w * h
-    
-    # Calculate bounding box area of the cluster of parts
-    bounding_box_width = max_x - min_x
-    bounding_box_height = max_y - min_y
-    bounding_box_area = bounding_box_width * bounding_box_height
 
-    # Internal gap area = Bounding Box Area - Total Parts Area
-    # This score is minimized
-    return bounding_box_area - total_parts_area
+    return {
+        'min_x': min_x,
+        'min_y': min_y,
+        'max_x': max_x,
+        'max_y': max_y,
+        'total_parts_area': total_parts_area
+    }
+
+
+def calculate_compactness_score(solutions):
+    """
+    Calculates a compactness score based on the 'internal gap area'.
+    This metric finds the bounding box of all placed items and subtracts the
+    total area of the items from the bounding box area.
+    A lower score indicates a more compact cluster of parts with fewer internal gaps.
+    """
+    if not solutions:
+        return float('inf')
+
+    total_bbox_void = 0.0
+    for solution in solutions:
+        placements = solution.get('placements', [])
+        metrics = calculate_bbox_metrics(placements)
+        if not metrics:
+            continue
+
+        bounding_box_width = metrics['max_x'] - metrics['min_x']
+        bounding_box_height = metrics['max_y'] - metrics['min_y']
+        bounding_box_area = bounding_box_width * bounding_box_height
+        total_bbox_void += bounding_box_area - metrics['total_parts_area']
+
+    return total_bbox_void
+
+
+def build_occupancy_grid(placements, usable_w, usable_h, grid_mm, pad_mm):
+    cols = max(1, int(math.ceil(usable_w / grid_mm)))
+    rows = max(1, int(math.ceil(usable_h / grid_mm)))
+    grid = [bytearray(cols) for _ in range(rows)]
+
+    for placement in placements:
+        x0 = placement['x_mm'] - pad_mm
+        y0 = placement['y_mm'] - pad_mm
+        x1 = placement['x_mm'] + placement['width_mm'] + pad_mm
+        y1 = placement['y_mm'] + placement['height_mm'] + pad_mm
+
+        if x1 <= 0 or y1 <= 0 or x0 >= usable_w or y0 >= usable_h:
+            continue
+
+        gx0 = max(0, int(math.floor(x0 / grid_mm)))
+        gy0 = max(0, int(math.floor(y0 / grid_mm)))
+        gx1 = min(cols - 1, int(math.ceil(x1 / grid_mm)) - 1)
+        gy1 = min(rows - 1, int(math.ceil(y1 / grid_mm)) - 1)
+
+        if gx1 < gx0 or gy1 < gy0:
+            continue
+
+        fill = b'\x01' * (gx1 - gx0 + 1)
+        for gy in range(gy0, gy1 + 1):
+            row = grid[gy]
+            row[gx0:gx1 + 1] = fill
+
+    return grid, rows, cols
+
+
+def flood_external_voids(grid, rows, cols):
+    q = deque()
+
+    def enqueue(r, c):
+        if grid[r][c] == 0:
+            grid[r][c] = 2
+            q.append((r, c))
+
+    for c in range(cols):
+        enqueue(0, c)
+        if rows > 1:
+            enqueue(rows - 1, c)
+    for r in range(rows):
+        enqueue(r, 0)
+        if cols > 1:
+            enqueue(r, cols - 1)
+
+    while q:
+        r, c = q.popleft()
+        if r > 0:
+            enqueue(r - 1, c)
+        if r + 1 < rows:
+            enqueue(r + 1, c)
+        if c > 0:
+            enqueue(r, c - 1)
+        if c + 1 < cols:
+            enqueue(r, c + 1)
+
+
+def calculate_internal_void_metrics(solutions, grid_mm, pad_mm=0.0):
+    if not solutions:
+        return float('inf'), float('inf')
+
+    total_internal_area = 0.0
+    total_components = 0
+
+    for solution in solutions:
+        placements = solution.get('placements', [])
+        if not placements:
+            continue
+
+        trim = solution.get('trim_mm') or {}
+        usable_w = solution['width_mm'] - trim.get('left', 0.0) - trim.get('right', 0.0)
+        usable_h = solution['height_mm'] - trim.get('top', 0.0) - trim.get('bottom', 0.0)
+        if usable_w <= 0 or usable_h <= 0:
+            continue
+
+        grid, rows, cols = build_occupancy_grid(
+            placements,
+            usable_w,
+            usable_h,
+            grid_mm,
+            pad_mm
+        )
+
+        flood_external_voids(grid, rows, cols)
+
+        internal_cells = 0
+        for r in range(rows):
+            for c in range(cols):
+                if grid[r][c] == 0:
+                    total_components += 1
+                    q = deque([(r, c)])
+                    grid[r][c] = 3
+                    while q:
+                        cr, cc = q.popleft()
+                        internal_cells += 1
+                        if cr > 0 and grid[cr - 1][cc] == 0:
+                            grid[cr - 1][cc] = 3
+                            q.append((cr - 1, cc))
+                        if cr + 1 < rows and grid[cr + 1][cc] == 0:
+                            grid[cr + 1][cc] = 3
+                            q.append((cr + 1, cc))
+                        if cc > 0 and grid[cr][cc - 1] == 0:
+                            grid[cr][cc - 1] = 3
+                            q.append((cr, cc - 1))
+                        if cc + 1 < cols and grid[cr][cc + 1] == 0:
+                            grid[cr][cc + 1] = 3
+                            q.append((cr, cc + 1))
+
+        total_internal_area += internal_cells * (grid_mm * grid_mm)
+
+    if total_internal_area == 0.0:
+        return 0.0, 0
+
+    return total_internal_area, total_components
 
 
 def run_optimization(template, restarts, time_limit, seed):
@@ -72,12 +225,44 @@ def run_optimization(template, restarts, time_limit, seed):
     payload['params']['time_limit_ms'] = time_limit
     payload['params']['seed'] = seed
     
+    timeout_s = (time_limit / 1000.0) + 5
+    if USE_CURLIMAGE:
+        try:
+            payload_str = json.dumps(payload)
+            cmd = [
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "host",
+                CURLIMAGE,
+                "-s",
+                "-X",
+                "POST",
+                "-H",
+                "Content-Type: application/json",
+                "--data-binary",
+                payload_str,
+                API_URL,
+            ]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s + 5,
+                check=False,
+            )
+            if result.returncode != 0 or not result.stdout:
+                return None
+            return json.loads(result.stdout)
+        except (subprocess.SubprocessError, json.JSONDecodeError):
+            return None
+
     try:
-        response = requests.post(API_URL, json=payload, timeout=(time_limit/1000.0) + 5)
+        response = requests.post(API_URL, json=payload, timeout=timeout_s)
         if response.status_code == 200:
             return response.json()
-        else:
-            return None
+        return None
     except requests.exceptions.RequestException:
         return None
 
@@ -98,7 +283,18 @@ def main():
     
     top_candidates = []
     
-    log_header = ['restarts', 'time_limit_ms', 'seed', 'waste_percent', 'compactness_score']
+    log_header = [
+        'restarts',
+        'time_limit_ms',
+        'seed',
+        'waste_percent',
+        'compactness_score',
+        'internal_void_mm2',
+        'internal_components',
+        'edge_gap_sum_mm',
+        'grid_mm',
+        'pad_mm'
+    ]
     with open(LOG_FILE, 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(log_header)
@@ -106,7 +302,7 @@ def main():
         print(f"Starting {NUM_TESTS} optimization tests (Mode: GUILLOTINE)...")
         print(f"Target: Find Top {TOP_N_CANDIDATES} candidates by Waste % and Compactness Score.")
         print(f"Logging all runs to {LOG_FILE}")
-        print(f"{'Iter':<5} | {'Restarts':<8} | {'Time':<5} | {'Waste%':<7} | {'CompactScore':<14} | {'Status'}")
+        print(f"{'Iter':<5} | {'Restarts':<8} | {'Time':<5} | {'Waste%':<7} | {'IntVoid':<9} | {'Gaps':<5} | {'Status'}")
         print("-" * 80)
 
         for i in range(1, NUM_TESTS + 1):
@@ -122,10 +318,44 @@ def main():
                 waste = summary['waste_percent']
                 
                 # Use the new compactness score
-                score = calculate_compactness_score(result['solutions'])
+                bbox_void = calculate_compactness_score(result['solutions'])
+                pad_mm = 0.0
+                if USE_PADDED_GAPS:
+                    pad_mm = (template['params']['kerf_mm'] + template['params']['spacing_mm']) / 2.0
+                internal_void, internal_components = calculate_internal_void_metrics(
+                    result['solutions'],
+                    GRID_MM,
+                    pad_mm
+                )
+                edge_gap_sum = 0.0
+                for solution in result['solutions']:
+                    placements = solution.get('placements', [])
+                    metrics = calculate_bbox_metrics(placements)
+                    if not metrics:
+                        continue
+                    trim = solution.get('trim_mm') or {}
+                    usable_w = solution['width_mm'] - trim.get('left', 0.0) - trim.get('right', 0.0)
+                    usable_h = solution['height_mm'] - trim.get('top', 0.0) - trim.get('bottom', 0.0)
+                    edge_gap_sum += (
+                        metrics['min_x'] +
+                        metrics['min_y'] +
+                        max(0.0, usable_w - metrics['max_x']) +
+                        max(0.0, usable_h - metrics['max_y'])
+                    )
                 
                 # Log every run
-                writer.writerow([restarts, time_limit, seed, waste, score])
+                writer.writerow([
+                    restarts,
+                    time_limit,
+                    seed,
+                    waste,
+                    bbox_void,
+                    internal_void,
+                    internal_components,
+                    edge_gap_sum,
+                    GRID_MM,
+                    pad_mm
+                ])
                 
                 # --- Candidate Management ---
                 candidate_data = {
@@ -133,23 +363,32 @@ def main():
                     'time_limit_ms': time_limit,
                     'seed': seed,
                     'waste_percent': waste,
-                    'score': score,
+                    'bbox_void': bbox_void,
+                    'internal_void': internal_void,
+                    'internal_components': internal_components,
+                    'edge_gap_sum': edge_gap_sum,
                     'svg': result['artifacts']['svg']
                 }
 
                 # Add to list and sort
                 top_candidates.append(candidate_data)
-                # Sort by waste (ascending), then by score (ascending)
-                top_candidates.sort(key=lambda c: (c['waste_percent'], c['score']))
+                # Sort by waste, then by internal voids, then by gap structure.
+                top_candidates.sort(key=lambda c: (
+                    c['waste_percent'],
+                    c['internal_void'],
+                    c['internal_components'],
+                    c['edge_gap_sum'],
+                    c['bbox_void']
+                ))
                 
                 # Trim the list if it's too long
                 if len(top_candidates) > TOP_N_CANDIDATES:
                     top_candidates.pop() # Removes the worst candidate
 
                 status_str = f"OK (Waste: {waste:.2f}%)"
-                print(f"{i:<5} | {restarts:<8} | {time_limit:<5} | {waste:<7.2f} | {score:<14.0f} | {status_str}")
+                print(f"{i:<5} | {restarts:<8} | {time_limit:<5} | {waste:<7.2f} | {internal_void:<9.0f} | {internal_components:<5} | {status_str}")
             else:
-                 print(f"{i:<5} | {restarts:<8} | {time_limit:<5} | {'-':<7} | {'-':<14} | {status_str}")
+                 print(f"{i:<5} | {restarts:<8} | {time_limit:<5} | {'-':<7} | {'-':<9} | {'-':<5} | {status_str}")
 
 
     print("\n" + "="*40)
@@ -162,18 +401,28 @@ def main():
 
     print(f"\nTop {len(top_candidates)} Candidates (Sorted by Waste, then Compactness Score):")
     print("-" * 80)
-    print(f"{'Rank':<5} | {'Waste%':<7} | {'CompactScore':<14} | {'Restarts':<8} | {'Time':<5} | {'Seed'}")
+    print(f"{'Rank':<5} | {'Waste%':<7} | {'IntVoid':<9} | {'Gaps':<5} | {'EdgeGap':<8} | {'Restarts':<8} | {'Time':<5} | {'Seed'}")
     print("-" * 80)
 
     for idx, candidate in enumerate(top_candidates):
         rank = idx + 1
         # Save SVG to file
-        svg_filename = f"rank_{rank:02d}_waste_{candidate['waste_percent']:.2f}_compactscore_{candidate['score']:.0f}.svg"
+        svg_filename = (
+            f"rank_{rank:02d}_waste_{candidate['waste_percent']:.2f}"
+            f"_void_{candidate['internal_void']:.0f}"
+            f"_gaps_{candidate['internal_components']}"
+            f".svg"
+        )
         svg_filepath = os.path.join(CANDIDATES_DIR, svg_filename)
         with open(svg_filepath, 'w') as f:
             f.write(candidate['svg'])
 
-        print(f"{rank:<5} | {candidate['waste_percent']:<7.2f} | {candidate['score']:<14.0f} | {candidate['restarts']:<8} | {candidate['time_limit_ms']:<5} | {candidate['seed']}")
+        print(
+            f"{rank:<5} | {candidate['waste_percent']:<7.2f} | "
+            f"{candidate['internal_void']:<9.0f} | {candidate['internal_components']:<5} | "
+            f"{candidate['edge_gap_sum']:<8.1f} | {candidate['restarts']:<8} | "
+            f"{candidate['time_limit_ms']:<5} | {candidate['seed']}"
+        )
 
     print("-" * 80)
     print(f"\nSaved {len(top_candidates)} candidate SVGs to: {CANDIDATES_DIR}")
@@ -182,4 +431,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
