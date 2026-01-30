@@ -88,11 +88,13 @@ Example file: `examples/optimize_request.json`
     The effective gap between parts is `kerf_mm + spacing_mm`.
   - `trim_mm`: Unusable margins around the sheet in mm.
     - `left`, `right`, `top`, `bottom`: Margin sizes in mm.
-  - `time_limit_ms`: Total time budget for optimization in milliseconds.
+  - `time_limit_ms`: Total time budget for optimization in milliseconds. Optional in the request.
     The time is split across restarts; if the per-restart slice drops below ~80 ms,
     the service reduces the actual number of restarts. Recommended starting range:
-    1000–2000 ms for typical cases, higher for large/complex inputs.
-  - `restarts`: Number of optimization restarts (multi-start).
+    1000–2000 ms for typical cases, higher for large/complex inputs. Service default:
+    `DEFAULT_TIME_LIMIT_MS=2000`.
+  - `restarts`: Number of optimization restarts (multi-start). Optional in the request.
+    Service default: `DEFAULT_RESTARTS=10`.
   - `objective`: Optimization goal: `"min_waste"` or `"min_sheets"`.
     With identical stock sizes, both goals typically yield the same number of sheets;
     differences matter when multiple stock sizes are provided.

@@ -188,6 +188,30 @@ async fn optimize_layout_mode_default_nested() {
 }
 
 #[tokio::test]
+async fn optimize_defaults_time_limit_and_restarts() {
+    let config = AppConfig {
+        port: 0,
+        max_body_bytes: 5_242_880,
+        max_instances: 5000,
+        default_time_limit_ms: 2000,
+        default_restarts: 10,
+    };
+    let app = app_with_config(config);
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.remove("time_limit_ms");
+        params.remove("restarts");
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json.pointer("/summary/restarts_used").and_then(Value::as_u64),
+        Some(10)
+    );
+}
+
+#[tokio::test]
 async fn optimize_invalid_trim_returns_422() {
     let app = app_for_test();
     let (status, json) = post_json(&app, "/v1/optimize", INVALID_TRIM_REQUEST).await;

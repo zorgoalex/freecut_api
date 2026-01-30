@@ -73,12 +73,16 @@ pub fn validate_request(req: &OptimizeRequest, limits: &ValidationLimits) -> Res
         return Err(ValidationError::new("trim_mm values must be >= 0"));
     }
 
-    if req.params.time_limit_ms < 100 {
-        return Err(ValidationError::new("time_limit_ms must be >= 100"));
+    if let Some(time_limit_ms) = req.params.time_limit_ms {
+        if time_limit_ms < 100 {
+            return Err(ValidationError::new("time_limit_ms must be >= 100"));
+        }
     }
 
-    if req.params.restarts < 1 {
-        return Err(ValidationError::new("restarts must be >= 1"));
+    if let Some(restarts) = req.params.restarts {
+        if restarts < 1 {
+            return Err(ValidationError::new("restarts must be >= 1"));
+        }
     }
 
     for stock in &req.stock {

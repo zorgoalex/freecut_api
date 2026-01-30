@@ -75,19 +75,29 @@ struct Candidate {
 
 pub async fn optimize_request(
     req: OptimizeRequest,
-    _config: &AppConfig,
+    config: &AppConfig,
 ) -> Result<OptimizeResponse, OptimizeError> {
     let layout_mode = req.params.layout_mode.unwrap_or(LayoutMode::Nested);
     let prepared = prepare_input(&req)?;
 
-    let mut restarts = u64::from(req.params.restarts.max(1));
-    let mut slice_ms = req.params.time_limit_ms / restarts;
+    let time_limit_ms = req
+        .params
+        .time_limit_ms
+        .unwrap_or(config.default_time_limit_ms);
+    let restarts = req
+        .params
+        .restarts
+        .unwrap_or(config.default_restarts)
+        .max(1);
+
+    let mut restarts = u64::from(restarts);
+    let mut slice_ms = time_limit_ms / restarts;
     if slice_ms < MIN_SLICE_MS {
-        restarts = (req.params.time_limit_ms / MIN_SLICE_MS).max(1);
-        slice_ms = req.params.time_limit_ms / restarts;
+        restarts = (time_limit_ms / MIN_SLICE_MS).max(1);
+        slice_ms = time_limit_ms / restarts;
     }
 
-    let overall_limit = req.params.time_limit_ms.saturating_add(1000);
+    let overall_limit = time_limit_ms.saturating_add(1000);
     let start = Instant::now();
 
     let candidate = tokio::time::timeout(Duration::from_millis(overall_limit), async {
