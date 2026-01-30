@@ -30,7 +30,7 @@ Service listens on `0.0.0.0:8080` by default.
 ## Quick Start (Docker)
 ```bash
 docker build -t freecut-mvp .
-docker run --rm -p 8080:8080 freecut-mvp
+docker run --rm -p 8088:8080 freecut-mvp
 ```
 
 ## Health & Docs

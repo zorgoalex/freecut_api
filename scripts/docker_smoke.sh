@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
 
-BASE_URL=${BASE_URL:-"http://127.0.0.1:8080"}
+BASE_URL=${BASE_URL:-http://127.0.0.1:8088}
 CURL_IMAGE=${CURL_IMAGE:-"curlimages/curl:8.6.0"}
 
 printf "Health live: "
