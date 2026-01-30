@@ -203,6 +203,7 @@ def calculate_internal_void_metrics(solutions, grid_mm, pad_mm=0.0, spacing_mm=0
     total_components = 0
     total_exposure_penalty = 0.0
     total_corridor_area = 0.0
+    total_corridor_weighted_area = 0.0
     total_corridor_components = 0
     total_row_gap_area = 0.0
     total_col_gap_area = 0.0
@@ -240,13 +241,25 @@ def calculate_internal_void_metrics(solutions, grid_mm, pad_mm=0.0, spacing_mm=0
         by1 = min(rows - 1, int(math.ceil(bbox['max_y'] / grid_mm)) - 1)
 
         # Penalize exposed part edges that face empty space far from the sheet edge.
+        def corridor_width_mm(r, c):
+            if grid[r][c] != 2:
+                return 0.0
+            return min(row_span[r][c], col_span[r][c]) * grid_mm
+
         def is_wide_void(r, c):
             if grid[r][c] != 2:
                 return False
             if corridor_ok_mm <= 0.0:
                 return True
-            span_cells = min(row_span[r][c], col_span[r][c])
-            return (span_cells * grid_mm) > corridor_ok_mm
+            return corridor_width_mm(r, c) > corridor_ok_mm
+
+        def width_factor(r, c):
+            if corridor_ok_mm <= 0.0:
+                return 1.0
+            width_mm = corridor_width_mm(r, c)
+            if width_mm <= corridor_ok_mm:
+                return 1.0
+            return width_mm / corridor_ok_mm
 
         for r in range(rows):
             for c in range(cols):
@@ -254,17 +267,21 @@ def calculate_internal_void_metrics(solutions, grid_mm, pad_mm=0.0, spacing_mm=0
                     continue
                 # Neighbor checks
                 if r > 0 and is_wide_void(r - 1, c):
+                    factor = width_factor(r - 1, c)
                     d = distance_to_edge_mm(r - 1, c, rows, cols, grid_mm)
-                    total_exposure_penalty += (d ** EDGE_PENALTY_POW) * grid_mm
+                    total_exposure_penalty += (d ** EDGE_PENALTY_POW) * grid_mm * factor
                 if r + 1 < rows and is_wide_void(r + 1, c):
+                    factor = width_factor(r + 1, c)
                     d = distance_to_edge_mm(r + 1, c, rows, cols, grid_mm)
-                    total_exposure_penalty += (d ** EDGE_PENALTY_POW) * grid_mm
+                    total_exposure_penalty += (d ** EDGE_PENALTY_POW) * grid_mm * factor
                 if c > 0 and is_wide_void(r, c - 1):
+                    factor = width_factor(r, c - 1)
                     d = distance_to_edge_mm(r, c - 1, rows, cols, grid_mm)
-                    total_exposure_penalty += (d ** EDGE_PENALTY_POW) * grid_mm
+                    total_exposure_penalty += (d ** EDGE_PENALTY_POW) * grid_mm * factor
                 if c + 1 < cols and is_wide_void(r, c + 1):
+                    factor = width_factor(r, c + 1)
                     d = distance_to_edge_mm(r, c + 1, rows, cols, grid_mm)
-                    total_exposure_penalty += (d ** EDGE_PENALTY_POW) * grid_mm
+                    total_exposure_penalty += (d ** EDGE_PENALTY_POW) * grid_mm * factor
 
         internal_cells = 0
         for r in range(rows):
@@ -301,6 +318,8 @@ def calculate_internal_void_metrics(solutions, grid_mm, pad_mm=0.0, spacing_mm=0
                     while q:
                         cr, cc = q.popleft()
                         corridor_cells += 1
+                        factor = width_factor(cr, cc)
+                        total_corridor_weighted_area += (grid_mm * grid_mm) * (factor * factor)
                         if cr > by0 and is_wide_void(cr - 1, cc):
                             grid[cr - 1][cc] = 4
                             q.append((cr - 1, cc))
@@ -362,6 +381,7 @@ def calculate_internal_void_metrics(solutions, grid_mm, pad_mm=0.0, spacing_mm=0
         total_corridor_components,
         total_row_gap_area,
         total_col_gap_area,
+        total_corridor_weighted_area,
     )
 
 
@@ -444,6 +464,7 @@ def main():
         'internal_void_mm2',
         'internal_components',
         'corridor_void_mm2',
+        'corridor_weighted_mm2',
         'corridor_components',
         'row_gap_mm2',
         'col_gap_mm2',
@@ -459,7 +480,7 @@ def main():
         writer.writerow(log_header)
 
         print(f"Starting {NUM_TESTS} optimization tests (Mode: GUILLOTINE)...")
-        print(f"Target: Find Top {TOP_N_CANDIDATES} candidates by Waste %, internal voids, and strip gaps.")
+        print(f"Target: Find Top {TOP_N_CANDIDATES} candidates by Waste %, internal voids, and corridor-aware gaps.")
         print(f"Logging all runs to {LOG_FILE}")
         print(f"{'Iter':<5} | {'Restarts':<8} | {'Time':<5} | {'Waste%':<7} | {'IntVoid':<9} | {'RowGap':<9} | {'ColGap':<9} | {'Status'}")
         print("-" * 80)
@@ -481,7 +502,7 @@ def main():
                 pad_mm = 0.0
                 if USE_PADDED_GAPS:
                     pad_mm = (template['params']['kerf_mm'] + template['params']['spacing_mm']) / 2.0
-                internal_void, internal_components, exposure_penalty, corridor_void, corridor_components, row_gap_area, col_gap_area = calculate_internal_void_metrics(
+                internal_void, internal_components, exposure_penalty, corridor_void, corridor_components, row_gap_area, col_gap_area, corridor_weighted_area = calculate_internal_void_metrics(
                     result['solutions'],
                     GRID_MM,
                     pad_mm,
@@ -515,6 +536,7 @@ def main():
                     internal_void,
                     internal_components,
                     corridor_void,
+                    corridor_weighted_area,
                     corridor_components,
                     row_gap_area,
                     col_gap_area,
@@ -536,6 +558,7 @@ def main():
                     'internal_void': internal_void,
                     'internal_components': internal_components,
                     'corridor_void': corridor_void,
+                    'corridor_weighted_area': corridor_weighted_area,
                     'corridor_components': corridor_components,
                     'row_gap_area': row_gap_area,
                     'col_gap_area': col_gap_area,
@@ -547,14 +570,15 @@ def main():
 
                 # Add to list and sort
                 top_candidates.append(candidate_data)
-                # Sort by waste, internal voids, row/col gaps, corridor voids, then exposure.
+                # Sort by waste, internal voids, corridor-weighted voids, then gaps.
                 top_candidates.sort(key=lambda c: (
                     c['waste_percent'],
                     c['internal_void'],
-                    c['strip_gap_area'],
+                    c['corridor_weighted_area'],
                     c['corridor_void'],
-                    c['corridor_components'],
                     c['exposure_penalty'],
+                    c['strip_gap_area'],
+                    c['corridor_components'],
                     c['internal_components'],
                     c['edge_gap_sum'],
                     c['bbox_void']
@@ -578,7 +602,7 @@ def main():
         print("No successful optimization runs found.")
         return
 
-    print(f"\nTop {len(top_candidates)} Candidates (Sorted by Waste, then Compactness Score):")
+    print(f"\nTop {len(top_candidates)} Candidates (Sorted by Waste, then corridor-aware score):")
     print("-" * 80)
     print(f"{'Rank':<5} | {'Waste%':<7} | {'IntVoid':<9} | {'RowGap':<9} | {'ColGap':<9} | {'CorrVoid':<9} | {'Restarts':<8} | {'Time':<5} | {'Seed'}")
     print("-" * 80)
