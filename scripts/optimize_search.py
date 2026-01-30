@@ -242,7 +242,7 @@ def calculate_internal_void_metrics(solutions, grid_mm, pad_mm=0.0, spacing_mm=0
 
         # Penalize exposed part edges that face empty space far from the sheet edge.
         def corridor_width_mm(r, c):
-            if grid[r][c] != 2:
+            if row_span[r][c] == 0 or col_span[r][c] == 0:
                 return 0.0
             return min(row_span[r][c], col_span[r][c]) * grid_mm
 
