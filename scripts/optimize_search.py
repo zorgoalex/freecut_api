@@ -197,7 +197,7 @@ def distance_to_edge_mm(r, c, rows, cols, grid_mm):
 
 def calculate_internal_void_metrics(solutions, grid_mm, pad_mm=0.0, spacing_mm=0.0, corridor_ok_mult=3.0):
     if not solutions:
-        return float('inf'), float('inf')
+        return (float('inf'),) * 11
 
     total_internal_area = 0.0
     total_components = 0
@@ -208,6 +208,14 @@ def calculate_internal_void_metrics(solutions, grid_mm, pad_mm=0.0, spacing_mm=0
     total_row_gap_area = 0.0
     total_col_gap_area = 0.0
     corridor_ok_mm = max(0.0, spacing_mm * corridor_ok_mult)
+
+    # New penetration depth metrics
+    global_max_penetration = 0
+    total_penetration_volume = 0.0
+    total_penetration_weighted = 0.0
+
+    # Occupied region perimeter (compactness metric)
+    total_occupied_perimeter = 0
 
     for solution in solutions:
         placements = solution.get('placements', [])
@@ -335,6 +343,60 @@ def calculate_internal_void_metrics(solutions, grid_mm, pad_mm=0.0, spacing_mm=0
 
         total_corridor_area += corridor_cells * (grid_mm * grid_mm)
 
+        # --- Corridor Penetration Depth (BFS from bbox edges) ---
+        # Measures how deep corridors penetrate into the cluster
+        # Note: Must check for void cells (2) OR corridor cells (4) since corridors
+        # are re-marked after flood_external_voids
+        penetration = [[float('inf')] * cols for _ in range(rows)]
+        pen_queue = deque()
+
+        def is_external_void(r, c):
+            return grid[r][c] in (2, 4)  # External void or corridor
+
+        # Seed bbox boundary cells (external voids on bbox edge start at depth 0)
+        # Top and bottom edges of bbox
+        for c in range(bx0, bx1 + 1):
+            if by0 < rows and is_external_void(by0, c):
+                if penetration[by0][c] == float('inf'):
+                    penetration[by0][c] = 0
+                    pen_queue.append((by0, c))
+            if by1 < rows and by1 != by0 and is_external_void(by1, c):
+                if penetration[by1][c] == float('inf'):
+                    penetration[by1][c] = 0
+                    pen_queue.append((by1, c))
+        # Left and right edges of bbox
+        for r in range(by0, by1 + 1):
+            if bx0 < cols and is_external_void(r, bx0):
+                if penetration[r][bx0] == float('inf'):
+                    penetration[r][bx0] = 0
+                    pen_queue.append((r, bx0))
+            if bx1 < cols and bx1 != bx0 and is_external_void(r, bx1):
+                if penetration[r][bx1] == float('inf'):
+                    penetration[r][bx1] = 0
+                    pen_queue.append((r, bx1))
+
+        # BFS to propagate depth into bbox interior
+        while pen_queue:
+            r, c = pen_queue.popleft()
+            current_depth = penetration[r][c]
+            for nr, nc in [(r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)]:
+                if by0 <= nr <= by1 and bx0 <= nc <= bx1:
+                    if is_external_void(nr, nc) and penetration[nr][nc] == float('inf'):
+                        penetration[nr][nc] = current_depth + 1
+                        pen_queue.append((nr, nc))
+
+        # Calculate penetration metrics
+        for r in range(by0, by1 + 1):
+            for c in range(bx0, bx1 + 1):
+                if is_external_void(r, c) and penetration[r][c] != float('inf'):
+                    d = penetration[r][c]
+                    if d > global_max_penetration:
+                        global_max_penetration = d
+                    total_penetration_volume += d
+                    # Weight by corridor width for combined metric
+                    w = width_factor(r, c)
+                    total_penetration_weighted += d * w
+
         row_gap_cells = 0
         for r in range(rows):
             min_c = None
@@ -370,8 +432,35 @@ def calculate_internal_void_metrics(solutions, grid_mm, pad_mm=0.0, spacing_mm=0
         total_row_gap_area += row_gap_cells * (grid_mm * grid_mm)
         total_col_gap_area += col_gap_cells * (grid_mm * grid_mm)
 
+        # --- Occupied Region Perimeter (Compactness Metric) ---
+        # Count boundary edges between occupied cells (1) and non-occupied cells
+        # Lower perimeter = more compact rectangular shape = better
+        perimeter_edges = 0
+        for r in range(rows):
+            for c in range(cols):
+                if grid[r][c] == 1:  # Occupied cell
+                    # Check 4 neighbors - each non-occupied neighbor adds an edge
+                    # Top neighbor
+                    if r == 0 or grid[r - 1][c] != 1:
+                        perimeter_edges += 1
+                    # Bottom neighbor
+                    if r == rows - 1 or grid[r + 1][c] != 1:
+                        perimeter_edges += 1
+                    # Left neighbor
+                    if c == 0 or grid[r][c - 1] != 1:
+                        perimeter_edges += 1
+                    # Right neighbor
+                    if c == cols - 1 or grid[r][c + 1] != 1:
+                        perimeter_edges += 1
+        total_occupied_perimeter += perimeter_edges * grid_mm
+
     if total_internal_area == 0.0:
         total_internal_area = 0.0
+
+    # Convert penetration metrics to mm
+    max_penetration_mm = global_max_penetration * grid_mm
+    penetration_volume_mm3 = total_penetration_volume * (grid_mm ** 3)
+    penetration_weighted = total_penetration_weighted * (grid_mm ** 2)
 
     return (
         total_internal_area,
@@ -382,6 +471,10 @@ def calculate_internal_void_metrics(solutions, grid_mm, pad_mm=0.0, spacing_mm=0
         total_row_gap_area,
         total_col_gap_area,
         total_corridor_weighted_area,
+        max_penetration_mm,
+        penetration_volume_mm3,
+        penetration_weighted,
+        total_occupied_perimeter,
     )
 
 
@@ -470,6 +563,9 @@ def main():
         'col_gap_mm2',
         'edge_gap_sum_mm',
         'exposure_penalty',
+        'max_penetration_mm',
+        'penetration_volume_mm3',
+        'penetration_weighted',
         'grid_mm',
         'pad_mm',
         'spacing_mm',
@@ -480,10 +576,10 @@ def main():
         writer.writerow(log_header)
 
         print(f"Starting {NUM_TESTS} optimization tests (Mode: GUILLOTINE)...")
-        print(f"Target: Find Top {TOP_N_CANDIDATES} candidates by Waste %, internal voids, and corridor-aware gaps.")
+        print(f"Target: Find Top {TOP_N_CANDIDATES} candidates by Waste %, strip_gap (solid block), corridor_components.")
         print(f"Logging all runs to {LOG_FILE}")
-        print(f"{'Iter':<5} | {'Restarts':<8} | {'Time':<5} | {'Waste%':<7} | {'IntVoid':<9} | {'RowGap':<9} | {'ColGap':<9} | {'Status'}")
-        print("-" * 80)
+        print(f"{'Iter':<5} | {'Restarts':<8} | {'Time':<5} | {'Waste%':<7} | {'Perimeter':<10} | {'Comp':<5} | {'CorrVoid':<10} | {'Status'}")
+        print("-" * 95)
 
         for i in range(1, NUM_TESTS + 1):
             restarts = random.randint(50, 800)
@@ -502,7 +598,20 @@ def main():
                 pad_mm = 0.0
                 if USE_PADDED_GAPS:
                     pad_mm = (template['params']['kerf_mm'] + template['params']['spacing_mm']) / 2.0
-                internal_void, internal_components, exposure_penalty, corridor_void, corridor_components, row_gap_area, col_gap_area, corridor_weighted_area = calculate_internal_void_metrics(
+                (
+                    internal_void,
+                    internal_components,
+                    exposure_penalty,
+                    corridor_void,
+                    corridor_components,
+                    row_gap_area,
+                    col_gap_area,
+                    corridor_weighted_area,
+                    max_penetration_mm,
+                    penetration_volume_mm3,
+                    penetration_weighted,
+                    occupied_perimeter,
+                ) = calculate_internal_void_metrics(
                     result['solutions'],
                     GRID_MM,
                     pad_mm,
@@ -542,6 +651,9 @@ def main():
                     col_gap_area,
                     edge_gap_sum,
                     exposure_penalty,
+                    max_penetration_mm,
+                    penetration_volume_mm3,
+                    penetration_weighted,
                     GRID_MM,
                     pad_mm,
                     spacing_mm,
@@ -565,22 +677,28 @@ def main():
                     'strip_gap_area': strip_gap_area,
                     'edge_gap_sum': edge_gap_sum,
                     'exposure_penalty': exposure_penalty,
+                    'max_penetration_mm': max_penetration_mm,
+                    'penetration_volume_mm3': penetration_volume_mm3,
+                    'penetration_weighted': penetration_weighted,
+                    'occupied_perimeter': occupied_perimeter,
                     'svg': result['artifacts']['svg']
                 }
 
                 # Add to list and sort
                 top_candidates.append(candidate_data)
-                # Sort by waste, internal voids, corridor-weighted voids, then gaps.
+                # Sort priority based on PERIMETER compactness metric:
+                # Lower perimeter = more compact rectangular shape = better
+                # A perfect rectangle has perimeter = 2*(W+H)
+                # Any indentations/protrusions increase perimeter
                 top_candidates.sort(key=lambda c: (
-                    c['waste_percent'],
-                    c['internal_void'],
-                    c['corridor_weighted_area'],
-                    c['corridor_void'],
+                    c['waste_percent'],               # 1. Lowest waste
+                    c['internal_void'],               # 2. No internal holes
+                    c['occupied_perimeter'],          # 3. PERIMETER: lower = more compact
+                    c['corridor_components'],         # 4. Fewer void regions
+                    c['corridor_void'],               # 5. Less void area
+                    c['strip_gap_area'],              # 6. Strip gaps
+                    c['max_penetration_mm'],          # 7. Penetration depth
                     c['exposure_penalty'],
-                    c['strip_gap_area'],
-                    c['corridor_components'],
-                    c['internal_components'],
-                    c['edge_gap_sum'],
                     c['bbox_void']
                 ))
                 
@@ -589,9 +707,9 @@ def main():
                     top_candidates.pop() # Removes the worst candidate
 
                 status_str = f"OK (Waste: {waste:.2f}%)"
-                print(f"{i:<5} | {restarts:<8} | {time_limit:<5} | {waste:<7.2f} | {internal_void:<9.0f} | {row_gap_area:<9.0f} | {col_gap_area:<9.0f} | {status_str}")
+                print(f"{i:<5} | {restarts:<8} | {time_limit:<5} | {waste:<7.2f} | {occupied_perimeter:<10.0f} | {corridor_components:<5} | {corridor_void:<10.0f} | {status_str}")
             else:
-                 print(f"{i:<5} | {restarts:<8} | {time_limit:<5} | {'-':<7} | {'-':<9} | {'-':<9} | {'-':<9} | {status_str}")
+                 print(f"{i:<5} | {restarts:<8} | {time_limit:<5} | {'-':<7} | {'-':<10} | {'-':<5} | {'-':<10} | {status_str}")
 
 
     print("\n" + "="*40)
@@ -602,18 +720,18 @@ def main():
         print("No successful optimization runs found.")
         return
 
-    print(f"\nTop {len(top_candidates)} Candidates (Sorted by Waste, then corridor-aware score):")
-    print("-" * 80)
-    print(f"{'Rank':<5} | {'Waste%':<7} | {'IntVoid':<9} | {'RowGap':<9} | {'ColGap':<9} | {'CorrVoid':<9} | {'Restarts':<8} | {'Time':<5} | {'Seed'}")
-    print("-" * 80)
+    print(f"\nTop {len(top_candidates)} Candidates (Sorted by Waste, IntVoid, Perimeter, Components, CorrVoid):")
+    print("-" * 125)
+    print(f"{'Rank':<5} | {'Waste%':<7} | {'Perimeter':<10} | {'Comp':<5} | {'CorrVoid':<10} | {'StripGap':<10} | {'Restarts':<8} | {'Time':<6} | {'Seed'}")
+    print("-" * 125)
 
     for idx, candidate in enumerate(top_candidates):
         rank = idx + 1
-        # Save SVG to file
+        # Save SVG with perimeter and components in filename
         svg_filename = (
             f"rank_{rank:02d}_waste_{candidate['waste_percent']:.2f}"
-            f"_void_{candidate['internal_void']:.0f}"
-            f"_gaps_{candidate['internal_components']}"
+            f"_perim_{candidate['occupied_perimeter']:.0f}"
+            f"_comp_{candidate['corridor_components']}"
             f".svg"
         )
         svg_filepath = os.path.join(CANDIDATES_DIR, svg_filename)
@@ -622,9 +740,9 @@ def main():
 
         print(
             f"{rank:<5} | {candidate['waste_percent']:<7.2f} | "
-            f"{candidate['internal_void']:<9.0f} | {candidate['row_gap_area']:<9.0f} | "
-            f"{candidate['col_gap_area']:<9.0f} | {candidate['corridor_void']:<9.0f} | "
-            f"{candidate['restarts']:<8} | {candidate['time_limit_ms']:<5} | {candidate['seed']}"
+            f"{candidate['occupied_perimeter']:<10.0f} | {candidate['corridor_components']:<5} | "
+            f"{candidate['corridor_void']:<10.0f} | {candidate['strip_gap_area']:<10.0f} | "
+            f"{candidate['restarts']:<8} | {candidate['time_limit_ms']:<6} | {candidate['seed']}"
         )
 
     print("-" * 80)
