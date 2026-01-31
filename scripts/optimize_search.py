@@ -39,6 +39,11 @@ USE_CURLIMAGE = _env_bool("FREECUT_USE_CURLIMAGE", False)
 EDGE_PENALTY_POW = _env_float("FREECUT_EDGE_PENALTY_POW", 1.0)
 CORRIDOR_OK_MULT = _env_float("FREECUT_CORRIDOR_OK_MULT", 3.0)
 
+# Hypothesis testing mode: seed vs time_limit
+HYPOTHESIS_MODE = _env_bool("FREECUT_HYPOTHESIS_MODE", False)
+HYPOTHESIS_SEEDS_COUNT = _env_int("FREECUT_HYPOTHESIS_SEEDS", 100)
+HYPOTHESIS_TIME_LIMITS = [5000, 10000, 20000]  # ms
+
 def load_request_template(filepath):
     with open(filepath, 'r') as f:
         return json.load(f)
@@ -529,7 +534,152 @@ def run_optimization(template, restarts, time_limit, seed):
     except requests.exceptions.RequestException:
         return None
 
+def run_hypothesis_test():
+    """
+    Test hypothesis: quality depends more on seed than on time_limit/restarts.
+    Run same seeds across 3 time_limit values, compare quality distributions.
+    """
+    if not os.path.exists(INPUT_FILE):
+        print(f"Error: Input file {INPUT_FILE} not found.")
+        return
+
+    print("=" * 60)
+    print("HYPOTHESIS TEST: Seed vs Time Limit")
+    print("=" * 60)
+    print(f"Seeds count: {HYPOTHESIS_SEEDS_COUNT}")
+    print(f"Time limits: {HYPOTHESIS_TIME_LIMITS} ms")
+    print(f"Restarts = time_limit / 80 (MIN_SLICE)")
+    print("=" * 60)
+
+    template = load_request_template(INPUT_FILE)
+    spacing_mm = float(template['params'].get('spacing_mm', 0.0))
+    pad_mm = 0.0
+    if USE_PADDED_GAPS:
+        pad_mm = (template['params']['kerf_mm'] + template['params']['spacing_mm']) / 2.0
+
+    # Generate fixed seeds
+    random.seed(42)  # Reproducible seed generation
+    fixed_seeds = [random.randint(1, 10000000) for _ in range(HYPOTHESIS_SEEDS_COUNT)]
+
+    # Results storage: {time_limit: [(seed, perimeter, corridor_void, waste), ...]}
+    results = {tl: [] for tl in HYPOTHESIS_TIME_LIMITS}
+
+    log_file = LOG_FILE.replace('.csv', '_hypothesis.csv')
+    with open(log_file, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            'time_limit_ms', 'restarts', 'seed',
+            'waste_percent', 'occupied_perimeter', 'corridor_void',
+            'corridor_components', 'strip_gap', 'internal_void'
+        ])
+
+        for time_limit in HYPOTHESIS_TIME_LIMITS:
+            restarts = time_limit // 80
+            print(f"\n--- Series: time_limit={time_limit}ms, restarts={restarts} ---")
+            print(f"{'#':<4} | {'Seed':<10} | {'Perim':<8} | {'CorrVoid':<10} | {'Waste%':<7}")
+            print("-" * 50)
+
+            for idx, seed in enumerate(fixed_seeds):
+                result = run_optimization(template, restarts, time_limit, seed)
+
+                if result and result.get('status') == 'ok':
+                    (
+                        internal_void, _, _, corridor_void, corridor_components,
+                        row_gap, col_gap, _, _, _, _, occupied_perimeter,
+                    ) = calculate_internal_void_metrics(
+                        result['solutions'], GRID_MM, pad_mm,
+                        spacing_mm=spacing_mm, corridor_ok_mult=CORRIDOR_OK_MULT
+                    )
+                    waste = result['summary']['waste_percent']
+                    strip_gap = row_gap + col_gap
+
+                    results[time_limit].append({
+                        'seed': seed,
+                        'perimeter': occupied_perimeter,
+                        'corridor_void': corridor_void,
+                        'corridor_components': corridor_components,
+                        'strip_gap': strip_gap,
+                        'internal_void': internal_void,
+                        'waste': waste,
+                    })
+
+                    writer.writerow([
+                        time_limit, restarts, seed, waste,
+                        occupied_perimeter, corridor_void,
+                        corridor_components, strip_gap, internal_void
+                    ])
+
+                    print(f"{idx+1:<4} | {seed:<10} | {occupied_perimeter:<8.0f} | {corridor_void:<10.0f} | {waste:<7.2f}")
+                else:
+                    print(f"{idx+1:<4} | {seed:<10} | FAILED")
+
+    # Analyze results
+    print("\n" + "=" * 60)
+    print("ANALYSIS: Distribution Comparison")
+    print("=" * 60)
+
+    for time_limit in HYPOTHESIS_TIME_LIMITS:
+        data = results[time_limit]
+        if not data:
+            print(f"\ntime_limit={time_limit}ms: No successful runs")
+            continue
+
+        perimeters = [d['perimeter'] for d in data]
+        corridors = [d['corridor_void'] for d in data]
+
+        print(f"\ntime_limit={time_limit}ms (restarts={time_limit // 80}):")
+        print(f"  Success rate: {len(data)}/{HYPOTHESIS_SEEDS_COUNT} ({100*len(data)/HYPOTHESIS_SEEDS_COUNT:.1f}%)")
+        print(f"  Perimeter:    min={min(perimeters):.0f}, max={max(perimeters):.0f}, "
+              f"mean={sum(perimeters)/len(perimeters):.0f}, median={sorted(perimeters)[len(perimeters)//2]:.0f}")
+        print(f"  CorridorVoid: min={min(corridors):.0f}, max={max(corridors):.0f}, "
+              f"mean={sum(corridors)/len(corridors):.0f}, median={sorted(corridors)[len(corridors)//2]:.0f}")
+
+    # Cross-series comparison by seed
+    print("\n" + "=" * 60)
+    print("CROSS-SERIES COMPARISON (same seed, different time_limit)")
+    print("=" * 60)
+
+    # Build lookup by seed
+    by_seed = {}
+    for time_limit in HYPOTHESIS_TIME_LIMITS:
+        for d in results[time_limit]:
+            seed = d['seed']
+            if seed not in by_seed:
+                by_seed[seed] = {}
+            by_seed[seed][time_limit] = d
+
+    # Count how often ranking changes
+    rank_changes = 0
+    consistent_best = {tl: 0 for tl in HYPOTHESIS_TIME_LIMITS}
+
+    for seed, tl_data in by_seed.items():
+        if len(tl_data) < len(HYPOTHESIS_TIME_LIMITS):
+            continue  # Skip if not all series succeeded
+
+        # Find best time_limit for this seed (lowest perimeter)
+        best_tl = min(tl_data.keys(), key=lambda t: tl_data[t]['perimeter'])
+        consistent_best[best_tl] += 1
+
+        # Check if order varies
+        perims = [(tl, tl_data[tl]['perimeter']) for tl in HYPOTHESIS_TIME_LIMITS]
+        if perims[0][1] != perims[1][1] or perims[1][1] != perims[2][1]:
+            rank_changes += 1
+
+    total_complete = sum(1 for s, d in by_seed.items() if len(d) == len(HYPOTHESIS_TIME_LIMITS))
+    print(f"\nSeeds with all 3 series successful: {total_complete}/{HYPOTHESIS_SEEDS_COUNT}")
+    print(f"Seeds where perimeter varies by time_limit: {rank_changes}/{total_complete}")
+    print(f"\nBest time_limit per seed distribution:")
+    for tl in HYPOTHESIS_TIME_LIMITS:
+        print(f"  {tl}ms: {consistent_best[tl]} seeds ({100*consistent_best[tl]/max(1,total_complete):.1f}%)")
+
+    print(f"\nFull log saved to: {log_file}")
+
+
 def main():
+    if HYPOTHESIS_MODE:
+        run_hypothesis_test()
+        return
+
     if not os.path.exists(INPUT_FILE):
         print(f"Error: Input file {INPUT_FILE} not found.")
         return
