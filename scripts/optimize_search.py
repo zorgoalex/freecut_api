@@ -44,6 +44,11 @@ HYPOTHESIS_MODE = _env_bool("FREECUT_HYPOTHESIS_MODE", False)
 HYPOTHESIS_SEEDS_COUNT = _env_int("FREECUT_HYPOTHESIS_SEEDS", 100)
 HYPOTHESIS_TIME_LIMITS = [5000, 10000, 20000]  # ms
 
+# Reverse test: fixed params, vary seed only
+REVERSE_TEST_MODE = _env_bool("FREECUT_REVERSE_TEST", False)
+REVERSE_TIME_LIMIT = _env_int("FREECUT_REVERSE_TIME_LIMIT", 5000)
+REVERSE_RESTARTS = _env_int("FREECUT_REVERSE_RESTARTS", 62)  # or auto: time_limit / 80
+
 def load_request_template(filepath):
     with open(filepath, 'r') as f:
         return json.load(f)
@@ -675,7 +680,146 @@ def run_hypothesis_test():
     print(f"\nFull log saved to: {log_file}")
 
 
+def run_reverse_test():
+    """
+    Reverse test: fixed time_limit and restarts, vary only seed.
+    Shows whether different seeds produce different layouts with identical params.
+    """
+    if not os.path.exists(INPUT_FILE):
+        print(f"Error: Input file {INPUT_FILE} not found.")
+        return
+
+    time_limit = REVERSE_TIME_LIMIT
+    restarts = REVERSE_RESTARTS if REVERSE_RESTARTS > 0 else time_limit // 80
+
+    print("=" * 60)
+    print("REVERSE TEST: Fixed Params, Vary Seed Only")
+    print("=" * 60)
+    print(f"Seeds count: {HYPOTHESIS_SEEDS_COUNT}")
+    print(f"Fixed time_limit: {time_limit} ms")
+    print(f"Fixed restarts: {restarts}")
+    print("=" * 60)
+
+    template = load_request_template(INPUT_FILE)
+    spacing_mm = float(template['params'].get('spacing_mm', 0.0))
+    pad_mm = 0.0
+    if USE_PADDED_GAPS:
+        pad_mm = (template['params']['kerf_mm'] + template['params']['spacing_mm']) / 2.0
+
+    # Generate random seeds
+    random.seed(42)
+    seeds = [random.randint(1, 10000000) for _ in range(HYPOTHESIS_SEEDS_COUNT)]
+
+    results = []
+
+    log_file = LOG_FILE.replace('.csv', '_reverse_test.csv')
+    with open(log_file, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            'seed', 'time_limit_ms', 'restarts',
+            'waste_percent', 'occupied_perimeter', 'corridor_void',
+            'corridor_components', 'strip_gap', 'internal_void'
+        ])
+
+        print(f"\n{'#':<4} | {'Seed':<10} | {'Perim':<8} | {'CorrVoid':<10} | {'Comp':<5} | {'Waste%':<7}")
+        print("-" * 60)
+
+        for idx, seed in enumerate(seeds):
+            result = run_optimization(template, restarts, time_limit, seed)
+
+            if result and result.get('status') == 'ok':
+                (
+                    internal_void, _, _, corridor_void, corridor_components,
+                    row_gap, col_gap, _, _, _, _, occupied_perimeter,
+                ) = calculate_internal_void_metrics(
+                    result['solutions'], GRID_MM, pad_mm,
+                    spacing_mm=spacing_mm, corridor_ok_mult=CORRIDOR_OK_MULT
+                )
+                waste = result['summary']['waste_percent']
+                strip_gap = row_gap + col_gap
+
+                results.append({
+                    'seed': seed,
+                    'perimeter': occupied_perimeter,
+                    'corridor_void': corridor_void,
+                    'corridor_components': corridor_components,
+                    'strip_gap': strip_gap,
+                    'internal_void': internal_void,
+                    'waste': waste,
+                })
+
+                writer.writerow([
+                    seed, time_limit, restarts, waste,
+                    occupied_perimeter, corridor_void,
+                    corridor_components, strip_gap, internal_void
+                ])
+
+                print(f"{idx+1:<4} | {seed:<10} | {occupied_perimeter:<8.0f} | {corridor_void:<10.0f} | {corridor_components:<5} | {waste:<7.2f}")
+            else:
+                print(f"{idx+1:<4} | {seed:<10} | FAILED")
+
+    # Analyze results
+    print("\n" + "=" * 60)
+    print("ANALYSIS: Seed Variation with Fixed Params")
+    print("=" * 60)
+
+    if not results:
+        print("No successful runs")
+        return
+
+    perimeters = [r['perimeter'] for r in results]
+    corridors = [r['corridor_void'] for r in results]
+    components = [r['corridor_components'] for r in results]
+    wastes = [r['waste'] for r in results]
+
+    # Count unique values
+    unique_perimeters = len(set(perimeters))
+    unique_corridors = len(set(corridors))
+    unique_components = len(set(components))
+    unique_wastes = len(set(wastes))
+
+    print(f"\nTotal successful runs: {len(results)}/{HYPOTHESIS_SEEDS_COUNT}")
+    print(f"\nUnique values:")
+    print(f"  Perimeter:    {unique_perimeters} unique out of {len(results)} ({100*unique_perimeters/len(results):.1f}%)")
+    print(f"  CorridorVoid: {unique_corridors} unique out of {len(results)} ({100*unique_corridors/len(results):.1f}%)")
+    print(f"  Components:   {unique_components} unique out of {len(results)}")
+    print(f"  Waste%:       {unique_wastes} unique out of {len(results)}")
+
+    print(f"\nPerimeter distribution:")
+    print(f"  min={min(perimeters):.0f}, max={max(perimeters):.0f}")
+    print(f"  mean={sum(perimeters)/len(perimeters):.0f}, median={sorted(perimeters)[len(perimeters)//2]:.0f}")
+    print(f"  range={max(perimeters)-min(perimeters):.0f} ({100*(max(perimeters)-min(perimeters))/min(perimeters):.1f}% spread)")
+
+    print(f"\nCorridorVoid distribution:")
+    print(f"  min={min(corridors):.0f}, max={max(corridors):.0f}")
+    print(f"  mean={sum(corridors)/len(corridors):.0f}, median={sorted(corridors)[len(corridors)//2]:.0f}")
+    print(f"  range={max(corridors)-min(corridors):.0f} ({100*(max(corridors)-min(corridors))/min(corridors):.1f}% spread)")
+
+    print(f"\nComponents distribution:")
+    from collections import Counter
+    comp_counts = Counter(components)
+    for comp, count in sorted(comp_counts.items()):
+        print(f"  {comp} components: {count} layouts ({100*count/len(results):.1f}%)")
+
+    # Top 5 best by perimeter
+    sorted_results = sorted(results, key=lambda r: (r['perimeter'], r['corridor_void']))
+    print(f"\nTop 5 best layouts (by perimeter):")
+    for i, r in enumerate(sorted_results[:5]):
+        print(f"  {i+1}. seed={r['seed']}, perim={r['perimeter']:.0f}, corr={r['corridor_void']:.0f}, comp={r['corridor_components']}")
+
+    # Top 5 worst by perimeter
+    print(f"\nTop 5 worst layouts (by perimeter):")
+    for i, r in enumerate(sorted_results[-5:]):
+        print(f"  {i+1}. seed={r['seed']}, perim={r['perimeter']:.0f}, corr={r['corridor_void']:.0f}, comp={r['corridor_components']}")
+
+    print(f"\nFull log saved to: {log_file}")
+
+
 def main():
+    if REVERSE_TEST_MODE:
+        run_reverse_test()
+        return
+
     if HYPOTHESIS_MODE:
         run_hypothesis_test()
         return
