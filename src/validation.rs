@@ -104,14 +104,17 @@ pub fn validate_request(req: &OptimizeRequest, limits: &ValidationLimits) -> Res
 
     for item in &req.items {
         validate_item(item)?;
-        if !item_fits_any_stock(item, &req.params.trim_mm, &req.stock) {
-            return Err(ValidationError::new("item does not fit any stock with trim").with_details(
-                serde_json::json!({"item_id": item.id}),
-            ));
-        }
+        // Note: items that don't fit are handled in optimizer (returned as unplaced_items)
+        // We don't reject the whole request here
     }
 
     Ok(())
+}
+
+/// Check if an item fits any stock (considering trim, gap, and rotation)
+/// gap_mm = kerf_mm + spacing_mm (space needed around the item for cutting)
+pub fn item_fits_any_stock_public(item: &Item, trim: &Trim, gap_mm: f64, stock: &[StockItem]) -> bool {
+    stock.iter().any(|sheet| item_fits_stock_with_gap(item, trim, gap_mm, sheet))
 }
 
 fn validate_stock(stock: &StockItem) -> Result<(), ValidationError> {
@@ -148,16 +151,35 @@ fn item_fits_any_stock(item: &Item, trim: &Trim, stock: &[StockItem]) -> bool {
 }
 
 fn item_fits_stock(item: &Item, trim: &Trim, stock: &StockItem) -> bool {
+    item_fits_stock_with_gap(item, trim, 0.0, stock)
+}
+
+/// Check if item fits stock considering trim, gap (kerf+spacing), and rotation
+fn item_fits_stock_with_gap(item: &Item, trim: &Trim, gap_mm: f64, stock: &StockItem) -> bool {
     let usable_w = stock.width_mm - trim.left - trim.right;
     let usable_h = stock.height_mm - trim.top - trim.bottom;
     if usable_w <= 0.0 || usable_h <= 0.0 {
         return false;
     }
 
-    if item.width_mm <= usable_w && item.height_mm <= usable_h {
+    // Item needs gap for the cut on each side that's not against sheet edge
+    // For single item check, we account for gap on right and bottom (item placed top-left)
+    let item_w_with_gap = item.width_mm + gap_mm;
+    let item_h_with_gap = item.height_mm + gap_mm;
+
+    if item_w_with_gap <= usable_w && item_h_with_gap <= usable_h {
         return true;
     }
 
+    // Check rotated orientation
     let can_rotate = item.rotation == Rotation::Allow90 && item.pattern_direction == crate::models::PatternDirection::None;
-    can_rotate && item.height_mm <= usable_w && item.width_mm <= usable_h
+    if can_rotate {
+        let rotated_w_with_gap = item.height_mm + gap_mm;
+        let rotated_h_with_gap = item.width_mm + gap_mm;
+        if rotated_w_with_gap <= usable_w && rotated_h_with_gap <= usable_h {
+            return true;
+        }
+    }
+
+    false
 }

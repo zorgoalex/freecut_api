@@ -106,7 +106,7 @@ pub struct OptimizeResponse {
 }
 
 /// Item that could not be placed on the requested sheets
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct UnplacedItem {
     pub item_id: String,
     pub instance: u32,

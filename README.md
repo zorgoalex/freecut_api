@@ -206,7 +206,7 @@ These tests validate the running container via a host-network curl image.
 
 ```bash
 # Start the container first
-docker run --rm -p 8080:8080 freecut-mvp
+docker run --rm -p 8088:8080 freecut-mvp
 
 # In another terminal
 ./scripts/docker_smoke.sh
@@ -214,7 +214,7 @@ docker run --rm -p 8080:8080 freecut-mvp
 
 Optional overrides:
 ```bash
-BASE_URL=http://127.0.0.1:8080 CURL_IMAGE=curlimages/curl:8.6.0 ./scripts/docker_smoke.sh
+BASE_URL=http://127.0.0.1:8088 CURL_IMAGE=curlimages/curl:8.6.0 ./scripts/docker_smoke.sh
 ```
 
 ## Greedy Multi-Sheet Optimizer

@@ -24,7 +24,7 @@ from typing import List, Dict, Tuple, Optional
 import copy
 
 # Configuration
-FREECUT_URL = "http://127.0.0.1:8080/v1/optimize"
+FREECUT_URL = "http://127.0.0.1:8088/v1/optimize"
 TOTAL_TIME_LIMIT = 25.0  # seconds
 EARLY_STOP_NO_IMPROVE = 20  # stop if no improvement for N iterations
 AREA_FILL_TARGET = 0.85  # aim to fill ~85% of sheet area with items

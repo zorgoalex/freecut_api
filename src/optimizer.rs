@@ -11,6 +11,7 @@ use crate::models::{
     Artifacts, ErrorResponse, LayoutMode, Objective, OptimizeRequest, OptimizeResponse,
     PatternDirection, Placement, Solution, Summary, Trim, UnplacedItem,
 };
+use crate::validation::item_fits_any_stock_public;
 
 const SCALE: f64 = 1000.0;
 const MIN_SLICE_MS: u64 = 80;
@@ -66,6 +67,8 @@ struct PreparedInput {
     stock_map: HashMap<(usize, usize), StockInfo>,
     trim: Trim,
     cut_width: usize,
+    /// Items that don't fit any stock sheet (oversized)
+    oversized_items: Vec<UnplacedItem>,
 }
 
 struct Candidate {
@@ -100,8 +103,30 @@ pub async fn optimize_request(
         slice_ms = time_limit_ms / restarts;
     }
 
-    let overall_limit = time_limit_ms.saturating_add(1000);
     let start = Instant::now();
+
+    // Handle case where all items are oversized (nothing to optimize)
+    if prepared.cut_pieces.is_empty() {
+        let time_ms = start.elapsed().as_millis() as u64;
+        return Ok(OptimizeResponse {
+            status: "ok",
+            summary: Summary {
+                objective: req.params.objective,
+                used_stock_count: 0,
+                total_waste_area_mm2: 0.0,
+                waste_percent: 0.0,
+                time_ms,
+                restarts_used: 0,
+                used_seed,
+                layout_mode,
+            },
+            solutions: vec![],
+            unplaced_items: prepared.oversized_items,
+            artifacts: Artifacts { svg: build_svg(&[], &prepared.trim) },
+        });
+    }
+
+    let overall_limit = time_limit_ms.saturating_add(1000);
 
     let candidate = tokio::time::timeout(Duration::from_millis(overall_limit), async {
         run_restarts(&req, &prepared, restarts, slice_ms, layout_mode, used_seed).await
@@ -114,7 +139,10 @@ pub async fn optimize_request(
     let all_solutions = build_solutions(&candidate.solution, &prepared);
 
     // Apply qty limits and collect unplaced items
-    let (solutions, unplaced_items) = apply_qty_limits(all_solutions, &prepared);
+    let (solutions, mut unplaced_items) = apply_qty_limits(all_solutions, &prepared);
+
+    // Merge oversized items (items that didn't fit any stock)
+    unplaced_items.extend(prepared.oversized_items.clone());
 
     // Recalculate stats for kept solutions only
     let (used_stock_count, total_stock_area, total_waste_area) = calculate_solution_stats(&solutions);
@@ -284,8 +312,27 @@ fn prepare_input(req: &OptimizeRequest) -> Result<PreparedInput, OptimizeError> 
 
     let mut cut_pieces = Vec::new();
     let mut instance_map = Vec::new();
+    let mut oversized_items = Vec::new();
+
+    let gap_mm = req.params.kerf_mm + req.params.spacing_mm;
 
     for item in &req.items {
+        // Check if item fits any stock sheet (considering trim and gap for cutting)
+        let fits = item_fits_any_stock_public(item, &req.params.trim_mm, gap_mm, &req.stock);
+
+        if !fits {
+            // Item doesn't fit any stock - add all instances to oversized
+            for idx in 0..item.qty {
+                oversized_items.push(UnplacedItem {
+                    item_id: item.id.clone(),
+                    instance: idx + 1,
+                    width_mm: item.width_mm,
+                    height_mm: item.height_mm,
+                });
+            }
+            continue; // Skip this item for optimization
+        }
+
         let width = to_units(item.width_mm)?;
         let height = to_units(item.height_mm)?;
         let can_rotate = item.rotation == crate::models::Rotation::Allow90
@@ -317,6 +364,7 @@ fn prepare_input(req: &OptimizeRequest) -> Result<PreparedInput, OptimizeError> 
         stock_map,
         trim: req.params.trim_mm,
         cut_width,
+        oversized_items,
     })
 }
 
