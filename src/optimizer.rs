@@ -572,7 +572,7 @@ fn build_placement(
 fn build_svg(solutions: &[Solution], unplaced_items: &[UnplacedItem], trim: &Trim) -> String {
     const SHEET_GAP: f64 = 50.0; // Gap between sheets in SVG
     const UNPLACED_SECTION_GAP: f64 = 80.0; // Gap before unplaced items section
-    const UNPLACED_ITEM_GAP: f64 = 20.0; // Gap between unplaced items
+    const UNPLACED_ITEM_GAP: f64 = 30.0; // Gap between unplaced items
 
     // Calculate max width and total height for all sheets
     let mut max_width = 0.0_f64;
@@ -588,17 +588,15 @@ fn build_svg(solutions: &[Solution], unplaced_items: &[UnplacedItem], trim: &Tri
         }
     }
 
-    // Calculate space needed for unplaced items (displayed in a row)
+    // Calculate space needed for unplaced items at REAL scale (1:1)
     let mut unplaced_max_height = 0.0_f64;
     let mut unplaced_total_width = 0.0_f64;
-    let scale_factor = 0.3; // Scale down unplaced items for display
 
     for (i, item) in unplaced_items.iter().enumerate() {
-        let scaled_h = item.height_mm * scale_factor;
-        if scaled_h > unplaced_max_height {
-            unplaced_max_height = scaled_h;
+        if item.height_mm > unplaced_max_height {
+            unplaced_max_height = item.height_mm;
         }
-        unplaced_total_width += item.width_mm * scale_factor;
+        unplaced_total_width += item.width_mm;
         if i > 0 {
             unplaced_total_width += UNPLACED_ITEM_GAP;
         }
@@ -606,7 +604,7 @@ fn build_svg(solutions: &[Solution], unplaced_items: &[UnplacedItem], trim: &Tri
 
     // Add space for unplaced section if there are any
     if !unplaced_items.is_empty() {
-        total_height += UNPLACED_SECTION_GAP + 30.0 + unplaced_max_height + 40.0; // gap + title + items + labels
+        total_height += UNPLACED_SECTION_GAP + 40.0 + unplaced_max_height + 50.0; // gap + title + items + labels
         if unplaced_total_width > max_width {
             max_width = unplaced_total_width;
         }
@@ -684,66 +682,66 @@ fn build_svg(solutions: &[Solution], unplaced_items: &[UnplacedItem], trim: &Tri
         y_offset += solution.height_mm + SHEET_GAP;
     }
 
-    // Render unplaced items section
+    // Render unplaced items section at REAL scale (1:1)
     if !unplaced_items.is_empty() {
         let section_y = y_offset + UNPLACED_SECTION_GAP - trim.top;
 
         // Section title
         svg.push_str(&format!(
-            "<text x=\"{}\" y=\"{}\" font-size=\"16\" font-weight=\"bold\" fill=\"#c00\">Unplaced Items ({}):</text>",
+            "<text x=\"{}\" y=\"{}\" font-size=\"20\" font-weight=\"bold\" fill=\"#c00\">Unplaced Items ({}) - shown at real scale:</text>",
             fmt_mm(-trim.left),
             fmt_mm(section_y),
             unplaced_items.len()
         ));
 
-        let items_y = section_y + 25.0;
+        let items_y = section_y + 35.0;
         let mut item_x = -trim.left;
 
         for item in unplaced_items {
-            let scaled_w = item.width_mm * scale_factor;
-            let scaled_h = item.height_mm * scale_factor;
+            let item_w = item.width_mm;
+            let item_h = item.height_mm;
 
-            // Item rectangle (red-tinted for unplaced)
+            // Item rectangle at real size (red-tinted for unplaced)
             svg.push_str(&format!(
-                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#ffcccc\" stroke=\"#c00\" stroke-width=\"1\" stroke-dasharray=\"5,3\"/>",
+                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#ffe0e0\" stroke=\"#c00\" stroke-width=\"2\" stroke-dasharray=\"10,5\"/>",
                 fmt_mm(item_x),
                 fmt_mm(items_y),
-                fmt_mm(scaled_w),
-                fmt_mm(scaled_h)
+                fmt_mm(item_w),
+                fmt_mm(item_h)
             ));
 
-            // Item label (id)
+            // Item label (id) - larger font for real scale
             svg.push_str(&format!(
-                "<text x=\"{}\" y=\"{}\" font-size=\"10\" fill=\"#c00\">{} #{}</text>",
-                fmt_mm(item_x + 2.0),
-                fmt_mm(items_y + 12.0),
+                "<text x=\"{}\" y=\"{}\" font-size=\"14\" font-weight=\"bold\" fill=\"#c00\">{} #{}</text>",
+                fmt_mm(item_x + 5.0),
+                fmt_mm(items_y + 20.0),
                 escape_xml(&item.item_id),
                 item.instance
             ));
 
-            // Size label
+            // Size label inside the item
             svg.push_str(&format!(
-                "<text x=\"{}\" y=\"{}\" font-size=\"8\" fill=\"#666\">{}x{}mm</text>",
-                fmt_mm(item_x + 2.0),
-                fmt_mm(items_y + scaled_h + 12.0),
+                "<text x=\"{}\" y=\"{}\" font-size=\"12\" fill=\"#666\">{}x{}mm</text>",
+                fmt_mm(item_x + 5.0),
+                fmt_mm(items_y + 38.0),
                 item.width_mm as i32,
                 item.height_mm as i32
             ));
 
             // Reason label
             let reason_text = match item.reason.as_str() {
-                "oversized" => "too large",
-                "qty_limit" => "sheet limit",
+                "oversized" => "TOO LARGE FOR SHEET",
+                "qty_limit" => "SHEET LIMIT EXCEEDED",
                 _ => &item.reason,
             };
             svg.push_str(&format!(
-                "<text x=\"{}\" y=\"{}\" font-size=\"8\" fill=\"#c00\">({})</text>",
-                fmt_mm(item_x + 2.0),
-                fmt_mm(items_y + scaled_h + 22.0),
+                "<text x=\"{}\" y=\"{}\" font-size=\"11\" fill=\"#c00\">({})</text>",
+                fmt_mm(item_x + 5.0),
+                fmt_mm(items_y + 54.0),
                 reason_text
             ));
 
-            item_x += scaled_w + UNPLACED_ITEM_GAP;
+            item_x += item_w + UNPLACED_ITEM_GAP;
         }
     }
 
