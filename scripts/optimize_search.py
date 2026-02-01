@@ -227,6 +227,10 @@ def calculate_internal_void_metrics(solutions, grid_mm, pad_mm=0.0, spacing_mm=0
     # Occupied region perimeter (compactness metric)
     total_occupied_perimeter = 0
 
+    # Void compactness metric (perimeter of void / area of void)
+    total_void_perimeter = 0
+    total_void_cells = 0
+
     for solution in solutions:
         placements = solution.get('placements', [])
         if not placements:
@@ -464,6 +468,25 @@ def calculate_internal_void_metrics(solutions, grid_mm, pad_mm=0.0, spacing_mm=0
                         perimeter_edges += 1
         total_occupied_perimeter += perimeter_edges * grid_mm
 
+        # Calculate void compactness (edges between void and parts / void cells)
+        void_cells = 0
+        void_perimeter = 0
+        for r in range(rows):
+            for c in range(cols):
+                if grid[r][c] != 1:  # Void cell (0=internal, 2=external, 3=processed, 4=corridor)
+                    void_cells += 1
+                    # Count edges adjacent to occupied cells
+                    if r > 0 and grid[r - 1][c] == 1:
+                        void_perimeter += 1
+                    if r < rows - 1 and grid[r + 1][c] == 1:
+                        void_perimeter += 1
+                    if c > 0 and grid[r][c - 1] == 1:
+                        void_perimeter += 1
+                    if c < cols - 1 and grid[r][c + 1] == 1:
+                        void_perimeter += 1
+        total_void_perimeter += void_perimeter
+        total_void_cells += void_cells
+
     if total_internal_area == 0.0:
         total_internal_area = 0.0
 
@@ -471,6 +494,104 @@ def calculate_internal_void_metrics(solutions, grid_mm, pad_mm=0.0, spacing_mm=0
     max_penetration_mm = global_max_penetration * grid_mm
     penetration_volume_mm3 = total_penetration_volume * (grid_mm ** 3)
     penetration_weighted = total_penetration_weighted * (grid_mm ** 2)
+
+    # Calculate void compactness (lower = more compact L-shaped void = better)
+    void_compactness = total_void_perimeter / total_void_cells if total_void_cells > 0 else 0.0
+
+    # ============================================================
+    # EDGE FILL METRIC
+    # Measures how much of each sheet edge is "filled" by parts:
+    # - For ideal L-shaped void in corner, parts fill 2-3 edges completely
+    # - Small steps (≤ smoothness_threshold) count as "filled"
+    # - Higher edge_fill = parts more tightly against sheet edges = better
+    # ============================================================
+    smoothness_threshold_cells = int(5 * (spacing_mm + pad_mm * 2) / grid_mm) + 1
+
+    # Get sheet dimensions (full grid, not just bbox)
+    sheet_rows = rows
+    sheet_cols = cols
+
+    # For each edge, count how many cells are "filled" (parts at or near edge)
+    # Top edge: count columns where topmost part is within threshold of row 0
+    # Left edge: count rows where leftmost part is within threshold of col 0
+    # Bottom edge: count columns where bottommost part is within threshold of max row
+    # Right edge: count rows where rightmost part is within threshold of max col
+
+    top_filled = 0
+    bottom_filled = 0
+    left_filled = 0
+    right_filled = 0
+
+    # Scan columns for top/bottom fill
+    for c in range(sheet_cols):
+        top_row = None
+        bottom_row = None
+        for r in range(sheet_rows):
+            if grid[r][c] == 1:
+                if top_row is None:
+                    top_row = r
+                bottom_row = r
+        if top_row is not None and top_row <= smoothness_threshold_cells:
+            top_filled += 1
+        if bottom_row is not None and bottom_row >= sheet_rows - 1 - smoothness_threshold_cells:
+            bottom_filled += 1
+
+    # Scan rows for left/right fill
+    for r in range(sheet_rows):
+        left_col = None
+        right_col = None
+        for c in range(sheet_cols):
+            if grid[r][c] == 1:
+                if left_col is None:
+                    left_col = c
+                right_col = c
+        if left_col is not None and left_col <= smoothness_threshold_cells:
+            left_filled += 1
+        if right_col is not None and right_col >= sheet_cols - 1 - smoothness_threshold_cells:
+            right_filled += 1
+
+    # Edge fill ratios (0.0 to 1.0 each)
+    top_fill_ratio = top_filled / sheet_cols if sheet_cols > 0 else 0
+    bottom_fill_ratio = bottom_filled / sheet_cols if sheet_cols > 0 else 0
+    left_fill_ratio = left_filled / sheet_rows if sheet_rows > 0 else 0
+    right_fill_ratio = right_filled / sheet_rows if sheet_rows > 0 else 0
+
+    # Sort ratios to find which edges are most filled
+    fill_ratios = sorted([top_fill_ratio, bottom_fill_ratio, left_fill_ratio, right_fill_ratio], reverse=True)
+
+    # Edge continuity score: sum of top 2-3 fill ratios
+    # For ideal L-shaped void: 2 edges ~100% filled, 1-2 edges partially filled
+    # Max = 4.0 (all edges filled), but good L-shape = ~2.5-3.0
+    edge_continuity = sum(fill_ratios)
+
+    # Count how many edges are "mostly filled" (>80%)
+    edges_mostly_filled = sum(1 for r in fill_ratios if r > 0.8)
+
+    # Total edge breaks (now represents unfilled edge cells)
+    total_edge_breaks = (
+        (sheet_cols - top_filled) +
+        (sheet_cols - bottom_filled) +
+        (sheet_rows - left_filled) +
+        (sheet_rows - right_filled)
+    )
+
+    # Corner clustering: which corner has the L-shaped void?
+    # Best layout: 3 corners filled, 1 corner empty (void)
+    corners_filled = 0
+    # Top-left: check if parts exist near (0,0)
+    tl_filled = any(grid[r][c] == 1 for r in range(min(smoothness_threshold_cells + 1, sheet_rows))
+                    for c in range(min(smoothness_threshold_cells + 1, sheet_cols)))
+    # Top-right
+    tr_filled = any(grid[r][c] == 1 for r in range(min(smoothness_threshold_cells + 1, sheet_rows))
+                    for c in range(max(0, sheet_cols - smoothness_threshold_cells - 1), sheet_cols))
+    # Bottom-left
+    bl_filled = any(grid[r][c] == 1 for r in range(max(0, sheet_rows - smoothness_threshold_cells - 1), sheet_rows)
+                    for c in range(min(smoothness_threshold_cells + 1, sheet_cols)))
+    # Bottom-right
+    br_filled = any(grid[r][c] == 1 for r in range(max(0, sheet_rows - smoothness_threshold_cells - 1), sheet_rows)
+                    for c in range(max(0, sheet_cols - smoothness_threshold_cells - 1), sheet_cols))
+
+    corners_filled = sum([tl_filled, tr_filled, bl_filled, br_filled])
 
     return (
         total_internal_area,
@@ -485,6 +606,10 @@ def calculate_internal_void_metrics(solutions, grid_mm, pad_mm=0.0, spacing_mm=0
         penetration_volume_mm3,
         penetration_weighted,
         total_occupied_perimeter,
+        void_compactness,
+        edge_continuity,       # NEW: sum of straight segment ratios (max 4.0)
+        total_edge_breaks,     # NEW: total profile breaks on all 4 sides
+        corners_filled,        # NEW: how many corners have parts (0-4)
     )
 
 
@@ -590,7 +715,8 @@ def run_hypothesis_test():
                 if result and result.get('status') == 'ok':
                     (
                         internal_void, _, _, corridor_void, corridor_components,
-                        row_gap, col_gap, _, _, _, _, occupied_perimeter,
+                        row_gap, col_gap, _, _, _, _, occupied_perimeter, void_compactness,
+                        edge_continuity, total_edge_breaks, corners_filled,
                     ) = calculate_internal_void_metrics(
                         result['solutions'], GRID_MM, pad_mm,
                         spacing_mm=spacing_mm, corridor_ok_mult=CORRIDOR_OK_MULT
@@ -605,6 +731,8 @@ def run_hypothesis_test():
                         'corridor_components': corridor_components,
                         'strip_gap': strip_gap,
                         'internal_void': internal_void,
+                        'void_compactness': void_compactness,
+                        'edge_continuity': edge_continuity,
                         'waste': waste,
                     })
 
@@ -730,7 +858,8 @@ def run_reverse_test():
             if result and result.get('status') == 'ok':
                 (
                     internal_void, _, _, corridor_void, corridor_components,
-                    row_gap, col_gap, _, _, _, _, occupied_perimeter,
+                    row_gap, col_gap, _, _, _, _, occupied_perimeter, void_compactness,
+                    edge_continuity, total_edge_breaks, corners_filled,
                 ) = calculate_internal_void_metrics(
                     result['solutions'], GRID_MM, pad_mm,
                     spacing_mm=spacing_mm, corridor_ok_mult=CORRIDOR_OK_MULT
@@ -744,14 +873,20 @@ def run_reverse_test():
                     'corridor_void': corridor_void,
                     'corridor_components': corridor_components,
                     'strip_gap': strip_gap,
+                    'void_compactness': void_compactness,
+                    'edge_continuity': edge_continuity,
+                    'edge_breaks': total_edge_breaks,
+                    'corners_filled': corners_filled,
                     'internal_void': internal_void,
                     'waste': waste,
+                    'svg': result['artifacts']['svg'],
                 })
 
                 writer.writerow([
                     seed, time_limit, restarts, waste,
                     occupied_perimeter, corridor_void,
-                    corridor_components, strip_gap, internal_void
+                    corridor_components, strip_gap, internal_void,
+                    edge_continuity, total_edge_breaks, corners_filled
                 ])
 
                 print(f"{idx+1:<4} | {seed:<10} | {occupied_perimeter:<8.0f} | {corridor_void:<10.0f} | {corridor_components:<5} | {waste:<7.2f}")
@@ -801,18 +936,35 @@ def run_reverse_test():
     for comp, count in sorted(comp_counts.items()):
         print(f"  {comp} components: {count} layouts ({100*count/len(results):.1f}%)")
 
-    # Top 5 best by perimeter
-    sorted_results = sorted(results, key=lambda r: (r['perimeter'], r['corridor_void']))
-    print(f"\nTop 5 best layouts (by perimeter):")
-    for i, r in enumerate(sorted_results[:5]):
-        print(f"  {i+1}. seed={r['seed']}, perim={r['perimeter']:.0f}, corr={r['corridor_void']:.0f}, comp={r['corridor_components']}")
+    # Sort by: perimeter first, then void_compactness
+    # comp=1 is NOT always best - low perimeter is more important
+    sorted_results = sorted(results, key=lambda r: (
+        r['internal_void'],           # 1. No internal holes (critical)
+        r['perimeter'],               # 2. PERIMETER: lower = more compact (PRIMARY)
+        r['void_compactness'],        # 3. Void compactness: lower = better shape
+        r['corridor_components'],     # 4. Fewer void regions (tiebreaker)
+        r['waste'],                   # 5. Waste only as tiebreaker
+    ))
 
-    # Top 5 worst by perimeter
-    print(f"\nTop 5 worst layouts (by perimeter):")
-    for i, r in enumerate(sorted_results[-5:]):
-        print(f"  {i+1}. seed={r['seed']}, perim={r['perimeter']:.0f}, corr={r['corridor_void']:.0f}, comp={r['corridor_components']}")
+    print(f"\nTop 10 best layouts (perimeter → void_compactness):")
+    for i, r in enumerate(sorted_results[:10]):
+        print(f"  {i+1}. seed={r['seed']}, perim={r['perimeter']:.0f}, vcomp={r['void_compactness']:.3f}, comp={r['corridor_components']}")
 
-    print(f"\nFull log saved to: {log_file}")
+    # Save top 10 SVGs
+    svg_dir = os.path.join(os.path.dirname(CANDIDATES_DIR), 'tmp', 'reverse_test_layouts')
+    os.makedirs(svg_dir, exist_ok=True)
+    # Clean old files
+    for old_file in os.listdir(svg_dir):
+        os.remove(os.path.join(svg_dir, old_file))
+
+    for i, r in enumerate(sorted_results[:10]):
+        svg_filename = f"rank_{i+1:02d}_perim_{r['perimeter']:.0f}_vcomp_{r['void_compactness']:.3f}_seed_{r['seed']}.svg"
+        svg_filepath = os.path.join(svg_dir, svg_filename)
+        with open(svg_filepath, 'w') as f:
+            f.write(r['svg'])
+
+    print(f"\nTop 10 SVGs saved to: {svg_dir}")
+    print(f"Full log saved to: {log_file}")
 
 
 def main():
@@ -847,6 +999,7 @@ def main():
         'time_limit_ms',
         'seed',
         'waste_percent',
+        'void_compactness',
         'compactness_score',
         'internal_void_mm2',
         'internal_components',
@@ -870,9 +1023,9 @@ def main():
         writer.writerow(log_header)
 
         print(f"Starting {NUM_TESTS} optimization tests (Mode: GUILLOTINE)...")
-        print(f"Target: Find Top {TOP_N_CANDIDATES} candidates by Waste %, strip_gap (solid block), corridor_components.")
+        print(f"Target: Find Top {TOP_N_CANDIDATES} candidates by void_compactness (lower = more compact L-shaped waste)")
         print(f"Logging all runs to {LOG_FILE}")
-        print(f"{'Iter':<5} | {'Restarts':<8} | {'Time':<5} | {'Waste%':<7} | {'Perimeter':<10} | {'Comp':<5} | {'CorrVoid':<10} | {'Status'}")
+        print(f"{'Iter':<5} | {'Restarts':<8} | {'Time':<5} | {'Waste%':<7} | {'VoidComp':<10} | {'Comp':<5} | {'CorrVoid':<10} | {'Status'}")
         print("-" * 95)
 
         for i in range(1, NUM_TESTS + 1):
@@ -905,6 +1058,10 @@ def main():
                     penetration_volume_mm3,
                     penetration_weighted,
                     occupied_perimeter,
+                    void_compactness,
+                    edge_continuity,
+                    total_edge_breaks,
+                    corners_filled,
                 ) = calculate_internal_void_metrics(
                     result['solutions'],
                     GRID_MM,
@@ -935,6 +1092,7 @@ def main():
                     time_limit,
                     seed,
                     waste,
+                    void_compactness,
                     bbox_void,
                     internal_void,
                     internal_components,
@@ -975,25 +1133,23 @@ def main():
                     'penetration_volume_mm3': penetration_volume_mm3,
                     'penetration_weighted': penetration_weighted,
                     'occupied_perimeter': occupied_perimeter,
+                    'void_compactness': void_compactness,
+                    'edge_continuity': edge_continuity,
+                    'edge_breaks': total_edge_breaks,
+                    'corners_filled': corners_filled,
                     'svg': result['artifacts']['svg']
                 }
 
                 # Add to list and sort
                 top_candidates.append(candidate_data)
-                # Sort priority based on PERIMETER compactness metric:
-                # Lower perimeter = more compact rectangular shape = better
-                # A perfect rectangle has perimeter = 2*(W+H)
-                # Any indentations/protrusions increase perimeter
+                # Sort: perimeter first, then void_compactness
+                # comp=1 is NOT always best - low perimeter is more important
                 top_candidates.sort(key=lambda c: (
-                    c['waste_percent'],               # 1. Lowest waste
-                    c['internal_void'],               # 2. No internal holes
-                    c['occupied_perimeter'],          # 3. PERIMETER: lower = more compact
-                    c['corridor_components'],         # 4. Fewer void regions
-                    c['corridor_void'],               # 5. Less void area
-                    c['strip_gap_area'],              # 6. Strip gaps
-                    c['max_penetration_mm'],          # 7. Penetration depth
-                    c['exposure_penalty'],
-                    c['bbox_void']
+                    c['internal_void'],               # 1. No internal holes (critical)
+                    c['occupied_perimeter'],          # 2. PERIMETER: lower = more compact (PRIMARY)
+                    c['void_compactness'],            # 3. Void compactness: lower = better shape
+                    c['corridor_components'],         # 4. Fewer void regions (tiebreaker)
+                    c['waste_percent'],               # 5. Waste only as tiebreaker
                 ))
                 
                 # Trim the list if it's too long
@@ -1001,7 +1157,7 @@ def main():
                     top_candidates.pop() # Removes the worst candidate
 
                 status_str = f"OK (Waste: {waste:.2f}%)"
-                print(f"{i:<5} | {restarts:<8} | {time_limit:<5} | {waste:<7.2f} | {occupied_perimeter:<10.0f} | {corridor_components:<5} | {corridor_void:<10.0f} | {status_str}")
+                print(f"{i:<5} | {restarts:<8} | {time_limit:<5} | {waste:<7.2f} | {void_compactness:<10.3f} | {corridor_components:<5} | {corridor_void:<10.0f} | {status_str}")
             else:
                  print(f"{i:<5} | {restarts:<8} | {time_limit:<5} | {'-':<7} | {'-':<10} | {'-':<5} | {'-':<10} | {status_str}")
 
@@ -1014,17 +1170,17 @@ def main():
         print("No successful optimization runs found.")
         return
 
-    print(f"\nTop {len(top_candidates)} Candidates (Sorted by Waste, IntVoid, Perimeter, Components, CorrVoid):")
+    print(f"\nTop {len(top_candidates)} Candidates (Sorted by Waste, IntVoid, VoidCompact, Components):")
     print("-" * 125)
-    print(f"{'Rank':<5} | {'Waste%':<7} | {'Perimeter':<10} | {'Comp':<5} | {'CorrVoid':<10} | {'StripGap':<10} | {'Restarts':<8} | {'Time':<6} | {'Seed'}")
+    print(f"{'Rank':<5} | {'Waste%':<7} | {'VoidComp':<10} | {'Comp':<5} | {'Perimeter':<10} | {'CorrVoid':<10} | {'Restarts':<8} | {'Time':<6} | {'Seed'}")
     print("-" * 125)
 
     for idx, candidate in enumerate(top_candidates):
         rank = idx + 1
-        # Save SVG with perimeter and components in filename
+        # Save SVG with void_compactness and components in filename
         svg_filename = (
             f"rank_{rank:02d}_waste_{candidate['waste_percent']:.2f}"
-            f"_perim_{candidate['occupied_perimeter']:.0f}"
+            f"_vcomp_{candidate['void_compactness']:.3f}"
             f"_comp_{candidate['corridor_components']}"
             f".svg"
         )
@@ -1034,8 +1190,8 @@ def main():
 
         print(
             f"{rank:<5} | {candidate['waste_percent']:<7.2f} | "
-            f"{candidate['occupied_perimeter']:<10.0f} | {candidate['corridor_components']:<5} | "
-            f"{candidate['corridor_void']:<10.0f} | {candidate['strip_gap_area']:<10.0f} | "
+            f"{candidate['void_compactness']:<10.3f} | {candidate['corridor_components']:<5} | "
+            f"{candidate['occupied_perimeter']:<10.0f} | {candidate['corridor_void']:<10.0f} | "
             f"{candidate['restarts']:<8} | {candidate['time_limit_ms']:<6} | {candidate['seed']}"
         )
 
