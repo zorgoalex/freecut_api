@@ -9,7 +9,7 @@ use cut_optimizer_2d::{CutPiece, Optimizer, PatternDirection as CutPatternDirect
 use crate::config::AppConfig;
 use crate::models::{
     Artifacts, ErrorResponse, LayoutMode, Objective, OptimizeRequest, OptimizeResponse,
-    PatternDirection, Placement, Solution, Summary, Trim,
+    PatternDirection, Placement, Solution, Summary, Trim, UnplacedItem,
 };
 
 const SCALE: f64 = 1000.0;
@@ -54,6 +54,8 @@ struct StockInfo {
     stock_id: String,
     full_width_mm: f64,
     full_height_mm: f64,
+    /// User-specified qty limit (None = unlimited)
+    qty_limit: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -108,24 +110,33 @@ pub async fn optimize_request(
     .map_err(|_| OptimizeError::Timeout)??;
 
     let time_ms = start.elapsed().as_millis() as u64;
+
+    let all_solutions = build_solutions(&candidate.solution, &prepared);
+
+    // Apply qty limits and collect unplaced items
+    let (solutions, unplaced_items) = apply_qty_limits(all_solutions, &prepared);
+
+    // Recalculate stats for kept solutions only
+    let (used_stock_count, total_stock_area, total_waste_area) = calculate_solution_stats(&solutions);
+
     let summary = Summary {
         objective: req.params.objective,
-        used_stock_count: candidate.used_stock_count,
-        total_waste_area_mm2: units_area_to_mm2(candidate.total_waste_area_units),
-        waste_percent: waste_percent(candidate.total_waste_area_units, candidate.total_stock_area_units),
+        used_stock_count,
+        total_waste_area_mm2: total_waste_area,
+        waste_percent: if total_stock_area > 0.0 { 100.0 * total_waste_area / total_stock_area } else { 0.0 },
         time_ms,
         restarts_used: restarts as u32,
         used_seed,
         layout_mode,
     };
 
-    let solutions = build_solutions(&candidate.solution, &prepared);
     let svg = build_svg(&solutions, &prepared.trim);
 
     Ok(OptimizeResponse {
         status: "ok",
         summary,
         solutions,
+        unplaced_items,
         artifacts: Artifacts { svg },
     })
 }
@@ -248,24 +259,26 @@ fn prepare_input(req: &OptimizeRequest) -> Result<PreparedInput, OptimizeError> 
             });
         }
 
-        // qty: None or 0 means unlimited sheets
-        let quantity = match stock.qty {
-            Some(q) if q > 0 => Some(q as usize),
-            _ => None, // Unlimited
+        // Save user-specified qty limit (None or 0 = unlimited)
+        let qty_limit = match stock.qty {
+            Some(q) if q > 0 => Some(q),
+            _ => None,
         };
 
+        // Always run optimizer with unlimited sheets - we'll trim later
         stock_pieces.push(StockPiece {
             width: usable_w,
             length: usable_h,
             pattern_direction: CutPatternDirection::None,
             price: 0,
-            quantity,
+            quantity: None, // Unlimited for optimizer
         });
 
         stock_map.entry((usable_w, usable_h)).or_insert_with(|| StockInfo {
             stock_id: stock.id.clone(),
             full_width_mm: stock.width_mm,
             full_height_mm: stock.height_mm,
+            qty_limit,
         });
     }
 
@@ -375,6 +388,74 @@ fn is_better(candidate: &Candidate, best: &Candidate, objective: &Objective) -> 
             }
         }
     }
+}
+
+/// Apply user-specified qty limits to solutions and collect unplaced items
+fn apply_qty_limits(
+    solutions: Vec<Solution>,
+    prepared: &PreparedInput,
+) -> (Vec<Solution>, Vec<UnplacedItem>) {
+    let mut kept_solutions = Vec::new();
+    let mut unplaced_items = Vec::new();
+
+    // Count sheets per stock_id and track qty limits
+    let mut stock_counts: HashMap<String, u32> = HashMap::new();
+    let mut stock_limits: HashMap<String, Option<u32>> = HashMap::new();
+
+    // Build stock_limits from prepared.stock_map
+    for info in prepared.stock_map.values() {
+        stock_limits.insert(info.stock_id.clone(), info.qty_limit);
+    }
+
+    for solution in solutions {
+        let count = stock_counts.entry(solution.stock_id.clone()).or_insert(0);
+        let limit = stock_limits.get(&solution.stock_id).copied().flatten();
+
+        // Check if we've exceeded the limit for this stock type
+        let within_limit = match limit {
+            Some(max) => *count < max,
+            None => true, // No limit
+        };
+
+        if within_limit {
+            *count += 1;
+            kept_solutions.push(solution);
+        } else {
+            // Collect placements as unplaced items
+            for placement in solution.placements {
+                unplaced_items.push(UnplacedItem {
+                    item_id: placement.item_id,
+                    instance: placement.instance,
+                    width_mm: placement.width_mm,
+                    height_mm: placement.height_mm,
+                });
+            }
+        }
+    }
+
+    (kept_solutions, unplaced_items)
+}
+
+/// Calculate stats for kept solutions
+fn calculate_solution_stats(solutions: &[Solution]) -> (u32, f64, f64) {
+    let used_stock_count = solutions.len() as u32;
+    let mut total_stock_area = 0.0;
+    let mut total_items_area = 0.0;
+
+    for solution in solutions {
+        // Usable area (after trim)
+        let usable_width = solution.width_mm - solution.trim_mm.left - solution.trim_mm.right;
+        let usable_height = solution.height_mm - solution.trim_mm.top - solution.trim_mm.bottom;
+        total_stock_area += usable_width * usable_height;
+
+        // Items area
+        for placement in &solution.placements {
+            total_items_area += placement.width_mm * placement.height_mm;
+        }
+    }
+
+    let total_waste_area = total_stock_area - total_items_area;
+    (used_stock_count, total_stock_area, total_waste_area)
 }
 
 fn build_solutions(solution: &cut_optimizer_2d::Solution, prepared: &PreparedInput) -> Vec<Solution> {

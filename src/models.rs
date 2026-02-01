@@ -99,7 +99,19 @@ pub struct OptimizeResponse {
     pub status: &'static str,
     pub summary: Summary,
     pub solutions: Vec<Solution>,
+    /// Items that did not fit on the requested number of sheets
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unplaced_items: Vec<UnplacedItem>,
     pub artifacts: Artifacts,
+}
+
+/// Item that could not be placed on the requested sheets
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UnplacedItem {
+    pub item_id: String,
+    pub instance: u32,
+    pub width_mm: f64,
+    pub height_mm: f64,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
