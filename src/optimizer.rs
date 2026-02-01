@@ -248,12 +248,18 @@ fn prepare_input(req: &OptimizeRequest) -> Result<PreparedInput, OptimizeError> 
             });
         }
 
+        // qty: None or 0 means unlimited sheets
+        let quantity = match stock.qty {
+            Some(q) if q > 0 => Some(q as usize),
+            _ => None, // Unlimited
+        };
+
         stock_pieces.push(StockPiece {
             width: usable_w,
             length: usable_h,
             pattern_direction: CutPatternDirection::None,
             price: 0,
-            quantity: Some(stock.qty as usize),
+            quantity,
         });
 
         stock_map.entry((usable_w, usable_h)).or_insert_with(|| StockInfo {
@@ -432,22 +438,26 @@ fn build_placement(
 }
 
 fn build_svg(solutions: &[Solution], trim: &Trim) -> String {
-    let mut max_width = 0.0_f64;
-    let mut max_height = 0.0_f64;
+    const SHEET_GAP: f64 = 50.0; // Gap between sheets in SVG
 
-    for solution in solutions {
+    // Calculate max width and total height for all sheets
+    let mut max_width = 0.0_f64;
+    let mut total_height = 0.0_f64;
+
+    for (i, solution) in solutions.iter().enumerate() {
         if solution.width_mm > max_width {
             max_width = solution.width_mm;
         }
-        if solution.height_mm > max_height {
-            max_height = solution.height_mm;
+        total_height += solution.height_mm;
+        if i > 0 {
+            total_height += SHEET_GAP;
         }
     }
 
     let min_x = -trim.left;
     let min_y = -trim.top;
     let view_w = max_width;
-    let view_h = max_height;
+    let view_h = total_height;
 
     let mut svg = String::new();
     svg.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" ");
@@ -459,29 +469,44 @@ fn build_svg(solutions: &[Solution], trim: &Trim) -> String {
         fmt_mm(view_h)
     ));
 
-    for solution in solutions {
+    let mut y_offset = 0.0_f64;
+
+    for (sheet_idx, solution) in solutions.iter().enumerate() {
         let sheet_x = -trim.left;
-        let sheet_y = -trim.top;
+        let sheet_y = -trim.top + y_offset;
         let sheet_w = solution.width_mm;
         let sheet_h = solution.height_mm;
+
+        // Sheet background (light gray for waste area)
         svg.push_str(&format!(
-            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"none\" stroke=\"#333\" stroke-width=\"0.5\"/>",
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#f5f5f5\" stroke=\"#333\" stroke-width=\"1\"/>",
             fmt_mm(sheet_x),
             fmt_mm(sheet_y),
             fmt_mm(sheet_w),
             fmt_mm(sheet_h)
         ));
 
+        // Sheet label
+        svg.push_str(&format!(
+            "<text x=\"{}\" y=\"{}\" font-size=\"14\" font-weight=\"bold\" fill=\"#333\">Sheet {} ({})</text>",
+            fmt_mm(sheet_x + 5.0),
+            fmt_mm(sheet_y + 20.0),
+            sheet_idx + 1,
+            escape_xml(&solution.stock_id)
+        ));
+
         for placement in &solution.placements {
+            let px = placement.x_mm;
+            let py = placement.y_mm + y_offset;
             svg.push_str(&format!(
                 "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/>",
-                fmt_mm(placement.x_mm),
-                fmt_mm(placement.y_mm),
+                fmt_mm(px),
+                fmt_mm(py),
                 fmt_mm(placement.width_mm),
                 fmt_mm(placement.height_mm)
             ));
-            let text_x = placement.x_mm + 2.0;
-            let text_y = placement.y_mm + 12.0;
+            let text_x = px + 2.0;
+            let text_y = py + 12.0;
             svg.push_str(&format!(
                 "<text x=\"{}\" y=\"{}\" font-size=\"10\" fill=\"#1f4a6d\">{}</text>",
                 fmt_mm(text_x),
@@ -489,6 +514,8 @@ fn build_svg(solutions: &[Solution], trim: &Trim) -> String {
                 escape_xml(&placement.item_id)
             ));
         }
+
+        y_offset += solution.height_mm + SHEET_GAP;
     }
 
     svg.push_str("</svg>");

@@ -55,7 +55,8 @@ pub struct StockItem {
     pub id: String,
     pub width_mm: f64,
     pub height_mm: f64,
-    pub qty: u32,
+    /// Quantity of this stock available. If omitted or 0, unlimited sheets will be used.
+    pub qty: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]

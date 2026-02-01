@@ -118,9 +118,7 @@ fn validate_stock(stock: &StockItem) -> Result<(), ValidationError> {
     if stock.width_mm <= 0.0 || stock.height_mm <= 0.0 {
         return Err(ValidationError::new("stock dimensions must be > 0"));
     }
-    if stock.qty < 1 {
-        return Err(ValidationError::new("stock qty must be >= 1"));
-    }
+    // qty: None or 0 means unlimited sheets, which is valid
     Ok(())
 }
 
