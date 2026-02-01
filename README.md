@@ -28,12 +28,12 @@ It uses Axum and the `cut-optimizer-2d` engine and always returns an SVG artifac
 cargo run
 ```
 
-Service listens on `0.0.0.0:8080` by default.
+Service listens on `0.0.0.0:8088` by default.
 
 ## Quick Start (Docker)
 ```bash
 docker build -t freecut-mvp .
-docker run --rm -p 8088:8080 freecut-mvp
+docker run --rm -p 8088:8088 freecut-mvp
 ```
 
 ## Health & Docs
@@ -187,7 +187,7 @@ Example file: `examples/optimize_response_ok.json`
 - `artifacts.svg`: Full SVG document of the layout. Multiple sheets are rendered vertically with 50mm gap between them.
 
 ## Environment Variables
-- `PORT` (default `8080`)
+- `PORT` (default `8088`)
 - `RUST_LOG` (default `info`)
 - `MAX_BODY_BYTES` (default `5242880`)
 - `MAX_INSTANCES` (default `5000`)
@@ -206,7 +206,7 @@ These tests validate the running container via a host-network curl image.
 
 ```bash
 # Start the container first
-docker run --rm -p 8088:8080 freecut-mvp
+docker run --rm -p 8088:8088 freecut-mvp
 
 # In another terminal
 ./scripts/docker_smoke.sh
