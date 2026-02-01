@@ -112,6 +112,8 @@ pub struct UnplacedItem {
     pub instance: u32,
     pub width_mm: f64,
     pub height_mm: f64,
+    /// Reason why item was not placed: "oversized" or "qty_limit"
+    pub reason: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
