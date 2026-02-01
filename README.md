@@ -7,6 +7,9 @@ It uses Axum and the `cut-optimizer-2d` engine and always returns an SVG artifac
 - 2D rectangle nesting with kerf/spacing/trim support
 - Rotation constraints and pattern direction flags
 - Multi-start optimization with deterministic seeds
+- **Multi-sheet support** with automatic sheet allocation
+- **Partial placement** with unplaced items tracking
+- **SVG visualization** of multiple sheets (vertical layout)
 - JSON API with OpenAPI + Swagger UI
 - Docker-ready single-binary service
 
@@ -104,7 +107,7 @@ Example file: `examples/optimize_request.json`
 - `stock`: Available sheet materials.
   - `id`: Stock identifier (your business label for a sheet type).
   - `width_mm`, `height_mm`: Sheet dimensions in mm.
-  - `qty`: Quantity of sheets of this size.
+  - `qty`: Quantity of sheets of this size. **Optional**: if omitted or `0`, unlimited sheets will be used automatically.
 - `items`: Parts to be cut.
   - `id`: Part identifier (your business label).
   - `width_mm`, `height_mm`: Part dimensions in mm.
@@ -177,7 +180,11 @@ Example file: `examples/optimize_response_ok.json`
     - `x_mm`, `y_mm`, `width_mm`, `height_mm`: Placement geometry.
     - `rotated`: Whether part was rotated.
     - `pattern_direction`: Direction from request.
-- `artifacts.svg`: Full SVG document of the layout.
+- `unplaced_items`: (Optional) Items that did not fit on the requested sheets. Only present when `stock.qty` limits the available sheets.
+  - `item_id`: Item ID from request.
+  - `instance`: Instance number.
+  - `width_mm`, `height_mm`: Item dimensions.
+- `artifacts.svg`: Full SVG document of the layout. Multiple sheets are rendered vertically with 50mm gap between them.
 
 ## Environment Variables
 - `PORT` (default `8080`)
@@ -209,6 +216,27 @@ Optional overrides:
 ```bash
 BASE_URL=http://127.0.0.1:8080 CURL_IMAGE=curlimages/curl:8.6.0 ./scripts/docker_smoke.sh
 ```
+
+## Greedy Multi-Sheet Optimizer
+
+For complex multi-sheet layouts, use the greedy optimizer script that samples random item combinations:
+
+```bash
+python3 scripts/greedy_optimize.py -i request.json [-t 60]
+```
+
+**Features:**
+- Tries multiple first-sheet combinations
+- Evaluates full sequence to minimize overall waste
+- Time limit via CLI (`-t 60`) or JSON (`params.search_time_limit_ms: 60000`)
+- Default: 25 seconds, max recommended: 5 minutes
+- Early stopping when no improvement found
+
+**Algorithm:**
+1. Sample random subsets of items that fit on one sheet
+2. For each subset, evaluate the full multi-sheet sequence
+3. Pick the combination with lowest overall waste
+4. Repeat with remaining items for subsequent sheets
 
 ## License
 This project is licensed under the **MIT License**. See `LICENSE`.
