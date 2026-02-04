@@ -180,10 +180,13 @@ Example file: `examples/optimize_response_ok.json`
     - `x_mm`, `y_mm`, `width_mm`, `height_mm`: Placement geometry.
     - `rotated`: Whether part was rotated.
     - `pattern_direction`: Direction from request.
-- `unplaced_items`: (Optional) Items that did not fit on the requested sheets. Only present when `stock.qty` limits the available sheets.
+- `unplaced_items`: (Optional) Items that could not be placed. Present when items are oversized or when `stock.qty` limits are exceeded.
   - `item_id`: Item ID from request.
   - `instance`: Instance number.
   - `width_mm`, `height_mm`: Item dimensions.
+  - `reason`: Why the item was not placed:
+    - `"oversized"` — item dimensions exceed usable sheet area (after trim and gap).
+    - `"qty_limit"` — item fits but no sheets available due to `stock.qty` limit.
 - `artifacts.svg`: Full SVG document of the layout. Multiple sheets are rendered vertically with 50mm gap between them.
 
 ## Environment Variables

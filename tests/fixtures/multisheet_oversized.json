@@ -1,0 +1,38 @@
+{
+  "units": "mm",
+  "params": {
+    "kerf_mm": 6.0,
+    "spacing_mm": 0.5,
+    "trim_mm": {
+      "left": 10.0,
+      "right": 10.0,
+      "top": 10.0,
+      "bottom": 10.0
+    },
+    "time_limit_ms": 1000,
+    "restarts": 3,
+    "objective": "min_waste",
+    "seed": 12345,
+    "layout_mode": "guillotine"
+  },
+  "stock": [
+    { "id": "mdf-2800x2070", "width_mm": 2070.0, "height_mm": 2800.0, "qty": 0 }
+  ],
+  "items": [
+    { "id": "panel-tall", "width_mm": 300.0, "height_mm": 2500.0, "qty": 2, "rotation": "forbid", "pattern_direction": "none" },
+    { "id": "panel-wide", "width_mm": 1800.0, "height_mm": 400.0, "qty": 2, "rotation": "forbid", "pattern_direction": "none" },
+    { "id": "square-large", "width_mm": 800.0, "height_mm": 800.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "rect-medium", "width_mm": 600.0, "height_mm": 1200.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "rect-small", "width_mm": 400.0, "height_mm": 300.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "strip-long", "width_mm": 150.0, "height_mm": 2000.0, "qty": 2, "rotation": "forbid", "pattern_direction": "none" },
+    { "id": "strip-short", "width_mm": 100.0, "height_mm": 500.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "door-panel", "width_mm": 700.0, "height_mm": 2100.0, "qty": 2, "rotation": "forbid", "pattern_direction": "none" },
+    { "id": "shelf-deep", "width_mm": 500.0, "height_mm": 600.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "back-panel", "width_mm": 1200.0, "height_mm": 1800.0, "qty": 1, "rotation": "allow_90", "pattern_direction": "none" },
+
+    { "id": "oversized-too-wide", "width_mm": 2100.0, "height_mm": 500.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" },
+    { "id": "oversized-too-tall", "width_mm": 400.0, "height_mm": 2850.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" },
+    { "id": "oversized-both-dims", "width_mm": 2200.0, "height_mm": 3000.0, "qty": 1, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "oversized-barely", "width_mm": 2060.0, "height_mm": 2790.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" }
+  ]
+}
