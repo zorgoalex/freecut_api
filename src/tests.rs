@@ -196,7 +196,7 @@ async fn optimize_auto_seed_changes_per_request() {
 }
 
 #[tokio::test]
-async fn optimize_layout_mode_default_nested() {
+async fn optimize_layout_mode_default_guillotine() {
     let app = app_for_test();
     let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
     if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
@@ -207,7 +207,7 @@ async fn optimize_layout_mode_default_nested() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         json.pointer("/summary/layout_mode").and_then(Value::as_str),
-        Some("nested")
+        Some("guillotine")
     );
 }
 

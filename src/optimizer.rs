@@ -82,7 +82,7 @@ pub async fn optimize_request(
     req: OptimizeRequest,
     config: &AppConfig,
 ) -> Result<OptimizeResponse, OptimizeError> {
-    let layout_mode = req.params.layout_mode.unwrap_or(LayoutMode::Nested);
+    let layout_mode = req.params.layout_mode.unwrap_or(LayoutMode::Guillotine);
     let used_seed = req.params.seed.unwrap_or_else(generate_seed);
     let prepared = prepare_input(&req)?;
 

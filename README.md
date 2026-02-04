@@ -103,7 +103,7 @@ Example file: `examples/optimize_request.json`
     differences matter when multiple stock sizes are provided.
   - `seed`: Optional deterministic seed for reproducible results. If omitted, the
     service generates a seed per request (Unix epoch in ms) and returns it as `used_seed`.
-  - `layout_mode`: Layout mode: `"nested"` (default) or `"guillotine"` (guillotine-only cuts). Optional in the request.
+  - `layout_mode`: Layout mode: `"guillotine"` (default, guillotine-only cuts) or `"nested"`. Optional in the request.
 - `stock`: Available sheet materials.
   - `id`: Stock identifier (your business label for a sheet type).
   - `width_mm`, `height_mm`: Sheet dimensions in mm.
