@@ -460,6 +460,48 @@ async fn max_stock_types_limit_enforced() {
 }
 
 #[tokio::test]
+async fn duplicate_stock_ids_rejected() {
+    let body = serde_json::json!({
+        "units": "mm",
+        "params": {
+            "kerf_mm": 1.0,
+            "spacing_mm": 1.0,
+            "trim_mm": { "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0 },
+            "time_limit_ms": 200,
+            "restarts": 2,
+            "objective": "min_waste",
+            "seed": 1,
+            "layout_mode": "nested"
+        },
+        "stock": [
+            { "id": "sheet-A", "width_mm": 1000.0, "height_mm": 500.0, "qty": 1 },
+            { "id": "sheet-A", "width_mm": 2000.0, "height_mm": 1000.0, "qty": 1 }
+        ],
+        "items": [
+            { "id": "A", "width_mm": 10.0, "height_mm": 10.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" }
+        ]
+    });
+    let app = app_for_test();
+    let (status, json) = post_json(&app, "/v1/optimize", &body.to_string()).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        json.get("error_code").and_then(Value::as_str),
+        Some("VALIDATION_ERROR")
+    );
+    let duplicates = json
+        .pointer("/details/duplicate_stock_ids")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        duplicates
+            .iter()
+            .any(|v| v.as_str().map(|s| s == "sheet-A").unwrap_or(false)),
+        "expected duplicate_stock_ids to contain sheet-A, body: {json}"
+    );
+}
+
+#[tokio::test]
 async fn same_usable_size_different_stock_ids_do_not_trigger_false_qty_limit() {
     let app = app_for_test();
     let body = serde_json::json!({

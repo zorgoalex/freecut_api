@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -61,6 +63,19 @@ pub fn validate_request(
     if req.stock.len() > limits.max_stock_types {
         return Err(ValidationError::new("stock exceeds max allowed types")
             .with_details(serde_json::json!({"max_stock_types": limits.max_stock_types})));
+    }
+    let mut seen_stock_ids: HashSet<String> = HashSet::new();
+    let mut duplicate_stock_ids: Vec<String> = Vec::new();
+    for stock in &req.stock {
+        if !seen_stock_ids.insert(stock.id.clone()) {
+            duplicate_stock_ids.push(stock.id.clone());
+        }
+    }
+    if !duplicate_stock_ids.is_empty() {
+        duplicate_stock_ids.sort();
+        duplicate_stock_ids.dedup();
+        return Err(ValidationError::new("stock ids must be unique")
+            .with_details(serde_json::json!({"duplicate_stock_ids": duplicate_stock_ids})));
     }
 
     if req.params.kerf_mm < 0.0 || req.params.spacing_mm < 0.0 {
