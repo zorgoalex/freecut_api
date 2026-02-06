@@ -187,6 +187,23 @@ async fn optimize_returns_svg() {
 }
 
 #[tokio::test]
+async fn optimize_without_svg_omits_artifact_svg() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("include_svg".to_string(), Value::Bool(false));
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "unexpected status/body: {json}");
+    assert_eq!(json.get("status").and_then(Value::as_str), Some("ok"));
+    assert!(
+        json.pointer("/artifacts/svg").is_none(),
+        "expected artifacts.svg to be omitted when include_svg=false, body: {json}"
+    );
+}
+
+#[tokio::test]
 async fn optimize_reproducible_seed() {
     let app = app_for_test();
     let (_, first) = post_json(&app, "/v1/optimize", VALID_REQUEST).await;

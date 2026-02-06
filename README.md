@@ -1,7 +1,7 @@
 # Freecut
 
-Freecut is a Rust service for 2D rectangular cut optimization with an HTTP API and SVG output.
-It uses Axum and the `cut-optimizer-2d` engine and always returns an SVG artifact for successful optimizations.
+Freecut is a Rust service for 2D rectangular cut optimization with an HTTP API and optional SVG output.
+It uses Axum and the `cut-optimizer-2d` engine.
 
 ## Features
 - 2D rectangle nesting with kerf/spacing/trim support
@@ -49,7 +49,7 @@ docker run --rm -p 8088:8088 freecut-mvp
 
 - Request/response are JSON.
 - All dimensions are in millimeters (`mm`).
-- Successful responses include SVG in `artifacts.svg`.
+- Successful responses include SVG in `artifacts.svg` by default (`params.include_svg=true`).
  - Coordinate system: origin (0,0) is the **top-left** of the usable area (after `trim_mm`), X to the right, Y down.
 
 ### Example Request
@@ -104,6 +104,7 @@ Example file: `examples/optimize_request.json`
   - `seed`: Optional deterministic seed for reproducible results. If omitted, the
     service generates a seed per request (Unix epoch in ms) and returns it as `used_seed`.
   - `layout_mode`: Layout mode: `"guillotine"` (default, guillotine-only cuts) or `"nested"`. Optional in the request.
+  - `include_svg`: Optional flag (`true` by default). Set to `false` to skip SVG generation and omit `artifacts.svg` in response.
 - `stock`: Available sheet materials.
   - `id`: Stock identifier (your business label for a sheet type).
   - `width_mm`, `height_mm`: Sheet dimensions in mm.
@@ -189,7 +190,7 @@ Example file: `examples/optimize_response_ok.json`
   - `reason`: Why the item was not placed:
     - `"oversized"` — item dimensions exceed usable sheet area (after trim and gap).
     - `"qty_limit"` — item fits but no sheets available due to `stock.qty` limit.
-- `artifacts.svg`: Full SVG document of the layout. Multiple sheets are rendered vertically with 50mm gap between them.
+- `artifacts.svg`: Optional. Present when `params.include_svg=true` (default). Multiple sheets are rendered vertically with 50mm gap between them.
 
 ## Environment Variables
 - `PORT` (default `8088`)

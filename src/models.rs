@@ -26,6 +26,8 @@ pub struct Params {
     pub objective: Objective,
     pub seed: Option<u64>,
     pub layout_mode: Option<LayoutMode>,
+    /// Include SVG artifact in response. Optional, defaults to true.
+    pub include_svg: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
@@ -155,7 +157,8 @@ pub struct Placement {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct Artifacts {
-    pub svg: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub svg: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

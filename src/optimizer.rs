@@ -94,6 +94,7 @@ pub async fn optimize_request(
     config: &AppConfig,
 ) -> Result<OptimizeResponse, OptimizeError> {
     let layout_mode = req.params.layout_mode.unwrap_or(LayoutMode::Guillotine);
+    let include_svg = req.params.include_svg.unwrap_or(true);
     let used_seed = req.params.seed.unwrap_or_else(generate_seed);
     let prepared = prepare_input(&req)?;
 
@@ -119,7 +120,11 @@ pub async fn optimize_request(
     // Handle case where all items are oversized (nothing to optimize)
     if prepared.cut_pieces.is_empty() {
         let time_ms = start.elapsed().as_millis() as u64;
-        let svg = build_svg(&[], &prepared.oversized_items, &prepared.trim);
+        let svg = if include_svg {
+            Some(build_svg(&[], &prepared.oversized_items, &prepared.trim))
+        } else {
+            None
+        };
         return Ok(OptimizeResponse {
             status: "ok",
             summary: Summary {
@@ -182,7 +187,11 @@ pub async fn optimize_request(
         timeout_reason: run_outcome.timeout_reason,
     };
 
-    let svg = build_svg(&solutions, &unplaced_items, &prepared.trim);
+    let svg = if include_svg {
+        Some(build_svg(&solutions, &unplaced_items, &prepared.trim))
+    } else {
+        None
+    };
 
     Ok(OptimizeResponse {
         status: "ok",
