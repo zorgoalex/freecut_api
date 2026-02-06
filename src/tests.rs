@@ -259,15 +259,22 @@ async fn optimize_defaults_time_limit_and_restarts() {
     let body = serde_json::to_string(&json).unwrap();
     let (status, json) = post_json(&app, "/v1/optimize", &body).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        json.pointer("/summary/restarts_used")
-            .and_then(Value::as_u64),
-        Some(10)
-    );
+    let restarts_used = json
+        .pointer("/summary/restarts_used")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     assert_eq!(
         json.pointer("/summary/restarts_requested")
             .and_then(Value::as_u64),
         Some(10)
+    );
+    assert!(
+        restarts_used >= 1,
+        "expected at least one restart, got {restarts_used}"
+    );
+    assert!(
+        restarts_used <= 10,
+        "expected restarts_used <= restarts_requested (10), got {restarts_used}"
     );
     assert!(
         json.pointer("/summary/timeout_reason").is_none(),
@@ -563,6 +570,54 @@ async fn same_usable_size_different_stock_ids_do_not_trigger_false_qty_limit() {
     assert!(
         !has_qty_limit,
         "unexpected qty_limit in unplaced_items for unlimited alternative stock"
+    );
+}
+
+#[tokio::test]
+async fn early_stop_no_improve_can_reduce_restarts() {
+    let app = app_for_test();
+    let body = serde_json::json!({
+        "units": "mm",
+        "params": {
+            "kerf_mm": 0.0,
+            "spacing_mm": 0.0,
+            "trim_mm": { "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0 },
+            "time_limit_ms": 5000,
+            "restarts": 20,
+            "objective": "min_waste",
+            "seed": 7,
+            "layout_mode": "guillotine"
+        },
+        "stock": [
+            { "id": "sheet", "width_mm": 1000.0, "height_mm": 1000.0, "qty": 1 }
+        ],
+        "items": [
+            { "id": "A", "width_mm": 100.0, "height_mm": 100.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" }
+        ]
+    })
+    .to_string();
+
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+
+    let restarts_requested = json
+        .pointer("/summary/restarts_requested")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let restarts_used = json
+        .pointer("/summary/restarts_used")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+
+    assert_eq!(restarts_requested, 20);
+    assert!(restarts_used >= 1);
+    assert!(
+        restarts_used < restarts_requested,
+        "expected early-stop to reduce restarts, used={restarts_used}, requested={restarts_requested}, body: {json}"
+    );
+    assert!(
+        json.pointer("/summary/timeout_reason").is_none(),
+        "early-stop by no-improve should not set timeout_reason"
     );
 }
 

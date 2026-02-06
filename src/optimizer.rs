@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::http::StatusCode;
@@ -16,6 +17,7 @@ use crate::validation::item_fits_any_stock_public;
 const SCALE: f64 = 1000.0;
 const MIN_SLICE_MS: u64 = 80;
 const SEED_STRIDE: u64 = 1_000_003;
+const EARLY_STOP_NO_IMPROVE_PATIENCE: u32 = 4;
 
 #[derive(Debug)]
 pub enum OptimizeError {
@@ -212,6 +214,11 @@ async fn run_restarts_with_budget(
     let mut last_constraint: Option<OptimizeError> = None;
     let started_at = Instant::now();
     let mut restarts_used: u32 = 0;
+    let mut no_improve_streak: u32 = 0;
+
+    // Keep one shared copy per request and avoid allocating/cloning a full Vec on each restart.
+    let stock_templates = Arc::new(prepared.stock_pieces.clone());
+    let cut_templates = Arc::new(prepared.cut_pieces.clone());
 
     for i in 0..restarts {
         let elapsed_ms = started_at.elapsed().as_millis() as u64;
@@ -224,8 +231,8 @@ async fn run_restarts_with_budget(
 
         let seed = base_seed.wrapping_add(i.wrapping_mul(SEED_STRIDE));
         let mode = layout_mode;
-        let stock_pieces = prepared.stock_pieces.clone();
-        let cut_pieces = prepared.cut_pieces.clone();
+        let stock_templates = Arc::clone(&stock_templates);
+        let cut_templates = Arc::clone(&cut_templates);
         let cut_width = prepared.cut_width;
 
         let mut handle = tokio::task::spawn_blocking(move || {
@@ -233,8 +240,8 @@ async fn run_restarts_with_budget(
             optimizer
                 .set_random_seed(seed)
                 .set_cut_width(cut_width)
-                .add_stock_pieces(stock_pieces)
-                .add_cut_pieces(cut_pieces);
+                .add_stock_pieces(stock_templates.iter().copied())
+                .add_cut_pieces(cut_templates.iter().cloned());
             match mode {
                 LayoutMode::Nested => optimizer.optimize_nested(|_| {}),
                 LayoutMode::Guillotine => optimizer.optimize_guillotine(|_| {}),
@@ -255,19 +262,31 @@ async fn run_restarts_with_budget(
                     }
                     let candidate = build_candidate(solution);
                     best = match best {
-                        None => Some(candidate),
+                        None => {
+                            no_improve_streak = 0;
+                            Some(candidate)
+                        }
                         Some(current) => {
                             if is_better(&candidate, &current, &req.params.objective) {
+                                no_improve_streak = 0;
                                 Some(candidate)
                             } else {
+                                no_improve_streak = no_improve_streak.saturating_add(1);
                                 Some(current)
                             }
                         }
                     };
+                    if no_improve_streak >= EARLY_STOP_NO_IMPROVE_PATIENCE {
+                        break;
+                    }
                 }
                 Ok(Err(err)) => {
                     restarts_used += 1;
                     last_constraint = Some(map_optimizer_error(err, prepared));
+                    no_improve_streak = no_improve_streak.saturating_add(1);
+                    if no_improve_streak >= EARLY_STOP_NO_IMPROVE_PATIENCE {
+                        break;
+                    }
                 }
                 Err(err) => {
                     return Err(OptimizeError::Internal(format!(
