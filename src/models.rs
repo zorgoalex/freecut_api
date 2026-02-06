@@ -124,8 +124,11 @@ pub struct Summary {
     pub waste_percent: f64,
     pub time_ms: u64,
     pub restarts_used: u32,
+    pub restarts_requested: u32,
     pub used_seed: u64,
     pub layout_mode: LayoutMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

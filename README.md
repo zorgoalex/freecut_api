@@ -167,8 +167,10 @@ Example file: `examples/optimize_response_ok.json`
   - `waste_percent`: Waste percentage of used stock.
   - `time_ms`: Total runtime in milliseconds.
   - `restarts_used`: Number of restarts actually used.
+  - `restarts_requested`: Restarts requested by client/default before internal slicing/budget adjustments.
 - `used_seed`: Seed actually used (user-provided or auto-generated).
   - `layout_mode`: Layout mode actually used.
+  - `timeout_reason`: Optional; appears when optimization stopped early due budget (`"slice_timeout"` or `"time_budget_exhausted"`).
 - `solutions`: Per-sheet layouts.
   - `stock_id`: Stock ID from request.
   - `index`: Sheet index for that stock type.
@@ -196,6 +198,7 @@ Example file: `examples/optimize_response_ok.json`
 - `MAX_INSTANCES` (default `5000`)
 - `DEFAULT_TIME_LIMIT_MS` (default `2000`)
 - `DEFAULT_RESTARTS` (default `10`)
+- `MAX_CONCURRENT_OPTIMIZE` (default: available CPU count, minimum `1`)
 
 ## Testing
 ```bash
@@ -240,6 +243,13 @@ python3 scripts/greedy_optimize.py -i request.json [-t 60]
 2. For each subset, evaluate the full multi-sheet sequence
 3. Pick the combination with lowest overall waste
 4. Repeat with remaining items for subsequent sheets
+
+## TODO
+- Fix `stock_map` key collision for same usable sheet size:
+  - Current risk: mapping by `(usable_w, usable_h)` can merge different stock entries with different `stock_id`/`qty`.
+  - Impact: wrong `stock_id` in response and incorrect `qty_limit` behavior (false `unplaced_items` with `reason="qty_limit"`).
+  - Business context: this fix is required primarily for business correctness (material identity, stock accounting, order semantics), even when geometric placement itself looks valid.
+  - Required change: use a stable per-stock key (or preserve source stock identity through optimization mapping), not only size tuple.
 
 ## License
 This project is licensed under the **MIT License**. See `LICENSE`.

@@ -6,6 +6,8 @@ use axum::{
     Json, Router,
 };
 use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
@@ -25,6 +27,7 @@ use validation::{validate_request, ValidationLimits};
 #[derive(Clone)]
 struct AppState {
     config: AppConfig,
+    optimize_semaphore: Arc<Semaphore>,
 }
 
 #[tokio::main]
@@ -39,6 +42,7 @@ async fn main() {
     tracing::info!(
         default_time_limit_ms = config.default_time_limit_ms,
         default_restarts = config.default_restarts,
+        max_concurrent_optimize = config.max_concurrent_optimize,
         "defaults loaded"
     );
     let app = build_app(config.clone());
@@ -53,7 +57,10 @@ async fn main() {
 }
 
 fn build_app(config: AppConfig) -> Router {
-    let app_state = AppState { config: config.clone() };
+    let app_state = AppState {
+        optimize_semaphore: Arc::new(Semaphore::new(config.max_concurrent_optimize.max(1))),
+        config: config.clone(),
+    };
     let openapi = ApiDoc::openapi();
 
     Router::new()
@@ -113,6 +120,7 @@ pub(crate) async fn version() -> Json<VersionResponse> {
     responses(
         (status = 200, description = "Optimization result", body = models::OptimizeResponse),
         (status = 400, description = "Invalid JSON", body = ErrorResponse),
+        (status = 429, description = "Too many concurrent optimize requests", body = ErrorResponse),
         (status = 422, description = "Validation error", body = ErrorResponse),
         (status = 408, description = "Optimization timeout", body = ErrorResponse),
         (status = 500, description = "Internal error", body = ErrorResponse)
@@ -135,6 +143,24 @@ pub(crate) async fn optimize(
     if let Err(err) = validate_request(&req, &limits) {
         return err.into_response();
     }
+
+    let _permit = match state.optimize_semaphore.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(ErrorResponse {
+                    status: "error",
+                    error_code: "OVERLOADED",
+                    message: "too many concurrent optimize requests".to_string(),
+                    details: Some(serde_json::json!({
+                        "max_concurrent_optimize": state.config.max_concurrent_optimize
+                    })),
+                }),
+            )
+                .into_response();
+        }
+    };
 
     match optimize_request(req, &state.config).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),

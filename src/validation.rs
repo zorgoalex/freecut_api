@@ -44,7 +44,10 @@ impl IntoResponse for ValidationError {
     }
 }
 
-pub fn validate_request(req: &OptimizeRequest, limits: &ValidationLimits) -> Result<(), ValidationError> {
+pub fn validate_request(
+    req: &OptimizeRequest,
+    limits: &ValidationLimits,
+) -> Result<(), ValidationError> {
     match req.units {
         crate::models::Units::Mm => {}
     }
@@ -56,9 +59,8 @@ pub fn validate_request(req: &OptimizeRequest, limits: &ValidationLimits) -> Res
         return Err(ValidationError::new("items must have at least one entry"));
     }
     if req.stock.len() > limits.max_stock_types {
-        return Err(ValidationError::new("stock exceeds max allowed types").with_details(
-            serde_json::json!({"max_stock_types": limits.max_stock_types}),
-        ));
+        return Err(ValidationError::new("stock exceeds max allowed types")
+            .with_details(serde_json::json!({"max_stock_types": limits.max_stock_types})));
     }
 
     if req.params.kerf_mm < 0.0 || req.params.spacing_mm < 0.0 {
@@ -113,8 +115,15 @@ pub fn validate_request(req: &OptimizeRequest, limits: &ValidationLimits) -> Res
 
 /// Check if an item fits any stock (considering trim, gap, and rotation)
 /// gap_mm = kerf_mm + spacing_mm (space needed around the item for cutting)
-pub fn item_fits_any_stock_public(item: &Item, trim: &Trim, gap_mm: f64, stock: &[StockItem]) -> bool {
-    stock.iter().any(|sheet| item_fits_stock_with_gap(item, trim, gap_mm, sheet))
+pub fn item_fits_any_stock_public(
+    item: &Item,
+    trim: &Trim,
+    gap_mm: f64,
+    stock: &[StockItem],
+) -> bool {
+    stock
+        .iter()
+        .any(|sheet| item_fits_stock_with_gap(item, trim, gap_mm, sheet))
 }
 
 fn validate_stock(stock: &StockItem) -> Result<(), ValidationError> {
@@ -139,9 +148,8 @@ fn validate_trim_against_stock(trim: &Trim, stock: &StockItem) -> Result<(), Val
     let usable_w = stock.width_mm - trim.left - trim.right;
     let usable_h = stock.height_mm - trim.top - trim.bottom;
     if usable_w <= 0.0 || usable_h <= 0.0 {
-        return Err(ValidationError::new("trim exceeds stock dimensions").with_details(
-            serde_json::json!({"stock_id": stock.id}),
-        ));
+        return Err(ValidationError::new("trim exceeds stock dimensions")
+            .with_details(serde_json::json!({"stock_id": stock.id})));
     }
     Ok(())
 }
@@ -172,7 +180,8 @@ fn item_fits_stock_with_gap(item: &Item, trim: &Trim, gap_mm: f64, stock: &Stock
     }
 
     // Check rotated orientation
-    let can_rotate = item.rotation == Rotation::Allow90 && item.pattern_direction == crate::models::PatternDirection::None;
+    let can_rotate = item.rotation == Rotation::Allow90
+        && item.pattern_direction == crate::models::PatternDirection::None;
     if can_rotate {
         let rotated_w_with_gap = item.height_mm + gap_mm;
         let rotated_h_with_gap = item.width_mm + gap_mm;

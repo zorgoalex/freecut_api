@@ -33,6 +33,21 @@ async fn post_json(app: &Router, uri: &str, body: &str) -> (StatusCode, Value) {
     (status, json)
 }
 
+async fn post_json_owned(app: Router, uri: &'static str, body: String) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    (status, json)
+}
+
 async fn get_json(app: &Router, uri: &str) -> (StatusCode, Value) {
     let request = Request::builder()
         .method("GET")
@@ -119,8 +134,16 @@ async fn optimize_returns_svg() {
     );
     let (status, json) = post_json(&app, "/v1/optimize", VALID_REQUEST).await;
 
-    assert_eq!(status, StatusCode::OK, "unexpected status: {status}, body: {json}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected status: {status}, body: {json}"
+    );
     assert_eq!(json.get("status").and_then(Value::as_str), Some("ok"));
+    assert!(json
+        .pointer("/summary/restarts_requested")
+        .and_then(Value::as_u64)
+        .is_some());
     assert!(json
         .get("solutions")
         .and_then(Value::as_array)
@@ -191,8 +214,14 @@ async fn optimize_auto_seed_changes_per_request() {
     let first_seed = first.pointer("/summary/used_seed").and_then(Value::as_u64);
     let second_seed = second.pointer("/summary/used_seed").and_then(Value::as_u64);
     assert!(first_seed.is_some(), "missing used_seed in first response");
-    assert!(second_seed.is_some(), "missing used_seed in second response");
-    assert_ne!(first_seed, second_seed, "auto seed should change per request");
+    assert!(
+        second_seed.is_some(),
+        "missing used_seed in second response"
+    );
+    assert_ne!(
+        first_seed, second_seed,
+        "auto seed should change per request"
+    );
 }
 
 #[tokio::test]
@@ -219,6 +248,7 @@ async fn optimize_defaults_time_limit_and_restarts() {
         max_instances: 5000,
         default_time_limit_ms: 2000,
         default_restarts: 10,
+        max_concurrent_optimize: 4,
     };
     let app = app_with_config(config);
     let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
@@ -230,8 +260,18 @@ async fn optimize_defaults_time_limit_and_restarts() {
     let (status, json) = post_json(&app, "/v1/optimize", &body).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
-        json.pointer("/summary/restarts_used").and_then(Value::as_u64),
+        json.pointer("/summary/restarts_used")
+            .and_then(Value::as_u64),
         Some(10)
+    );
+    assert_eq!(
+        json.pointer("/summary/restarts_requested")
+            .and_then(Value::as_u64),
+        Some(10)
+    );
+    assert!(
+        json.pointer("/summary/timeout_reason").is_none(),
+        "timeout_reason should be absent for non-timeout result"
     );
 }
 
@@ -245,6 +285,60 @@ async fn optimize_invalid_trim_returns_422() {
         "unexpected status: {status}, body: {json}"
     );
     assert_eq!(json.get("status").and_then(Value::as_str), Some("error"));
+}
+
+#[tokio::test]
+async fn optimize_returns_429_when_overloaded() {
+    let config = AppConfig {
+        port: 0,
+        max_body_bytes: 5_242_880,
+        max_instances: 5000,
+        default_time_limit_ms: 2000,
+        default_restarts: 10,
+        max_concurrent_optimize: 1,
+    };
+    let app = app_with_config(config);
+
+    let mut items = Vec::new();
+    for i in 0..10 {
+        items.push(serde_json::json!({
+            "id": format!("L{i}"),
+            "width_mm": 120.0 + (i as f64) * 10.0,
+            "height_mm": 160.0 + (i as f64) * 8.0,
+            "qty": 3,
+            "rotation": "allow_90",
+            "pattern_direction": "none"
+        }));
+    }
+
+    let heavy_body = serde_json::json!({
+        "units": "mm",
+        "params": {
+            "kerf_mm": 2.0,
+            "spacing_mm": 1.0,
+            "trim_mm": { "left": 10.0, "right": 10.0, "top": 10.0, "bottom": 10.0 },
+            "time_limit_ms": 2000,
+            "restarts": 10,
+            "objective": "min_waste",
+            "seed": 12345,
+            "layout_mode": "guillotine"
+        },
+        "stock": [{ "id": "sheet", "width_mm": 2500.0, "height_mm": 1250.0, "qty": 0 }],
+        "items": items
+    })
+    .to_string();
+
+    let first = tokio::spawn(post_json_owned(app.clone(), "/v1/optimize", heavy_body));
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let (status, json) = post_json(&app, "/v1/optimize", VALID_REQUEST).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "body: {json}");
+    assert_eq!(
+        json.get("error_code").and_then(Value::as_str),
+        Some("OVERLOADED")
+    );
+
+    let _ = first.await.unwrap();
 }
 
 #[tokio::test]
@@ -308,6 +402,7 @@ async fn max_instances_limit_enforced() {
         max_instances: 2,
         default_time_limit_ms: 1200,
         default_restarts: 7,
+        max_concurrent_optimize: 4,
     };
     let app = app_with_config(config);
     let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
@@ -365,6 +460,71 @@ async fn max_stock_types_limit_enforced() {
 }
 
 #[tokio::test]
+async fn same_usable_size_different_stock_ids_do_not_trigger_false_qty_limit() {
+    let app = app_for_test();
+    let body = serde_json::json!({
+        "units": "mm",
+        "params": {
+            "kerf_mm": 0.0,
+            "spacing_mm": 0.0,
+            "trim_mm": { "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0 },
+            "time_limit_ms": 1000,
+            "restarts": 3,
+            "objective": "min_sheets",
+            "seed": 42,
+            "layout_mode": "guillotine"
+        },
+        "stock": [
+            { "id": "oak", "width_mm": 1000.0, "height_mm": 1000.0, "qty": 1 },
+            { "id": "pine", "width_mm": 1000.0, "height_mm": 1000.0, "qty": 0 }
+        ],
+        "items": [
+            { "id": "P", "width_mm": 490.0, "height_mm": 490.0, "qty": 5, "rotation": "allow_90", "pattern_direction": "none" }
+        ]
+    })
+    .to_string();
+
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+
+    let solutions = json
+        .get("solutions")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        solutions.len() >= 2,
+        "expected at least two sheets, got {}",
+        solutions.len()
+    );
+
+    let has_pine = solutions.iter().any(|s| {
+        s.get("stock_id")
+            .and_then(Value::as_str)
+            .map(|id| id == "pine")
+            .unwrap_or(false)
+    });
+    assert!(has_pine, "expected at least one sheet mapped to 'pine'");
+
+    let has_qty_limit = json
+        .get("unplaced_items")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items.iter().any(|item| {
+                item.get("reason")
+                    .and_then(Value::as_str)
+                    .map(|reason| reason == "qty_limit")
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+    assert!(
+        !has_qty_limit,
+        "unexpected qty_limit in unplaced_items for unlimited alternative stock"
+    );
+}
+
+#[tokio::test]
 async fn body_size_limit_enforced() {
     let config = AppConfig {
         port: 0,
@@ -372,6 +532,7 @@ async fn body_size_limit_enforced() {
         max_instances: 5000,
         default_time_limit_ms: 1200,
         default_restarts: 7,
+        max_concurrent_optimize: 4,
     };
     let app = app_with_config(config);
     let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();

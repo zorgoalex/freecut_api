@@ -1,0 +1,14 @@
+Implement Stage 1 from ai_docs/Quick_Refact_Freecut.md:
+- add limit for concurrent heavy /v1/optimize requests;
+- define clear overload behavior;
+- expose env setting;
+- add/update tests.
+
+Scope:
+- change only what is needed for Stage 1;
+- preserve API compatibility for successful requests.
+
+Output in final message:
+- changed files list;
+- short rationale;
+- cargo test result.

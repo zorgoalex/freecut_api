@@ -20,7 +20,10 @@ const SEED_STRIDE: u64 = 1_000_003;
 #[derive(Debug)]
 pub enum OptimizeError {
     Timeout,
-    Constraint { message: String, details: Option<serde_json::Value> },
+    Constraint {
+        message: String,
+        details: Option<serde_json::Value>,
+    },
     Internal(String),
 }
 
@@ -33,12 +36,18 @@ impl IntoResponse for OptimizeError {
                 "optimization timed out",
                 None,
             ),
-            OptimizeError::Constraint { message, details } => {
-                error_response(StatusCode::UNPROCESSABLE_ENTITY, "CONSTRAINT_ERROR", &message, details)
-            }
-            OptimizeError::Internal(message) => {
-                error_response(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &message, None)
-            }
+            OptimizeError::Constraint { message, details } => error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "CONSTRAINT_ERROR",
+                &message,
+                details,
+            ),
+            OptimizeError::Internal(message) => error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL",
+                &message,
+                None,
+            ),
         }
     }
 }
@@ -64,7 +73,7 @@ struct PreparedInput {
     stock_pieces: Vec<StockPiece>,
     cut_pieces: Vec<CutPiece>,
     instance_map: Vec<InstanceInfo>,
-    stock_map: HashMap<(usize, usize), StockInfo>,
+    stock_map: HashMap<(usize, usize), Vec<StockInfo>>,
     trim: Trim,
     cut_width: usize,
     /// Items that don't fit any stock sheet (oversized)
@@ -90,13 +99,13 @@ pub async fn optimize_request(
         .params
         .time_limit_ms
         .unwrap_or(config.default_time_limit_ms);
-    let restarts = req
+    let restarts_requested = req
         .params
         .restarts
         .unwrap_or(config.default_restarts)
         .max(1);
 
-    let mut restarts = u64::from(restarts);
+    let mut restarts = u64::from(restarts_requested);
     let mut slice_ms = time_limit_ms / restarts;
     if slice_ms < MIN_SLICE_MS {
         restarts = (time_limit_ms / MIN_SLICE_MS).max(1);
@@ -118,8 +127,10 @@ pub async fn optimize_request(
                 waste_percent: 0.0,
                 time_ms,
                 restarts_used: 0,
+                restarts_requested,
                 used_seed,
                 layout_mode,
+                timeout_reason: None,
             },
             solutions: vec![],
             unplaced_items: prepared.oversized_items,
@@ -127,17 +138,20 @@ pub async fn optimize_request(
         });
     }
 
-    let overall_limit = time_limit_ms.saturating_add(1000);
-
-    let candidate = tokio::time::timeout(Duration::from_millis(overall_limit), async {
-        run_restarts(&req, &prepared, restarts, slice_ms, layout_mode, used_seed).await
-    })
-    .await
-    .map_err(|_| OptimizeError::Timeout)??;
+    let run_outcome = run_restarts_with_budget(
+        &req,
+        &prepared,
+        restarts,
+        slice_ms,
+        layout_mode,
+        used_seed,
+        time_limit_ms,
+    )
+    .await?;
 
     let time_ms = start.elapsed().as_millis() as u64;
 
-    let all_solutions = build_solutions(&candidate.solution, &prepared);
+    let all_solutions = build_solutions(&run_outcome.candidate.solution, &prepared);
 
     // Apply qty limits and collect unplaced items
     let (solutions, mut unplaced_items) = apply_qty_limits(all_solutions, &prepared);
@@ -146,17 +160,24 @@ pub async fn optimize_request(
     unplaced_items.extend(prepared.oversized_items.clone());
 
     // Recalculate stats for kept solutions only
-    let (used_stock_count, total_stock_area, total_waste_area) = calculate_solution_stats(&solutions);
+    let (used_stock_count, total_stock_area, total_waste_area) =
+        calculate_solution_stats(&solutions);
 
     let summary = Summary {
         objective: req.params.objective,
         used_stock_count,
         total_waste_area_mm2: total_waste_area,
-        waste_percent: if total_stock_area > 0.0 { 100.0 * total_waste_area / total_stock_area } else { 0.0 },
+        waste_percent: if total_stock_area > 0.0 {
+            100.0 * total_waste_area / total_stock_area
+        } else {
+            0.0
+        },
         time_ms,
-        restarts_used: restarts as u32,
+        restarts_used: run_outcome.restarts_used,
+        restarts_requested,
         used_seed,
         layout_mode,
+        timeout_reason: run_outcome.timeout_reason,
     };
 
     let svg = build_svg(&solutions, &unplaced_items, &prepared.trim);
@@ -170,19 +191,37 @@ pub async fn optimize_request(
     })
 }
 
-async fn run_restarts(
+struct RunOutcome {
+    candidate: Candidate,
+    restarts_used: u32,
+    timeout_reason: Option<String>,
+}
+
+async fn run_restarts_with_budget(
     req: &OptimizeRequest,
     prepared: &PreparedInput,
     restarts: u64,
     slice_ms: u64,
     layout_mode: LayoutMode,
     base_seed: u64,
-) -> Result<Candidate, OptimizeError> {
+    total_budget_ms: u64,
+) -> Result<RunOutcome, OptimizeError> {
     let mut best: Option<Candidate> = None;
     let mut timed_out = false;
+    let mut budget_exhausted = false;
     let mut last_constraint: Option<OptimizeError> = None;
+    let started_at = Instant::now();
+    let mut restarts_used: u32 = 0;
 
     for i in 0..restarts {
+        let elapsed_ms = started_at.elapsed().as_millis() as u64;
+        if elapsed_ms >= total_budget_ms {
+            budget_exhausted = true;
+            break;
+        }
+        let remaining_ms = total_budget_ms - elapsed_ms;
+        let this_slice_ms = remaining_ms.min(slice_ms).max(1);
+
         let seed = base_seed.wrapping_add(i.wrapping_mul(SEED_STRIDE));
         let mode = layout_mode;
         let stock_pieces = prepared.stock_pieces.clone();
@@ -202,10 +241,11 @@ async fn run_restarts(
             }
         });
 
-        let run = tokio::time::timeout(Duration::from_millis(slice_ms), &mut handle).await;
+        let run = tokio::time::timeout(Duration::from_millis(this_slice_ms), &mut handle).await;
         match run {
             Ok(join_result) => match join_result {
                 Ok(Ok(solution)) => {
+                    restarts_used += 1;
                     if solution.fitness < 0.0 {
                         last_constraint = Some(OptimizeError::Constraint {
                             message: "no valid solution".to_string(),
@@ -226,6 +266,7 @@ async fn run_restarts(
                     };
                 }
                 Ok(Err(err)) => {
+                    restarts_used += 1;
                     last_constraint = Some(map_optimizer_error(err, prepared));
                 }
                 Err(err) => {
@@ -238,15 +279,32 @@ async fn run_restarts(
                 timed_out = true;
                 // Best-effort abort. The blocking task may still run to completion.
                 handle.abort();
+                // Do not launch more heavy tasks once one slice timed out.
+                break;
             }
         }
     }
 
     if let Some(best) = best {
-        return Ok(best);
+        let timeout_reason = if timed_out {
+            Some("slice_timeout".to_string())
+        } else if budget_exhausted {
+            Some("time_budget_exhausted".to_string())
+        } else {
+            None
+        };
+        return Ok(RunOutcome {
+            candidate: best,
+            restarts_used,
+            timeout_reason,
+        });
     }
 
     if timed_out {
+        return Err(OptimizeError::Timeout);
+    }
+
+    if budget_exhausted {
         return Err(OptimizeError::Timeout);
     }
 
@@ -273,7 +331,7 @@ fn prepare_input(req: &OptimizeRequest) -> Result<PreparedInput, OptimizeError> 
     let cut_width = to_units(req.params.kerf_mm + req.params.spacing_mm)?;
 
     let mut stock_pieces = Vec::new();
-    let mut stock_map = HashMap::new();
+    let mut stock_map: HashMap<(usize, usize), Vec<StockInfo>> = HashMap::new();
 
     for stock in &req.stock {
         let width = to_units(stock.width_mm)?;
@@ -303,12 +361,15 @@ fn prepare_input(req: &OptimizeRequest) -> Result<PreparedInput, OptimizeError> 
             quantity: None, // Unlimited for optimizer
         });
 
-        stock_map.entry((usable_w, usable_h)).or_insert_with(|| StockInfo {
-            stock_id: stock.id.clone(),
-            full_width_mm: stock.width_mm,
-            full_height_mm: stock.height_mm,
-            qty_limit,
-        });
+        stock_map
+            .entry((usable_w, usable_h))
+            .or_default()
+            .push(StockInfo {
+                stock_id: stock.id.clone(),
+                full_width_mm: stock.width_mm,
+                full_height_mm: stock.height_mm,
+                qty_limit,
+            });
     }
 
     let mut cut_pieces = Vec::new();
@@ -370,10 +431,7 @@ fn prepare_input(req: &OptimizeRequest) -> Result<PreparedInput, OptimizeError> 
     })
 }
 
-fn map_optimizer_error(
-    err: cut_optimizer_2d::Error,
-    prepared: &PreparedInput,
-) -> OptimizeError {
+fn map_optimizer_error(err: cut_optimizer_2d::Error, prepared: &PreparedInput) -> OptimizeError {
     match err {
         cut_optimizer_2d::Error::NoFitForCutPiece(cut_piece) => {
             let item_info = cut_piece
@@ -453,8 +511,12 @@ fn apply_qty_limits(
     let mut stock_limits: HashMap<String, Option<u32>> = HashMap::new();
 
     // Build stock_limits from prepared.stock_map
-    for info in prepared.stock_map.values() {
-        stock_limits.insert(info.stock_id.clone(), info.qty_limit);
+    for infos in prepared.stock_map.values() {
+        for info in infos {
+            stock_limits
+                .entry(info.stock_id.clone())
+                .or_insert(info.qty_limit);
+        }
     }
 
     for solution in solutions {
@@ -509,14 +571,19 @@ fn calculate_solution_stats(solutions: &[Solution]) -> (u32, f64, f64) {
     (used_stock_count, total_stock_area, total_waste_area)
 }
 
-fn build_solutions(solution: &cut_optimizer_2d::Solution, prepared: &PreparedInput) -> Vec<Solution> {
+fn build_solutions(
+    solution: &cut_optimizer_2d::Solution,
+    prepared: &PreparedInput,
+) -> Vec<Solution> {
     let mut index_map: HashMap<String, u32> = HashMap::new();
+    let mut assigned_counts: HashMap<String, u32> = HashMap::new();
     let mut output = Vec::new();
 
     for stock in &solution.stock_pieces {
         let info = prepared
             .stock_map
             .get(&(stock.width, stock.length))
+            .and_then(|infos| choose_stock_info(infos, &assigned_counts))
             .cloned();
         let (stock_id, full_width_mm, full_height_mm) = match info {
             Some(info) => (info.stock_id, info.full_width_mm, info.full_height_mm),
@@ -526,6 +593,7 @@ fn build_solutions(solution: &cut_optimizer_2d::Solution, prepared: &PreparedInp
                 from_units(stock.length),
             ),
         };
+        *assigned_counts.entry(stock_id.clone()).or_insert(0) += 1;
 
         let index = index_map.entry(stock_id.clone()).or_insert(0);
         let sheet_index = *index;
@@ -550,11 +618,32 @@ fn build_solutions(solution: &cut_optimizer_2d::Solution, prepared: &PreparedInp
     output
 }
 
+fn choose_stock_info<'a>(
+    infos: &'a [StockInfo],
+    assigned_counts: &HashMap<String, u32>,
+) -> Option<&'a StockInfo> {
+    for info in infos {
+        if let Some(limit) = info.qty_limit {
+            let used = assigned_counts.get(&info.stock_id).copied().unwrap_or(0);
+            if used < limit {
+                return Some(info);
+            }
+        }
+    }
+
+    infos
+        .iter()
+        .find(|info| info.qty_limit.is_none())
+        .or_else(|| infos.first())
+}
+
 fn build_placement(
     cut_piece: &cut_optimizer_2d::ResultCutPiece,
     prepared: &PreparedInput,
 ) -> Option<Placement> {
-    let instance = cut_piece.external_id.and_then(|id| prepared.instance_map.get(id));
+    let instance = cut_piece
+        .external_id
+        .and_then(|id| prepared.instance_map.get(id));
     let info = instance?;
 
     Some(Placement {
