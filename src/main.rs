@@ -21,7 +21,7 @@ mod validation;
 use config::AppConfig;
 use models::{ErrorResponse, OptimizeRequest, VersionResponse};
 use openapi::ApiDoc;
-use optimizer::optimize_request;
+use optimizer::{optimize_request, optimize_request_beam};
 use validation::{validate_request, ValidationLimits};
 
 #[derive(Clone)]
@@ -68,6 +68,7 @@ fn build_app(config: AppConfig) -> Router {
         .route("/health/ready", get(health_ready))
         .route("/version", get(version))
         .route("/v1/optimize", post(optimize))
+        .route("/v1/optimize/beam", post(optimize_beam))
         .merge(SwaggerUi::new("/docs").url("/openapi.json", openapi))
         .with_state(app_state)
         .layer(DefaultBodyLimit::max(config.max_body_bytes))
@@ -130,6 +131,35 @@ pub(crate) async fn optimize(
     State(state): State<AppState>,
     payload: Result<Json<OptimizeRequest>, JsonRejection>,
 ) -> impl IntoResponse {
+    optimize_common(state, payload, false).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/optimize/beam",
+    tag = "optimize",
+    request_body = OptimizeRequest,
+    responses(
+        (status = 200, description = "Beam optimization result", body = models::OptimizeResponse),
+        (status = 400, description = "Invalid JSON", body = ErrorResponse),
+        (status = 429, description = "Too many concurrent optimize requests", body = ErrorResponse),
+        (status = 422, description = "Validation error", body = ErrorResponse),
+        (status = 408, description = "Optimization timeout", body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse)
+    )
+)]
+pub(crate) async fn optimize_beam(
+    State(state): State<AppState>,
+    payload: Result<Json<OptimizeRequest>, JsonRejection>,
+) -> impl IntoResponse {
+    optimize_common(state, payload, true).await
+}
+
+async fn optimize_common(
+    state: AppState,
+    payload: Result<Json<OptimizeRequest>, JsonRejection>,
+    use_beam: bool,
+) -> Response {
     let req = match payload {
         Ok(Json(req)) => req,
         Err(rejection) => return json_rejection(rejection),
@@ -162,7 +192,13 @@ pub(crate) async fn optimize(
         }
     };
 
-    match optimize_request(req, &state.config).await {
+    let result = if use_beam {
+        optimize_request_beam(req, &state.config).await
+    } else {
+        optimize_request(req, &state.config).await
+    };
+
+    match result {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(err) => err.into_response(),
     }

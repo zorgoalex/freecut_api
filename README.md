@@ -44,8 +44,9 @@ docker run --rm -p 8088:8088 freecut-mvp
 - `GET /docs`
  - Generated schema file: `openapi.json`
 
-## Main Endpoint
-`POST /v1/optimize`
+## Main Endpoints
+- `POST /v1/optimize` - standard optimizer (with optional portfolio mode).
+- `POST /v1/optimize/beam` - beam-search orchestration endpoint.
 
 - Request/response are JSON.
 - All dimensions are in millimeters (`mm`).
@@ -109,6 +110,12 @@ Example file: `examples/optimize_request.json`
     - `enabled`: Optional (`true` by default when object is present).
     - `deadline_ms`: Optional total portfolio deadline; defaults to `time_limit_ms`.
     - `candidate_count`: Optional number of portfolio candidates (`1..16`, default `4`).
+  - `beam`: Optional beam-search settings (primarily for `/v1/optimize/beam`).
+    - `enabled`: Optional (`true` by default when object is present).
+    - `deadline_ms`: Optional total beam deadline; defaults to `time_limit_ms`.
+    - `beam_width`: Optional beam width (`1..8`, default `2`).
+    - `beam_depth`: Optional beam depth (`1..8`, default `2`).
+    - `branch_factor`: Optional branch factor (`1..8`, default `2`).
 - `stock`: Available sheet materials.
   - `id`: Stock identifier (your business label for a sheet type).
   - `width_mm`, `height_mm`: Sheet dimensions in mm.
@@ -180,6 +187,10 @@ Example file: `examples/optimize_response_ok.json`
     - `deadline_ms`, `candidates_total`, `candidates_completed`, `candidates_timed_out`,
       `candidates_failed`, `candidates_skipped`, `winner_strategy`, `winner_seed`,
       `winner_restarts_used`.
+  - `beam`: Optional telemetry for beam mode:
+    - `deadline_ms`, `beam_width`, `beam_depth`, `branch_factor`,
+      `nodes_evaluated`, `nodes_timed_out`, `nodes_failed`, `nodes_pruned`,
+      `winner_depth`, `winner_seed`, `winner_restarts_used`.
 - `solutions`: Per-sheet layouts.
   - `stock_id`: Stock ID from request.
   - `index`: Sheet index for that stock type.

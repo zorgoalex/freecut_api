@@ -9,8 +9,9 @@ use cut_optimizer_2d::{CutPiece, Optimizer, PatternDirection as CutPatternDirect
 
 use crate::config::AppConfig;
 use crate::models::{
-    Artifacts, ErrorResponse, LayoutMode, Objective, OptimizeRequest, OptimizeResponse,
-    PatternDirection, Placement, PortfolioTelemetry, Solution, Summary, Trim, UnplacedItem,
+    Artifacts, BeamTelemetry, ErrorResponse, LayoutMode, Objective, OptimizeRequest,
+    OptimizeResponse, PatternDirection, Placement, PortfolioTelemetry, Solution, Summary, Trim,
+    UnplacedItem,
 };
 use crate::validation::item_fits_any_stock_public;
 
@@ -20,6 +21,10 @@ const SEED_STRIDE: u64 = 1_000_003;
 const EARLY_STOP_NO_IMPROVE_PATIENCE: u32 = 4;
 const PORTFOLIO_DEFAULT_CANDIDATES: u32 = 4;
 const PORTFOLIO_MAX_CANDIDATES: u32 = 16;
+const BEAM_DEFAULT_WIDTH: u32 = 2;
+const BEAM_DEFAULT_DEPTH: u32 = 2;
+const BEAM_DEFAULT_BRANCH_FACTOR: u32 = 2;
+const BEAM_MAX_RESTARTS: u32 = 64;
 
 #[derive(Debug)]
 pub enum OptimizeError {
@@ -94,6 +99,27 @@ pub async fn optimize_request(
     req: OptimizeRequest,
     config: &AppConfig,
 ) -> Result<OptimizeResponse, OptimizeError> {
+    optimize_request_internal(req, config, SolveMode::Default).await
+}
+
+pub async fn optimize_request_beam(
+    req: OptimizeRequest,
+    config: &AppConfig,
+) -> Result<OptimizeResponse, OptimizeError> {
+    optimize_request_internal(req, config, SolveMode::BeamEndpoint).await
+}
+
+#[derive(Clone, Copy)]
+enum SolveMode {
+    Default,
+    BeamEndpoint,
+}
+
+async fn optimize_request_internal(
+    req: OptimizeRequest,
+    config: &AppConfig,
+    mode: SolveMode,
+) -> Result<OptimizeResponse, OptimizeError> {
     let layout_mode = req.params.layout_mode.unwrap_or(LayoutMode::Guillotine);
     let include_svg = req.params.include_svg.unwrap_or(true);
     let used_seed = req.params.seed.unwrap_or_else(generate_seed);
@@ -135,6 +161,7 @@ pub async fn optimize_request(
                 layout_mode,
                 timeout_reason: None,
                 portfolio: None,
+                beam: None,
             },
             solutions: vec![],
             unplaced_items: prepared.oversized_items,
@@ -142,33 +169,66 @@ pub async fn optimize_request(
         });
     }
 
-    let run_outcome = match &req.params.portfolio {
-        Some(portfolio_cfg) if portfolio_cfg.enabled.unwrap_or(true) => {
-            let deadline_ms = portfolio_cfg.deadline_ms.unwrap_or(time_limit_ms).max(100);
-            let candidates = portfolio_cfg
-                .candidate_count
-                .unwrap_or(PORTFOLIO_DEFAULT_CANDIDATES)
-                .clamp(1, PORTFOLIO_MAX_CANDIDATES);
-            run_portfolio_anytime(
+    let run_outcome = match mode {
+        SolveMode::Default => match &req.params.portfolio {
+            Some(portfolio_cfg) if portfolio_cfg.enabled.unwrap_or(true) => {
+                let deadline_ms = portfolio_cfg.deadline_ms.unwrap_or(time_limit_ms).max(100);
+                let candidates = portfolio_cfg
+                    .candidate_count
+                    .unwrap_or(PORTFOLIO_DEFAULT_CANDIDATES)
+                    .clamp(1, PORTFOLIO_MAX_CANDIDATES);
+                run_portfolio_anytime(
+                    &req,
+                    &prepared,
+                    layout_mode,
+                    used_seed,
+                    deadline_ms,
+                    candidates,
+                    restarts_requested,
+                )
+                .await?
+            }
+            _ => {
+                run_restarts_with_budget(
+                    &req,
+                    &prepared,
+                    restarts,
+                    slice_ms,
+                    layout_mode,
+                    used_seed,
+                    time_limit_ms,
+                )
+                .await?
+            }
+        },
+        SolveMode::BeamEndpoint => {
+            let beam_cfg = req.params.beam.as_ref();
+            let deadline_ms = beam_cfg
+                .and_then(|c| c.deadline_ms)
+                .unwrap_or(time_limit_ms)
+                .max(100);
+            let beam_width = beam_cfg
+                .and_then(|c| c.beam_width)
+                .unwrap_or(BEAM_DEFAULT_WIDTH)
+                .clamp(1, 8);
+            let beam_depth = beam_cfg
+                .and_then(|c| c.beam_depth)
+                .unwrap_or(BEAM_DEFAULT_DEPTH)
+                .clamp(1, 8);
+            let branch_factor = beam_cfg
+                .and_then(|c| c.branch_factor)
+                .unwrap_or(BEAM_DEFAULT_BRANCH_FACTOR)
+                .clamp(1, 8);
+            run_beam_anytime(
                 &req,
                 &prepared,
                 layout_mode,
                 used_seed,
                 deadline_ms,
-                candidates,
+                beam_width,
+                beam_depth,
+                branch_factor,
                 restarts_requested,
-            )
-            .await?
-        }
-        _ => {
-            run_restarts_with_budget(
-                &req,
-                &prepared,
-                restarts,
-                slice_ms,
-                layout_mode,
-                used_seed,
-                time_limit_ms,
             )
             .await?
         }
@@ -204,6 +264,7 @@ pub async fn optimize_request(
         layout_mode,
         timeout_reason: run_outcome.timeout_reason,
         portfolio: run_outcome.portfolio,
+        beam: run_outcome.beam,
     };
 
     let svg = if include_svg {
@@ -226,6 +287,7 @@ struct RunOutcome {
     restarts_used: u32,
     timeout_reason: Option<String>,
     portfolio: Option<PortfolioTelemetry>,
+    beam: Option<BeamTelemetry>,
 }
 
 #[derive(Clone)]
@@ -233,6 +295,20 @@ struct PortfolioPlan {
     name: &'static str,
     seed: u64,
     requested_restarts: u32,
+}
+
+#[derive(Clone)]
+struct BeamPlan {
+    seed: u64,
+    requested_restarts: u32,
+}
+
+struct BeamCandidate {
+    candidate: Candidate,
+    seed: u64,
+    requested_restarts: u32,
+    depth: u32,
+    restarts_used: u32,
 }
 
 async fn run_restarts_with_budget(
@@ -353,6 +429,7 @@ async fn run_restarts_with_budget(
             restarts_used,
             timeout_reason,
             portfolio: None,
+            beam: None,
         });
     }
 
@@ -465,6 +542,7 @@ async fn run_portfolio_anytime(
                 winner_seed,
                 winner_restarts_used,
             }),
+            beam: None,
         });
     }
 
@@ -475,6 +553,205 @@ async fn run_portfolio_anytime(
     Err(OptimizeError::Internal(
         "portfolio could not produce a valid solution".to_string(),
     ))
+}
+
+async fn run_beam_anytime(
+    req: &OptimizeRequest,
+    prepared: &PreparedInput,
+    layout_mode: LayoutMode,
+    base_seed: u64,
+    deadline_ms: u64,
+    beam_width: u32,
+    beam_depth: u32,
+    branch_factor: u32,
+    default_restarts: u32,
+) -> Result<RunOutcome, OptimizeError> {
+    let mut frontier_plans = vec![BeamPlan {
+        seed: base_seed,
+        requested_restarts: default_restarts.max(1),
+    }];
+    let mut frontier_results: Vec<BeamCandidate> = Vec::new();
+    let started_at = Instant::now();
+    let mut nodes_evaluated: u32 = 0;
+    let mut nodes_timed_out: u32 = 0;
+    let mut nodes_failed: u32 = 0;
+    let mut nodes_pruned: u32 = 0;
+    let mut budget_exhausted = false;
+
+    for depth in 0..beam_depth {
+        let elapsed = started_at.elapsed().as_millis() as u64;
+        if elapsed >= deadline_ms {
+            budget_exhausted = true;
+            break;
+        }
+        if frontier_plans.is_empty() {
+            break;
+        }
+
+        let remaining_ms = deadline_ms.saturating_sub(elapsed);
+        let remaining_levels = u64::from(beam_depth.saturating_sub(depth).max(1));
+        let level_budget = (remaining_ms / remaining_levels).max(MIN_SLICE_MS);
+        let planned_runs =
+            (frontier_plans.len() as u64).saturating_mul(u64::from(branch_factor).max(1));
+        let run_budget_ms = (level_budget / planned_runs.max(1)).max(MIN_SLICE_MS);
+
+        let mut level_results: Vec<BeamCandidate> = Vec::new();
+        for parent in &frontier_plans {
+            let expansions =
+                build_beam_expansions(parent.seed, parent.requested_restarts, branch_factor, depth);
+            for expansion in expansions {
+                let now_elapsed = started_at.elapsed().as_millis() as u64;
+                if now_elapsed >= deadline_ms {
+                    budget_exhausted = true;
+                    break;
+                }
+
+                nodes_evaluated = nodes_evaluated.saturating_add(1);
+                let (run_restarts, run_slice_ms) =
+                    derive_restarts_and_slice(run_budget_ms, expansion.requested_restarts);
+
+                match run_restarts_with_budget(
+                    req,
+                    prepared,
+                    run_restarts,
+                    run_slice_ms,
+                    layout_mode,
+                    expansion.seed,
+                    run_budget_ms,
+                )
+                .await
+                {
+                    Ok(outcome) => {
+                        if outcome.timeout_reason.is_some() {
+                            nodes_timed_out = nodes_timed_out.saturating_add(1);
+                        }
+                        level_results.push(BeamCandidate {
+                            candidate: outcome.candidate,
+                            seed: expansion.seed,
+                            requested_restarts: expansion.requested_restarts,
+                            depth,
+                            restarts_used: outcome.restarts_used,
+                        });
+                    }
+                    Err(OptimizeError::Timeout) => {
+                        nodes_timed_out = nodes_timed_out.saturating_add(1);
+                    }
+                    Err(OptimizeError::Constraint { .. }) | Err(OptimizeError::Internal(_)) => {
+                        nodes_failed = nodes_failed.saturating_add(1);
+                    }
+                }
+            }
+            if budget_exhausted {
+                break;
+            }
+        }
+
+        if level_results.is_empty() {
+            continue;
+        }
+
+        level_results.sort_by(|a, b| {
+            if is_better(&a.candidate, &b.candidate, &req.params.objective) {
+                std::cmp::Ordering::Less
+            } else if is_better(&b.candidate, &a.candidate, &req.params.objective) {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        });
+
+        let total_level = level_results.len();
+        let keep = usize::try_from(beam_width).unwrap_or(usize::MAX);
+        let kept: Vec<BeamCandidate> = level_results.into_iter().take(keep).collect();
+        let kept_len = kept.len();
+        let level_pruned = total_level.saturating_sub(kept_len);
+        nodes_pruned = nodes_pruned.saturating_add(u32::try_from(level_pruned).unwrap_or(0));
+        frontier_plans = kept
+            .iter()
+            .map(|entry| BeamPlan {
+                seed: entry.seed,
+                requested_restarts: entry.requested_restarts,
+            })
+            .collect();
+        frontier_results = kept;
+    }
+
+    if !frontier_results.is_empty() {
+        frontier_results.sort_by(|a, b| {
+            if is_better(&a.candidate, &b.candidate, &req.params.objective) {
+                std::cmp::Ordering::Less
+            } else if is_better(&b.candidate, &a.candidate, &req.params.objective) {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        });
+        let best = frontier_results.remove(0);
+        let timeout_reason = if nodes_timed_out > 0 {
+            Some("slice_timeout".to_string())
+        } else if budget_exhausted {
+            Some("time_budget_exhausted".to_string())
+        } else {
+            None
+        };
+        return Ok(RunOutcome {
+            candidate: best.candidate,
+            restarts_used: best.restarts_used,
+            timeout_reason,
+            portfolio: None,
+            beam: Some(BeamTelemetry {
+                deadline_ms,
+                beam_width,
+                beam_depth,
+                branch_factor,
+                nodes_evaluated,
+                nodes_timed_out,
+                nodes_failed,
+                nodes_pruned,
+                winner_depth: best.depth,
+                winner_seed: best.seed,
+                winner_restarts_used: best.restarts_used,
+            }),
+        });
+    }
+
+    if nodes_timed_out > 0 || budget_exhausted {
+        return Err(OptimizeError::Timeout);
+    }
+
+    Err(OptimizeError::Internal(
+        "beam search could not produce a valid solution".to_string(),
+    ))
+}
+
+fn build_beam_expansions(
+    seed: u64,
+    requested_restarts: u32,
+    branch_factor: u32,
+    depth: u32,
+) -> Vec<BeamPlan> {
+    let mut plans = Vec::with_capacity(branch_factor as usize);
+    for branch in 0..branch_factor {
+        let offset = u64::from(depth.saturating_add(1))
+            .wrapping_mul(SEED_STRIDE)
+            .wrapping_mul(u64::from(branch.saturating_add(1)));
+        let branch_seed = seed.wrapping_add(offset);
+        let restarts = match branch % 4 {
+            0 => requested_restarts.max(1),
+            1 => (requested_restarts / 2).max(1),
+            2 => requested_restarts
+                .saturating_add(1)
+                .clamp(1, BEAM_MAX_RESTARTS),
+            _ => requested_restarts
+                .saturating_mul(2)
+                .clamp(1, BEAM_MAX_RESTARTS),
+        };
+        plans.push(BeamPlan {
+            seed: branch_seed,
+            requested_restarts: restarts,
+        });
+    }
+    plans
 }
 
 fn build_portfolio_plans(

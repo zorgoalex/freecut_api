@@ -30,6 +30,8 @@ pub struct Params {
     pub include_svg: Option<bool>,
     /// Optional portfolio/anytime orchestration settings.
     pub portfolio: Option<PortfolioParams>,
+    /// Optional beam search settings (used by `/v1/optimize/beam`).
+    pub beam: Option<BeamParams>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
@@ -40,6 +42,20 @@ pub struct PortfolioParams {
     pub deadline_ms: Option<u64>,
     /// Number of candidate strategies in portfolio. Optional, defaults to 4.
     pub candidate_count: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
+pub struct BeamParams {
+    /// Enable beam mode. Optional, defaults to true when `beam` object is provided.
+    pub enabled: Option<bool>,
+    /// Total time budget for beam orchestration. Optional, defaults to `time_limit_ms`.
+    pub deadline_ms: Option<u64>,
+    /// Beam width (how many states are kept per depth level). Optional, defaults to 2.
+    pub beam_width: Option<u32>,
+    /// Search depth (number of expansion levels). Optional, defaults to 2.
+    pub beam_depth: Option<u32>,
+    /// Branch factor (expansions per state). Optional, defaults to 2.
+    pub branch_factor: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
@@ -145,6 +161,8 @@ pub struct Summary {
     pub timeout_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub portfolio: Option<PortfolioTelemetry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub beam: Option<BeamTelemetry>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -156,6 +174,21 @@ pub struct PortfolioTelemetry {
     pub candidates_failed: u32,
     pub candidates_skipped: u32,
     pub winner_strategy: String,
+    pub winner_seed: u64,
+    pub winner_restarts_used: u32,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BeamTelemetry {
+    pub deadline_ms: u64,
+    pub beam_width: u32,
+    pub beam_depth: u32,
+    pub branch_factor: u32,
+    pub nodes_evaluated: u32,
+    pub nodes_timed_out: u32,
+    pub nodes_failed: u32,
+    pub nodes_pruned: u32,
+    pub winner_depth: u32,
     pub winner_seed: u64,
     pub winner_restarts_used: u32,
 }

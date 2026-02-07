@@ -120,6 +120,38 @@ pub fn validate_request(
         }
     }
 
+    if let Some(beam) = &req.params.beam {
+        let beam_enabled = beam.enabled.unwrap_or(true);
+        if beam_enabled {
+            if let Some(deadline_ms) = beam.deadline_ms {
+                if deadline_ms < 100 {
+                    return Err(ValidationError::new("beam.deadline_ms must be >= 100"));
+                }
+            }
+            if let Some(beam_width) = beam.beam_width {
+                if beam_width < 1 || beam_width > 8 {
+                    return Err(ValidationError::new(
+                        "beam.beam_width must be in range 1..=8",
+                    ));
+                }
+            }
+            if let Some(beam_depth) = beam.beam_depth {
+                if beam_depth < 1 || beam_depth > 8 {
+                    return Err(ValidationError::new(
+                        "beam.beam_depth must be in range 1..=8",
+                    ));
+                }
+            }
+            if let Some(branch_factor) = beam.branch_factor {
+                if branch_factor < 1 || branch_factor > 8 {
+                    return Err(ValidationError::new(
+                        "beam.branch_factor must be in range 1..=8",
+                    ));
+                }
+            }
+        }
+    }
+
     for stock in &req.stock {
         validate_stock(stock)?;
         validate_trim_against_stock(&req.params.trim_mm, stock)?;

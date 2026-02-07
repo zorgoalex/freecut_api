@@ -330,6 +330,86 @@ async fn optimize_portfolio_supports_multisheet_oversized() {
 }
 
 #[tokio::test]
+async fn optimize_beam_returns_telemetry() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("include_svg".to_string(), Value::Bool(false));
+        params.insert(
+            "beam".to_string(),
+            serde_json::json!({
+                "enabled": true,
+                "deadline_ms": 2000,
+                "beam_width": 2,
+                "beam_depth": 2,
+                "branch_factor": 2
+            }),
+        );
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize/beam", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    let beam = json
+        .pointer("/summary/beam")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(beam.get("beam_width").and_then(Value::as_u64), Some(2));
+    assert_eq!(beam.get("beam_depth").and_then(Value::as_u64), Some(2));
+    assert_eq!(beam.get("branch_factor").and_then(Value::as_u64), Some(2));
+    assert!(
+        beam.get("winner_seed")
+            .and_then(Value::as_u64)
+            .map(|s| s > 0)
+            .unwrap_or(false),
+        "expected winner_seed in beam telemetry, body: {json}"
+    );
+}
+
+#[tokio::test]
+async fn optimize_beam_supports_multisheet_oversized() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(MULTISHEET_OVERSIZED_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("include_svg".to_string(), Value::Bool(false));
+        params.insert("time_limit_ms".to_string(), Value::from(2000));
+        params.insert("restarts".to_string(), Value::from(2));
+        params.insert(
+            "beam".to_string(),
+            serde_json::json!({
+                "deadline_ms": 2000,
+                "beam_width": 2,
+                "beam_depth": 2,
+                "branch_factor": 2
+            }),
+        );
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize/beam", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    assert!(
+        json.pointer("/summary/beam").is_some(),
+        "expected summary.beam, body: {json}"
+    );
+    let oversized = json
+        .get("unplaced_items")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items.iter().any(|item| {
+                item.get("reason")
+                    .and_then(Value::as_str)
+                    .map(|reason| reason == "oversized")
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+    assert!(
+        oversized,
+        "expected oversized items in unplaced_items, body: {json}"
+    );
+}
+
+#[tokio::test]
 async fn optimize_layout_mode_default_guillotine() {
     let app = app_for_test();
     let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
@@ -415,6 +495,30 @@ async fn optimize_invalid_portfolio_candidate_count_returns_422() {
     }
     let body = serde_json::to_string(&json).unwrap();
     let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {json}");
+    assert_eq!(
+        json.get("error_code").and_then(Value::as_str),
+        Some("VALIDATION_ERROR")
+    );
+}
+
+#[tokio::test]
+async fn optimize_invalid_beam_width_returns_422() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert(
+            "beam".to_string(),
+            serde_json::json!({
+                "deadline_ms": 1200,
+                "beam_width": 0,
+                "beam_depth": 2,
+                "branch_factor": 2
+            }),
+        );
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize/beam", &body).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {json}");
     assert_eq!(
         json.get("error_code").and_then(Value::as_str),
