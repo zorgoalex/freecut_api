@@ -493,6 +493,38 @@ async fn optimize_alns_supports_multisheet_oversized() {
 }
 
 #[tokio::test]
+async fn optimize_multisheet_restarts_4_uses_timeout_rescue() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(MULTISHEET_OVERSIZED_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("include_svg".to_string(), Value::Bool(false));
+        params.insert("time_limit_ms".to_string(), Value::from(2400));
+        params.insert("restarts".to_string(), Value::from(4));
+        params.insert("seed".to_string(), Value::from(12345));
+        params.remove("portfolio");
+        params.remove("beam");
+        params.remove("alns");
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    assert_eq!(
+        json.pointer("/summary/timeout_reason")
+            .and_then(Value::as_str),
+        Some("slice_timeout"),
+        "expected timeout rescue path marker, body: {json}"
+    );
+    let restarts_used = json
+        .pointer("/summary/restarts_used")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    assert!(
+        restarts_used >= 1,
+        "expected at least one successful restart after rescue, body: {json}"
+    );
+}
+
+#[tokio::test]
 async fn optimize_layout_mode_default_guillotine() {
     let app = app_for_test();
     let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();

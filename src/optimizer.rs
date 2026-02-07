@@ -216,6 +216,7 @@ async fn optimize_request_internal(
                     layout_mode,
                     used_seed,
                     time_limit_ms,
+                    true,
                 )
                 .await?
             }
@@ -397,6 +398,7 @@ async fn run_restarts_with_budget(
     layout_mode: LayoutMode,
     base_seed: u64,
     total_budget_ms: u64,
+    allow_timeout_rescue: bool,
 ) -> Result<RunOutcome, OptimizeError> {
     let mut best: Option<Candidate> = None;
     let mut timed_out = false;
@@ -512,6 +514,66 @@ async fn run_restarts_with_budget(
         });
     }
 
+    if timed_out && allow_timeout_rescue {
+        let elapsed_ms = started_at.elapsed().as_millis() as u64;
+        let rescue_budget_ms = total_budget_ms.saturating_sub(elapsed_ms);
+        if rescue_budget_ms >= MIN_SLICE_MS {
+            let rescue_seed = base_seed.wrapping_add(restarts.wrapping_mul(SEED_STRIDE));
+            let mode = layout_mode;
+            let stock_templates = Arc::clone(&stock_templates);
+            let cut_templates = Arc::clone(&cut_templates);
+            let cut_width = prepared.cut_width;
+            let mut rescue_handle = tokio::task::spawn_blocking(move || {
+                let mut optimizer = Optimizer::new();
+                optimizer
+                    .set_random_seed(rescue_seed)
+                    .set_cut_width(cut_width)
+                    .add_stock_pieces(stock_templates.iter().copied())
+                    .add_cut_pieces(cut_templates.iter().cloned());
+                match mode {
+                    LayoutMode::Nested => optimizer.optimize_nested(|_| {}),
+                    LayoutMode::Guillotine => optimizer.optimize_guillotine(|_| {}),
+                }
+            });
+
+            let rescue_run =
+                tokio::time::timeout(Duration::from_millis(rescue_budget_ms), &mut rescue_handle)
+                    .await;
+            match rescue_run {
+                Ok(join_result) => match join_result {
+                    Ok(Ok(solution)) => {
+                        restarts_used = restarts_used.saturating_add(1);
+                        if solution.fitness >= 0.0 {
+                            return Ok(RunOutcome {
+                                candidate: build_candidate(solution),
+                                restarts_used: restarts_used.max(1),
+                                timeout_reason: Some("slice_timeout".to_string()),
+                                portfolio: None,
+                                beam: None,
+                                alns: None,
+                            });
+                        }
+                        last_constraint = Some(OptimizeError::Constraint {
+                            message: "no valid solution".to_string(),
+                            details: None,
+                        });
+                    }
+                    Ok(Err(err)) => {
+                        last_constraint = Some(map_optimizer_error(err, prepared));
+                    }
+                    Err(err) => {
+                        return Err(OptimizeError::Internal(format!(
+                            "optimizer task failed in timeout rescue: {err}"
+                        )));
+                    }
+                },
+                Err(_) => {
+                    rescue_handle.abort();
+                }
+            }
+        }
+    }
+
     if timed_out {
         return Err(OptimizeError::Timeout);
     }
@@ -567,6 +629,7 @@ async fn run_portfolio_anytime(
             layout_mode,
             plan.seed,
             candidate_budget,
+            false,
         )
         .await
         {
@@ -698,6 +761,7 @@ async fn run_beam_anytime(
                     layout_mode,
                     expansion.seed,
                     run_budget_ms,
+                    false,
                 )
                 .await
                 {
@@ -904,6 +968,7 @@ async fn run_alns_anytime(
         layout_mode,
         base_plan.seed,
         bootstrap_budget,
+        false,
     )
     .await
     {
@@ -968,6 +1033,7 @@ async fn run_alns_anytime(
             layout_mode,
             proposal.seed,
             iter_budget_ms,
+            false,
         )
         .await
         {
@@ -1114,6 +1180,7 @@ async fn run_alns_anytime(
         layout_mode,
         fallback_seed,
         deadline_ms,
+        false,
     )
     .await
     {
