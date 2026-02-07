@@ -26,6 +26,8 @@ pub struct Params {
     pub objective: Objective,
     pub seed: Option<u64>,
     pub layout_mode: Option<LayoutMode>,
+    /// Service-level profile for restart budgeting in `/v1/optimize`. Optional, defaults to `balanced`.
+    pub sla_profile: Option<SlaProfile>,
     /// Include SVG artifact in response. Optional, defaults to true.
     pub include_svg: Option<bool>,
     /// Optional portfolio/anytime orchestration settings.
@@ -90,6 +92,14 @@ pub enum Objective {
 pub enum LayoutMode {
     Nested,
     Guillotine,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SlaProfile {
+    Fast,
+    Balanced,
+    Quality,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy)]
@@ -180,11 +190,33 @@ pub struct Summary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub restart_policy: Option<RestartPolicyTelemetry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub portfolio: Option<PortfolioTelemetry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub beam: Option<BeamTelemetry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alns: Option<AlnsTelemetry>,
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone)]
+pub struct RestartPolicyTelemetry {
+    pub profile: SlaProfile,
+    pub min_slice_ms: u64,
+    pub min_effective_slice_ms: u64,
+    pub restarts_cap_by_effective_slice: u64,
+    pub restarts_effective: u64,
+    pub baseline_budget_ms: u64,
+    pub progressive_slicing: bool,
+    pub planned_slices_ms: Vec<u64>,
+    pub timeouts_per_restart: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_timeout_at_restart: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub best_found_at_restart: Option<u32>,
+    pub rescue_used: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rescue_budget_ms: Option<u64>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

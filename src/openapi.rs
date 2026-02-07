@@ -4,8 +4,8 @@ use crate::models::VersionResponse;
 use crate::models::{
     AlnsOperatorTelemetry, AlnsParams, AlnsTelemetry, Artifacts, BeamParams, BeamTelemetry,
     ErrorResponse, Item, LayoutMode, Objective, OptimizeRequest, OptimizeResponse, Params,
-    PatternDirection, Placement, PortfolioParams, PortfolioTelemetry, Rotation, Solution,
-    StockItem, Summary, Trim, Units,
+    PatternDirection, Placement, PortfolioParams, PortfolioTelemetry, RestartPolicyTelemetry,
+    Rotation, SlaProfile, Solution, StockItem, Summary, Trim, Units,
 };
 
 #[derive(OpenApi)]
@@ -27,6 +27,7 @@ use crate::models::{
             BeamParams,
             AlnsParams,
             LayoutMode,
+            SlaProfile,
             Trim,
             StockItem,
             Item,
@@ -35,6 +36,7 @@ use crate::models::{
             Objective,
             OptimizeResponse,
             Summary,
+            RestartPolicyTelemetry,
             PortfolioTelemetry,
             BeamTelemetry,
             AlnsTelemetry,

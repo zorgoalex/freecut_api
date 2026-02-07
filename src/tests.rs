@@ -525,6 +525,123 @@ async fn optimize_multisheet_restarts_4_uses_timeout_rescue() {
 }
 
 #[tokio::test]
+async fn optimize_multisheet_restarts_4_no_longer_returns_408() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(MULTISHEET_OVERSIZED_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("include_svg".to_string(), Value::Bool(false));
+        params.insert("time_limit_ms".to_string(), Value::from(2000));
+        params.insert("restarts".to_string(), Value::from(4));
+        params.insert("seed".to_string(), Value::from(12345));
+        params.remove("portfolio");
+        params.remove("beam");
+        params.remove("alns");
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+}
+
+#[tokio::test]
+async fn optimize_standard_includes_restart_policy_telemetry() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(MULTISHEET_OVERSIZED_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("include_svg".to_string(), Value::Bool(false));
+        params.insert("time_limit_ms".to_string(), Value::from(2000));
+        params.insert("restarts".to_string(), Value::from(4));
+        params.insert("seed".to_string(), Value::from(12345));
+        params.remove("portfolio");
+        params.remove("beam");
+        params.remove("alns");
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    let rp = json
+        .pointer("/summary/restart_policy")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        rp.get("profile").and_then(Value::as_str),
+        Some("balanced"),
+        "expected default profile in restart_policy, body: {json}"
+    );
+    assert!(
+        rp.get("planned_slices_ms")
+            .and_then(Value::as_array)
+            .map(|arr| !arr.is_empty())
+            .unwrap_or(false),
+        "expected non-empty planned_slices_ms, body: {json}"
+    );
+    assert!(
+        rp.get("restarts_effective")
+            .and_then(Value::as_u64)
+            .map(|v| v >= 1)
+            .unwrap_or(false),
+        "expected restarts_effective >= 1, body: {json}"
+    );
+}
+
+#[tokio::test]
+async fn optimize_sla_profile_changes_effective_restart_plan() {
+    let app = app_for_test();
+    let mut base: Value = serde_json::from_str(MULTISHEET_OVERSIZED_REQUEST).unwrap();
+    if let Some(params) = base.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("include_svg".to_string(), Value::Bool(false));
+        params.insert("time_limit_ms".to_string(), Value::from(2000));
+        params.insert("restarts".to_string(), Value::from(6));
+        params.insert("seed".to_string(), Value::from(12345));
+        params.remove("portfolio");
+        params.remove("beam");
+        params.remove("alns");
+    }
+
+    let mut fast = base.clone();
+    if let Some(params) = fast.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("sla_profile".to_string(), Value::from("fast"));
+    }
+    let fast_body = serde_json::to_string(&fast).unwrap();
+    let (status_fast, json_fast) = post_json(&app, "/v1/optimize", &fast_body).await;
+    assert_eq!(status_fast, StatusCode::OK, "body: {json_fast}");
+
+    let mut quality = base;
+    if let Some(params) = quality.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("sla_profile".to_string(), Value::from("quality"));
+    }
+    let quality_body = serde_json::to_string(&quality).unwrap();
+    let (status_quality, json_quality) = post_json(&app, "/v1/optimize", &quality_body).await;
+    assert_eq!(status_quality, StatusCode::OK, "body: {json_quality}");
+
+    assert_eq!(
+        json_fast
+            .pointer("/summary/restart_policy/profile")
+            .and_then(Value::as_str),
+        Some("fast")
+    );
+    assert_eq!(
+        json_quality
+            .pointer("/summary/restart_policy/profile")
+            .and_then(Value::as_str),
+        Some("quality")
+    );
+
+    let fast_effective = json_fast
+        .pointer("/summary/restart_policy/restarts_effective")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let quality_effective = json_quality
+        .pointer("/summary/restart_policy/restarts_effective")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    assert!(
+        quality_effective >= fast_effective,
+        "expected quality profile to allow >= fast restarts, fast={fast_effective}, quality={quality_effective}"
+    );
+}
+
+#[tokio::test]
 async fn optimize_layout_mode_default_guillotine() {
     let app = app_for_test();
     let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
@@ -664,6 +781,18 @@ async fn optimize_invalid_alns_iterations_returns_422() {
         json.get("error_code").and_then(Value::as_str),
         Some("VALIDATION_ERROR")
     );
+}
+
+#[tokio::test]
+async fn optimize_invalid_sla_profile_returns_422() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("sla_profile".to_string(), Value::from("ultra"));
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {json}");
 }
 
 #[tokio::test]
@@ -1022,6 +1151,50 @@ async fn body_size_limit_enforced() {
     assert_eq!(
         json.get("error_code").and_then(Value::as_str),
         Some("CONSTRAINT_ERROR")
+    );
+}
+
+#[tokio::test]
+#[ignore = "perf-gate heavy fixture; run manually to guard restart regression"]
+async fn perf_gate_standard_heavy_restarts_4() {
+    const N: usize = 40;
+    let app = app_for_test();
+    let mut base: Value = serde_json::from_str(MULTISHEET_OVERSIZED_REQUEST).unwrap();
+    if let Some(params) = base.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("include_svg".to_string(), Value::Bool(false));
+        params.insert("time_limit_ms".to_string(), Value::from(2000));
+        params.insert("restarts".to_string(), Value::from(4));
+        params.remove("portfolio");
+        params.remove("beam");
+        params.remove("alns");
+    }
+
+    let mut ok_runs = 0usize;
+    let mut p95_samples: Vec<f64> = Vec::with_capacity(N);
+    for i in 0..N {
+        if let Some(params) = base.get_mut("params").and_then(Value::as_object_mut) {
+            params.insert("seed".to_string(), Value::from((10_000 + i) as u64));
+        }
+        let body = serde_json::to_string(&base).unwrap();
+        let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+        if status == StatusCode::OK {
+            ok_runs += 1;
+            if let Some(v) = json.pointer("/summary/time_ms").and_then(Value::as_f64) {
+                p95_samples.push(v);
+            }
+        }
+    }
+
+    p95_samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let p95 = if p95_samples.is_empty() {
+        None
+    } else {
+        Some(p95_samples[((p95_samples.len() - 1) as f64 * 0.95) as usize])
+    };
+
+    assert_eq!(
+        ok_runs, N,
+        "expected no 408 regressions for heavy fixture with restarts=4; ok_runs={ok_runs}/{N}, p95={p95:?}"
     );
 }
 

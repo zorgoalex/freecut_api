@@ -11,7 +11,7 @@ use crate::config::AppConfig;
 use crate::models::{
     AlnsOperatorTelemetry, AlnsTelemetry, Artifacts, BeamTelemetry, ErrorResponse, LayoutMode,
     Objective, OptimizeRequest, OptimizeResponse, PatternDirection, Placement, PortfolioTelemetry,
-    Solution, Summary, Trim, UnplacedItem,
+    RestartPolicyTelemetry, SlaProfile, Solution, Summary, Trim, UnplacedItem,
 };
 use crate::validation::item_fits_any_stock_public;
 
@@ -35,6 +35,12 @@ const ALNS_MIN_BASELINE_BUDGET_MS: u64 = 1_200;
 const ALNS_MIN_ITER_BUDGET_MS: u64 = 500;
 const ALNS_MAX_ITER_RESTARTS: u32 = 2;
 const ALNS_MAX_TIMEOUT_STREAK: u32 = 2;
+const STANDARD_FAST_MIN_EFFECTIVE_SLICE_MS: u64 = 700;
+const STANDARD_FAST_BASELINE_SHARE_PERCENT: u64 = 50;
+const STANDARD_BALANCED_MIN_EFFECTIVE_SLICE_MS: u64 = 550;
+const STANDARD_BALANCED_BASELINE_SHARE_PERCENT: u64 = 40;
+const STANDARD_QUALITY_MIN_EFFECTIVE_SLICE_MS: u64 = 400;
+const STANDARD_QUALITY_BASELINE_SHARE_PERCENT: u64 = 35;
 
 #[derive(Debug)]
 pub enum OptimizeError {
@@ -103,6 +109,20 @@ struct Candidate {
     solution: cut_optimizer_2d::Solution,
     used_stock_count: u32,
     total_waste_area_units: u128,
+    total_bbox_area_units: u128,
+    total_bbox_void_area_units: u128,
+}
+
+#[derive(Clone)]
+struct RestartPlan {
+    profile: SlaProfile,
+    min_effective_slice_ms: u64,
+    cap_by_effective_slice: u64,
+    baseline_budget_ms: u64,
+    progressive_slicing: bool,
+    effective_restarts: u64,
+    fallback_slice_ms: u64,
+    schedule_ms: Vec<u64>,
 }
 
 pub async fn optimize_request(
@@ -152,8 +172,9 @@ async fn optimize_request_internal(
         .restarts
         .unwrap_or(config.default_restarts)
         .max(1);
-
-    let (restarts, slice_ms) = derive_restarts_and_slice(time_limit_ms, restarts_requested);
+    let sla_profile = req.params.sla_profile.unwrap_or(SlaProfile::Balanced);
+    let standard_restart_plan =
+        derive_standard_restart_plan(time_limit_ms, restarts_requested, sla_profile);
 
     let start = Instant::now();
 
@@ -178,6 +199,7 @@ async fn optimize_request_internal(
                 used_seed,
                 layout_mode,
                 timeout_reason: None,
+                restart_policy: None,
                 portfolio: None,
                 beam: None,
                 alns: None,
@@ -211,12 +233,13 @@ async fn optimize_request_internal(
                 run_restarts_with_budget(
                     &req,
                     &prepared,
-                    restarts,
-                    slice_ms,
+                    standard_restart_plan.effective_restarts,
+                    standard_restart_plan.fallback_slice_ms,
                     layout_mode,
                     used_seed,
                     time_limit_ms,
                     true,
+                    Some(&standard_restart_plan),
                 )
                 .await?
             }
@@ -325,6 +348,7 @@ async fn optimize_request_internal(
         used_seed,
         layout_mode,
         timeout_reason: run_outcome.timeout_reason,
+        restart_policy: run_outcome.restart_policy,
         portfolio: run_outcome.portfolio,
         beam: run_outcome.beam,
         alns: run_outcome.alns,
@@ -349,6 +373,7 @@ struct RunOutcome {
     candidate: Candidate,
     restarts_used: u32,
     timeout_reason: Option<String>,
+    restart_policy: Option<RestartPolicyTelemetry>,
     portfolio: Option<PortfolioTelemetry>,
     beam: Option<BeamTelemetry>,
     alns: Option<AlnsTelemetry>,
@@ -399,6 +424,7 @@ async fn run_restarts_with_budget(
     base_seed: u64,
     total_budget_ms: u64,
     allow_timeout_rescue: bool,
+    restart_plan: Option<&RestartPlan>,
 ) -> Result<RunOutcome, OptimizeError> {
     let mut best: Option<Candidate> = None;
     let mut timed_out = false;
@@ -407,33 +433,49 @@ async fn run_restarts_with_budget(
     let started_at = Instant::now();
     let mut restarts_used: u32 = 0;
     let mut no_improve_streak: u32 = 0;
+    let mut timeouts_per_restart: u32 = 0;
+    let mut first_timeout_at_restart: Option<u32> = None;
+    let mut best_found_at_restart: Option<u32> = None;
+    let mut rescue_used = false;
+    let mut rescue_budget_ms: Option<u64> = None;
 
     // Keep one shared copy per request and avoid allocating/cloning a full Vec on each restart.
     let stock_templates = Arc::new(prepared.stock_pieces.clone());
     let cut_templates = Arc::new(prepared.cut_pieces.clone());
 
-    for i in 0..restarts {
+    let slice_schedule_ms = restart_plan.map(|p| p.schedule_ms.as_slice());
+    let planned_restarts = slice_schedule_ms
+        .map(|s| s.len() as u64)
+        .unwrap_or(restarts.max(1));
+    for i in 0..planned_restarts {
         let elapsed_ms = started_at.elapsed().as_millis() as u64;
         if elapsed_ms >= total_budget_ms {
             budget_exhausted = true;
             break;
         }
         let remaining_ms = total_budget_ms - elapsed_ms;
-        let this_slice_ms = remaining_ms.min(slice_ms).max(1);
+        let planned_slice_ms = slice_schedule_ms
+            .and_then(|s| s.get(i as usize))
+            .copied()
+            .unwrap_or(slice_ms);
+        let this_slice_ms = remaining_ms.min(planned_slice_ms).max(1);
 
         let seed = base_seed.wrapping_add(i.wrapping_mul(SEED_STRIDE));
         let mode = layout_mode;
         let stock_templates = Arc::clone(&stock_templates);
         let cut_templates = Arc::clone(&cut_templates);
         let cut_width = prepared.cut_width;
+        let restart_idx = i;
 
         let mut handle = tokio::task::spawn_blocking(move || {
+            let diversified_stock = diversify_stock_order(&stock_templates, seed, restart_idx);
+            let diversified_cut = diversify_cut_order(&cut_templates, seed, restart_idx);
             let mut optimizer = Optimizer::new();
             optimizer
                 .set_random_seed(seed)
                 .set_cut_width(cut_width)
-                .add_stock_pieces(stock_templates.iter().copied())
-                .add_cut_pieces(cut_templates.iter().cloned());
+                .add_stock_pieces(diversified_stock.into_iter())
+                .add_cut_pieces(diversified_cut.into_iter());
             match mode {
                 LayoutMode::Nested => optimizer.optimize_nested(|_| {}),
                 LayoutMode::Guillotine => optimizer.optimize_guillotine(|_| {}),
@@ -453,6 +495,9 @@ async fn run_restarts_with_budget(
                         continue;
                     }
                     let candidate = build_candidate(solution);
+                    if best_found_at_restart.is_none() {
+                        best_found_at_restart = Some((i + 1) as u32);
+                    }
                     best = match best {
                         None => {
                             no_improve_streak = 0;
@@ -488,6 +533,10 @@ async fn run_restarts_with_budget(
             },
             Err(_) => {
                 timed_out = true;
+                timeouts_per_restart = timeouts_per_restart.saturating_add(1);
+                if first_timeout_at_restart.is_none() {
+                    first_timeout_at_restart = Some((i + 1) as u32);
+                }
                 // Best-effort abort. The blocking task may still run to completion.
                 handle.abort();
                 // Do not launch more heavy tasks once one slice timed out.
@@ -497,6 +546,21 @@ async fn run_restarts_with_budget(
     }
 
     if let Some(best) = best {
+        let restart_policy = restart_plan.map(|plan| RestartPolicyTelemetry {
+            profile: plan.profile,
+            min_slice_ms: MIN_SLICE_MS,
+            min_effective_slice_ms: plan.min_effective_slice_ms,
+            restarts_cap_by_effective_slice: plan.cap_by_effective_slice,
+            restarts_effective: plan.effective_restarts,
+            baseline_budget_ms: plan.baseline_budget_ms,
+            progressive_slicing: plan.progressive_slicing,
+            planned_slices_ms: plan.schedule_ms.clone(),
+            timeouts_per_restart,
+            first_timeout_at_restart,
+            best_found_at_restart,
+            rescue_used,
+            rescue_budget_ms,
+        });
         let timeout_reason = if timed_out {
             Some("slice_timeout".to_string())
         } else if budget_exhausted {
@@ -508,6 +572,7 @@ async fn run_restarts_with_budget(
             candidate: best,
             restarts_used,
             timeout_reason,
+            restart_policy,
             portfolio: None,
             beam: None,
             alns: None,
@@ -516,20 +581,24 @@ async fn run_restarts_with_budget(
 
     if timed_out && allow_timeout_rescue {
         let elapsed_ms = started_at.elapsed().as_millis() as u64;
-        let rescue_budget_ms = total_budget_ms.saturating_sub(elapsed_ms);
-        if rescue_budget_ms >= MIN_SLICE_MS {
-            let rescue_seed = base_seed.wrapping_add(restarts.wrapping_mul(SEED_STRIDE));
+        let rescue_budget = total_budget_ms.saturating_sub(elapsed_ms);
+        if rescue_budget >= MIN_SLICE_MS {
+            let rescue_seed = base_seed.wrapping_add(planned_restarts.wrapping_mul(SEED_STRIDE));
             let mode = layout_mode;
             let stock_templates = Arc::clone(&stock_templates);
             let cut_templates = Arc::clone(&cut_templates);
             let cut_width = prepared.cut_width;
+            let restart_idx = planned_restarts;
             let mut rescue_handle = tokio::task::spawn_blocking(move || {
+                let diversified_stock =
+                    diversify_stock_order(&stock_templates, rescue_seed, restart_idx);
+                let diversified_cut = diversify_cut_order(&cut_templates, rescue_seed, restart_idx);
                 let mut optimizer = Optimizer::new();
                 optimizer
                     .set_random_seed(rescue_seed)
                     .set_cut_width(cut_width)
-                    .add_stock_pieces(stock_templates.iter().copied())
-                    .add_cut_pieces(cut_templates.iter().cloned());
+                    .add_stock_pieces(diversified_stock.into_iter())
+                    .add_cut_pieces(diversified_cut.into_iter());
                 match mode {
                     LayoutMode::Nested => optimizer.optimize_nested(|_| {}),
                     LayoutMode::Guillotine => optimizer.optimize_guillotine(|_| {}),
@@ -537,17 +606,37 @@ async fn run_restarts_with_budget(
             });
 
             let rescue_run =
-                tokio::time::timeout(Duration::from_millis(rescue_budget_ms), &mut rescue_handle)
+                tokio::time::timeout(Duration::from_millis(rescue_budget), &mut rescue_handle)
                     .await;
             match rescue_run {
                 Ok(join_result) => match join_result {
                     Ok(Ok(solution)) => {
                         restarts_used = restarts_used.saturating_add(1);
                         if solution.fitness >= 0.0 {
+                            rescue_used = true;
+                            rescue_budget_ms = Some(rescue_budget);
+                            if best_found_at_restart.is_none() {
+                                best_found_at_restart = Some(planned_restarts as u32 + 1);
+                            }
                             return Ok(RunOutcome {
                                 candidate: build_candidate(solution),
                                 restarts_used: restarts_used.max(1),
                                 timeout_reason: Some("slice_timeout".to_string()),
+                                restart_policy: restart_plan.map(|plan| RestartPolicyTelemetry {
+                                    profile: plan.profile,
+                                    min_slice_ms: MIN_SLICE_MS,
+                                    min_effective_slice_ms: plan.min_effective_slice_ms,
+                                    restarts_cap_by_effective_slice: plan.cap_by_effective_slice,
+                                    restarts_effective: plan.effective_restarts,
+                                    baseline_budget_ms: plan.baseline_budget_ms,
+                                    progressive_slicing: plan.progressive_slicing,
+                                    planned_slices_ms: plan.schedule_ms.clone(),
+                                    timeouts_per_restart,
+                                    first_timeout_at_restart,
+                                    best_found_at_restart,
+                                    rescue_used,
+                                    rescue_budget_ms,
+                                }),
                                 portfolio: None,
                                 beam: None,
                                 alns: None,
@@ -630,6 +719,7 @@ async fn run_portfolio_anytime(
             plan.seed,
             candidate_budget,
             false,
+            None,
         )
         .await
         {
@@ -673,6 +763,7 @@ async fn run_portfolio_anytime(
             candidate,
             restarts_used: winner_restarts_used,
             timeout_reason,
+            restart_policy: None,
             portfolio: Some(PortfolioTelemetry {
                 deadline_ms,
                 candidates_total,
@@ -762,6 +853,7 @@ async fn run_beam_anytime(
                     expansion.seed,
                     run_budget_ms,
                     false,
+                    None,
                 )
                 .await
                 {
@@ -842,6 +934,7 @@ async fn run_beam_anytime(
             candidate: best.candidate,
             restarts_used: best.restarts_used,
             timeout_reason,
+            restart_policy: None,
             portfolio: None,
             beam: Some(BeamTelemetry {
                 deadline_ms,
@@ -969,6 +1062,7 @@ async fn run_alns_anytime(
         base_plan.seed,
         bootstrap_budget,
         false,
+        None,
     )
     .await
     {
@@ -1034,6 +1128,7 @@ async fn run_alns_anytime(
             proposal.seed,
             iter_budget_ms,
             false,
+            None,
         )
         .await
         {
@@ -1139,6 +1234,7 @@ async fn run_alns_anytime(
             candidate: winner,
             restarts_used: winner_restarts_used.max(1),
             timeout_reason,
+            restart_policy: None,
             portfolio: None,
             beam: None,
             alns: Some(AlnsTelemetry {
@@ -1181,6 +1277,7 @@ async fn run_alns_anytime(
         fallback_seed,
         deadline_ms,
         false,
+        None,
     )
     .await
     {
@@ -1196,12 +1293,13 @@ async fn run_alns_anytime(
             } else {
                 None
             };
-            return Ok(RunOutcome {
-                candidate: fallback.candidate,
-                restarts_used: fallback.restarts_used.max(1),
-                timeout_reason,
-                portfolio: None,
-                beam: None,
+        return Ok(RunOutcome {
+            candidate: fallback.candidate,
+            restarts_used: fallback.restarts_used.max(1),
+            timeout_reason,
+            restart_policy: None,
+            portfolio: None,
+            beam: None,
                 alns: Some(AlnsTelemetry {
                     deadline_ms,
                     iterations_requested: iterations,
@@ -1427,6 +1525,142 @@ fn derive_restarts_and_slice(total_budget_ms: u64, requested_restarts: u32) -> (
     (restarts.max(1), slice_ms.max(1))
 }
 
+fn derive_standard_restart_plan(
+    total_budget_ms: u64,
+    requested_restarts: u32,
+    profile: SlaProfile,
+) -> RestartPlan {
+    let requested = u64::from(requested_restarts.max(1));
+    let (min_effective_slice_ms, baseline_share_percent) = match profile {
+        SlaProfile::Fast => (
+            STANDARD_FAST_MIN_EFFECTIVE_SLICE_MS,
+            STANDARD_FAST_BASELINE_SHARE_PERCENT,
+        ),
+        SlaProfile::Balanced => (
+            STANDARD_BALANCED_MIN_EFFECTIVE_SLICE_MS,
+            STANDARD_BALANCED_BASELINE_SHARE_PERCENT,
+        ),
+        SlaProfile::Quality => (
+            STANDARD_QUALITY_MIN_EFFECTIVE_SLICE_MS,
+            STANDARD_QUALITY_BASELINE_SHARE_PERCENT,
+        ),
+    };
+    let min_effective_slice_ms = min_effective_slice_ms.max(MIN_SLICE_MS);
+    let reserve_ms = min_effective_slice_ms / 2;
+    let cap_by_effective_slice = total_budget_ms.saturating_sub(reserve_ms) / min_effective_slice_ms;
+    let effective_restarts = requested.min(cap_by_effective_slice.max(1)).max(1);
+    let progressive_slicing = !matches!(profile, SlaProfile::Fast);
+    let schedule_ms = build_restart_slice_schedule(
+        total_budget_ms.max(1),
+        effective_restarts,
+        min_effective_slice_ms,
+        baseline_share_percent,
+        progressive_slicing,
+    );
+    let baseline_budget_ms = schedule_ms.first().copied().unwrap_or(total_budget_ms.max(1));
+    let fallback_slice_ms = if schedule_ms.len() <= 1 {
+        total_budget_ms.max(1)
+    } else {
+        let tail_sum: u64 = schedule_ms.iter().skip(1).sum();
+        (tail_sum / (schedule_ms.len() as u64 - 1)).max(1)
+    };
+    RestartPlan {
+        profile,
+        min_effective_slice_ms,
+        cap_by_effective_slice: cap_by_effective_slice.max(1),
+        baseline_budget_ms,
+        progressive_slicing,
+        effective_restarts,
+        fallback_slice_ms,
+        schedule_ms,
+    }
+}
+
+fn build_restart_slice_schedule(
+    total_budget_ms: u64,
+    restarts: u64,
+    min_effective_slice_ms: u64,
+    baseline_share_percent: u64,
+    progressive: bool,
+) -> Vec<u64> {
+    let total_budget_ms = total_budget_ms.max(1);
+    let restarts = restarts.max(1);
+    if restarts == 1 {
+        return vec![total_budget_ms];
+    }
+
+    let tail_count = restarts - 1;
+    let min_slice_ms = MIN_SLICE_MS.max(1);
+    let min_tail_total = min_slice_ms.saturating_mul(tail_count);
+    let baseline_target = ((total_budget_ms.saturating_mul(baseline_share_percent)) / 100)
+        .max(min_effective_slice_ms)
+        .max(min_slice_ms);
+    let baseline_cap = total_budget_ms
+        .saturating_sub(min_tail_total)
+        .max(min_slice_ms);
+    let baseline_ms = baseline_target.min(baseline_cap).min(total_budget_ms);
+    let tail_budget = total_budget_ms.saturating_sub(baseline_ms);
+
+    let mut tail = vec![min_slice_ms; tail_count as usize];
+    let tail_floor = min_slice_ms.saturating_mul(tail_count);
+    let extra = tail_budget.saturating_sub(tail_floor);
+    if extra > 0 {
+        if progressive {
+            let mut distributed: u64 = 0;
+            let weight_sum = tail_count.saturating_mul(tail_count + 1) / 2;
+            for (idx, slot) in tail.iter_mut().enumerate() {
+                let weight = (tail_count as usize - idx) as u64;
+                let add = extra.saturating_mul(weight) / weight_sum.max(1);
+                *slot = slot.saturating_add(add);
+                distributed = distributed.saturating_add(add);
+            }
+            let mut rem = extra.saturating_sub(distributed);
+            let mut idx = 0usize;
+            while rem > 0 && !tail.is_empty() {
+                tail[idx] = tail[idx].saturating_add(1);
+                rem -= 1;
+                idx = (idx + 1) % tail.len();
+            }
+        } else {
+            let even = extra / tail_count.max(1);
+            let mut rem = extra % tail_count.max(1);
+            for slot in &mut tail {
+                *slot = slot.saturating_add(even);
+                if rem > 0 {
+                    *slot = slot.saturating_add(1);
+                    rem -= 1;
+                }
+            }
+        }
+    }
+
+    let mut schedule = Vec::with_capacity(restarts as usize);
+    schedule.push(baseline_ms);
+    schedule.extend(tail);
+
+    let scheduled_total: u64 = schedule.iter().sum();
+    if scheduled_total < total_budget_ms {
+        let diff = total_budget_ms - scheduled_total;
+        schedule[0] = schedule[0].saturating_add(diff);
+    } else if scheduled_total > total_budget_ms {
+        let mut diff = scheduled_total - total_budget_ms;
+        for idx in (0..schedule.len()).rev() {
+            if diff == 0 {
+                break;
+            }
+            let floor = if idx == 0 { min_slice_ms } else { min_slice_ms };
+            let reducible = schedule[idx].saturating_sub(floor);
+            if reducible == 0 {
+                continue;
+            }
+            let take = reducible.min(diff);
+            schedule[idx] -= take;
+            diff -= take;
+        }
+    }
+    schedule
+}
+
 fn generate_seed() -> u64 {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1567,12 +1801,29 @@ fn map_optimizer_error(err: cut_optimizer_2d::Error, prepared: &PreparedInput) -
 
 fn build_candidate(solution: cut_optimizer_2d::Solution) -> Candidate {
     let mut total_waste_area: u128 = 0;
+    let mut total_bbox_area: u128 = 0;
+    let mut total_bbox_void_area: u128 = 0;
 
     for stock in &solution.stock_pieces {
         let stock_area = area(stock.width, stock.length);
         let mut used_area: u128 = 0;
+        let mut min_x: usize = usize::MAX;
+        let mut min_y: usize = usize::MAX;
+        let mut max_x: usize = 0;
+        let mut max_y: usize = 0;
         for cut_piece in &stock.cut_pieces {
             used_area = used_area.saturating_add(area(cut_piece.width, cut_piece.length));
+            min_x = min_x.min(cut_piece.x);
+            min_y = min_y.min(cut_piece.y);
+            max_x = max_x.max(cut_piece.x.saturating_add(cut_piece.width));
+            max_y = max_y.max(cut_piece.y.saturating_add(cut_piece.length));
+        }
+        if !stock.cut_pieces.is_empty() {
+            let bbox_w = max_x.saturating_sub(min_x);
+            let bbox_h = max_y.saturating_sub(min_y);
+            let bbox_area = area(bbox_w, bbox_h);
+            total_bbox_area = total_bbox_area.saturating_add(bbox_area);
+            total_bbox_void_area = total_bbox_void_area.saturating_add(bbox_area.saturating_sub(used_area));
         }
         total_waste_area = total_waste_area.saturating_add(stock_area.saturating_sub(used_area));
     }
@@ -1580,18 +1831,134 @@ fn build_candidate(solution: cut_optimizer_2d::Solution) -> Candidate {
     Candidate {
         used_stock_count: solution.stock_pieces.len() as u32,
         total_waste_area_units: total_waste_area,
+        total_bbox_area_units: total_bbox_area,
+        total_bbox_void_area_units: total_bbox_void_area,
         solution,
     }
 }
 
 fn is_better(candidate: &Candidate, best: &Candidate, objective: &Objective) -> bool {
-    is_better_stats(
+    if is_better_stats(
         candidate.used_stock_count,
         candidate.total_waste_area_units,
         best.used_stock_count,
         best.total_waste_area_units,
         objective,
-    )
+    ) {
+        return true;
+    }
+    if is_better_stats(
+        best.used_stock_count,
+        best.total_waste_area_units,
+        candidate.used_stock_count,
+        candidate.total_waste_area_units,
+        objective,
+    ) {
+        return false;
+    }
+
+    // Tie-break for same primary objective: prefer denser occupied bounding region
+    // to reduce recurring fragmented void patterns and ragged occupancy contours.
+    if candidate.total_bbox_void_area_units != best.total_bbox_void_area_units {
+        return candidate.total_bbox_void_area_units < best.total_bbox_void_area_units;
+    }
+    if candidate.total_bbox_area_units != best.total_bbox_area_units {
+        return candidate.total_bbox_area_units < best.total_bbox_area_units;
+    }
+    false
+}
+
+fn cut_piece_area(piece: &CutPiece) -> u128 {
+    area(piece.width, piece.length)
+}
+
+fn cut_piece_long_side(piece: &CutPiece) -> usize {
+    piece.width.max(piece.length)
+}
+
+fn cut_piece_short_side(piece: &CutPiece) -> usize {
+    piece.width.min(piece.length)
+}
+
+fn cut_piece_is_strip(piece: &CutPiece) -> bool {
+    let short = cut_piece_short_side(piece).max(1);
+    cut_piece_long_side(piece) / short >= 4
+}
+
+fn restart_diversify_variant(seed: u64, restart_idx: u64) -> u8 {
+    let mixed = seed
+        ^ restart_idx.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ restart_idx.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    (mixed % 6) as u8
+}
+
+fn diversify_cut_order(base: &[CutPiece], seed: u64, restart_idx: u64) -> Vec<CutPiece> {
+    let mut out = base.to_vec();
+    match restart_diversify_variant(seed, restart_idx) {
+        0 => {}
+        1 => {
+            out.sort_by(|a, b| {
+                cut_piece_area(b)
+                    .cmp(&cut_piece_area(a))
+                    .then_with(|| cut_piece_long_side(b).cmp(&cut_piece_long_side(a)))
+            });
+        }
+        2 => {
+            out.sort_by(|a, b| {
+                cut_piece_long_side(b)
+                    .cmp(&cut_piece_long_side(a))
+                    .then_with(|| cut_piece_short_side(b).cmp(&cut_piece_short_side(a)))
+                    .then_with(|| cut_piece_area(b).cmp(&cut_piece_area(a)))
+            });
+        }
+        3 => {
+            out.sort_by(|a, b| {
+                cut_piece_area(a)
+                    .cmp(&cut_piece_area(b))
+                    .then_with(|| cut_piece_short_side(a).cmp(&cut_piece_short_side(b)))
+            });
+        }
+        4 => shuffle_with_seed(&mut out, seed ^ restart_idx.wrapping_mul(SEED_STRIDE)),
+        _ => {
+            out.sort_by(|a, b| {
+                cut_piece_is_strip(b)
+                    .cmp(&cut_piece_is_strip(a))
+                    .then_with(|| cut_piece_area(b).cmp(&cut_piece_area(a)))
+                    .then_with(|| cut_piece_long_side(b).cmp(&cut_piece_long_side(a)))
+            });
+        }
+    }
+    out
+}
+
+fn diversify_stock_order(base: &[StockPiece], seed: u64, restart_idx: u64) -> Vec<StockPiece> {
+    let mut out = base.to_vec();
+    if out.len() <= 1 {
+        return out;
+    }
+    match restart_diversify_variant(seed ^ 0xD6E8_FD9A_3B6E_DA31, restart_idx) {
+        0 => {}
+        1 => {
+            out.sort_by(|a, b| area(b.width, b.length).cmp(&area(a.width, a.length)));
+        }
+        2 => {
+            out.sort_by(|a, b| area(a.width, a.length).cmp(&area(b.width, b.length)));
+        }
+        _ => shuffle_with_seed(&mut out, seed.wrapping_add(restart_idx.wrapping_mul(17))),
+    }
+    out
+}
+
+fn shuffle_with_seed<T>(items: &mut [T], seed: u64) {
+    if items.len() <= 1 {
+        return;
+    }
+    let mut state = seed ^ 0xA076_1D64_78BD_642F;
+    for idx in (1..items.len()).rev() {
+        let next = lcg_next(&mut state);
+        let swap_idx = (next as usize) % (idx + 1);
+        items.swap(idx, swap_idx);
+    }
 }
 
 fn is_better_stats(
@@ -2036,6 +2403,30 @@ mod tests {
         let (restarts, slice_ms) = derive_restarts_and_slice(4000, 10);
         assert_eq!(restarts, 10);
         assert_eq!(slice_ms, 400);
+    }
+
+    #[test]
+    fn derive_standard_restart_plan_caps_restarts_by_effective_slice() {
+        let plan = derive_standard_restart_plan(2000, 10, SlaProfile::Balanced);
+        assert!(
+            plan.effective_restarts <= 3,
+            "expected dynamic cap for 2000ms budget, got {}",
+            plan.effective_restarts
+        );
+        assert_eq!(plan.schedule_ms.len(), plan.effective_restarts as usize);
+        assert_eq!(plan.schedule_ms.iter().sum::<u64>(), 2000);
+    }
+
+    #[test]
+    fn build_restart_slice_schedule_is_progressive() {
+        let schedule = build_restart_slice_schedule(2400, 3, 550, 40, true);
+        assert_eq!(schedule.len(), 3);
+        assert_eq!(schedule.iter().sum::<u64>(), 2400);
+        assert!(
+            schedule[1] >= schedule[2],
+            "expected progressive tail slices, got {:?}",
+            schedule
+        );
     }
 
     #[test]

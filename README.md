@@ -94,12 +94,15 @@ Example file: `examples/optimize_request.json`
   - `trim_mm`: Unusable margins around the sheet in mm.
     - `left`, `right`, `top`, `bottom`: Margin sizes in mm.
   - `time_limit_ms`: Total time budget for optimization in milliseconds. Optional in the request.
-    The time is split across restarts; if the per-restart slice drops below ~80 ms,
-    the service reduces the actual number of restarts. Recommended starting range:
-    1000–2000 ms for typical cases, higher for large/complex inputs. Service default:
-    `DEFAULT_TIME_LIMIT_MS=2000`.
+    The service applies budget-aware restart slicing with a technical minimum slice of ~80 ms
+    and a higher effective slice per SLA profile. Recommended starting range: 1000–2000 ms
+    for typical cases, higher for large/complex inputs. Service default: `DEFAULT_TIME_LIMIT_MS=2000`.
   - `restarts`: Number of optimization restarts (multi-start). Optional in the request.
     Service default: `DEFAULT_RESTARTS=10`.
+  - `sla_profile`: Optional restart-budget profile for `/v1/optimize`:
+    - `"fast"`: fewer, longer attempts.
+    - `"balanced"`: default compromise of speed and stability.
+    - `"quality"`: allows more restarts with shorter effective slices.
   - `objective`: Optimization goal: `"min_waste"` or `"min_sheets"`.
     With identical stock sizes, both goals typically yield the same number of sheets;
     differences matter when multiple stock sizes are provided.
@@ -189,9 +192,15 @@ Example file: `examples/optimize_response_ok.json`
   - `time_ms`: Total runtime in milliseconds.
   - `restarts_used`: Number of restarts actually used.
   - `restarts_requested`: Restarts requested by client/default before internal slicing/budget adjustments.
-- `used_seed`: Seed actually used (user-provided or auto-generated).
+  - `used_seed`: Seed actually used (user-provided or auto-generated).
   - `layout_mode`: Layout mode actually used.
   - `timeout_reason`: Optional; appears when optimization stopped early due budget (`"slice_timeout"` or `"time_budget_exhausted"`).
+  - `restart_policy`: Optional telemetry for restart budgeting in `/v1/optimize`:
+    - `profile`, `min_slice_ms`, `min_effective_slice_ms`,
+      `restarts_cap_by_effective_slice`, `restarts_effective`,
+      `baseline_budget_ms`, `progressive_slicing`, `planned_slices_ms`,
+      `timeouts_per_restart`, `first_timeout_at_restart`, `best_found_at_restart`,
+      `rescue_used`, `rescue_budget_ms`.
   - `portfolio`: Optional telemetry for portfolio mode:
     - `deadline_ms`, `candidates_total`, `candidates_completed`, `candidates_timed_out`,
       `candidates_failed`, `candidates_skipped`, `winner_strategy`, `winner_seed`,
