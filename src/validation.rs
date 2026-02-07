@@ -152,6 +152,59 @@ pub fn validate_request(
         }
     }
 
+    if let Some(alns) = &req.params.alns {
+        let alns_enabled = alns.enabled.unwrap_or(true);
+        if alns_enabled {
+            if let Some(deadline_ms) = alns.deadline_ms {
+                if deadline_ms < 100 {
+                    return Err(ValidationError::new("alns.deadline_ms must be >= 100"));
+                }
+            }
+            if let Some(iterations) = alns.iterations {
+                if iterations < 1 || iterations > 512 {
+                    return Err(ValidationError::new(
+                        "alns.iterations must be in range 1..=512",
+                    ));
+                }
+            }
+            if let Some(segment_size) = alns.segment_size {
+                if segment_size < 1 || segment_size > 64 {
+                    return Err(ValidationError::new(
+                        "alns.segment_size must be in range 1..=64",
+                    ));
+                }
+            }
+            if let Some(temperature_start) = alns.temperature_start {
+                if !temperature_start.is_finite() || temperature_start <= 0.0 {
+                    return Err(ValidationError::new(
+                        "alns.temperature_start must be finite and > 0",
+                    ));
+                }
+            }
+            if let Some(temperature_end) = alns.temperature_end {
+                if !temperature_end.is_finite() || temperature_end <= 0.0 {
+                    return Err(ValidationError::new(
+                        "alns.temperature_end must be finite and > 0",
+                    ));
+                }
+            }
+            if let (Some(ts), Some(te)) = (alns.temperature_start, alns.temperature_end) {
+                if te > ts {
+                    return Err(ValidationError::new(
+                        "alns.temperature_end must be <= alns.temperature_start",
+                    ));
+                }
+            }
+            if let Some(reaction_factor) = alns.reaction_factor {
+                if !reaction_factor.is_finite() || reaction_factor <= 0.0 || reaction_factor > 1.0 {
+                    return Err(ValidationError::new(
+                        "alns.reaction_factor must be finite and in range (0, 1]",
+                    ));
+                }
+            }
+        }
+    }
+
     for stock in &req.stock {
         validate_stock(stock)?;
         validate_trim_against_stock(&req.params.trim_mm, stock)?;

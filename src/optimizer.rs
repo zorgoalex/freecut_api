@@ -9,9 +9,9 @@ use cut_optimizer_2d::{CutPiece, Optimizer, PatternDirection as CutPatternDirect
 
 use crate::config::AppConfig;
 use crate::models::{
-    Artifacts, BeamTelemetry, ErrorResponse, LayoutMode, Objective, OptimizeRequest,
-    OptimizeResponse, PatternDirection, Placement, PortfolioTelemetry, Solution, Summary, Trim,
-    UnplacedItem,
+    AlnsOperatorTelemetry, AlnsTelemetry, Artifacts, BeamTelemetry, ErrorResponse, LayoutMode,
+    Objective, OptimizeRequest, OptimizeResponse, PatternDirection, Placement, PortfolioTelemetry,
+    Solution, Summary, Trim, UnplacedItem,
 };
 use crate::validation::item_fits_any_stock_public;
 
@@ -25,6 +25,16 @@ const BEAM_DEFAULT_WIDTH: u32 = 2;
 const BEAM_DEFAULT_DEPTH: u32 = 2;
 const BEAM_DEFAULT_BRANCH_FACTOR: u32 = 2;
 const BEAM_MAX_RESTARTS: u32 = 64;
+const ALNS_DEFAULT_ITERATIONS: u32 = 24;
+const ALNS_DEFAULT_SEGMENT_SIZE: u32 = 6;
+const ALNS_DEFAULT_TEMP_START: f64 = 1.0;
+const ALNS_DEFAULT_TEMP_END: f64 = 0.12;
+const ALNS_DEFAULT_REACTION: f64 = 0.3;
+const ALNS_MAX_RESTARTS: u32 = 64;
+const ALNS_MIN_BASELINE_BUDGET_MS: u64 = 1_200;
+const ALNS_MIN_ITER_BUDGET_MS: u64 = 500;
+const ALNS_MAX_ITER_RESTARTS: u32 = 2;
+const ALNS_MAX_TIMEOUT_STREAK: u32 = 2;
 
 #[derive(Debug)]
 pub enum OptimizeError {
@@ -109,10 +119,18 @@ pub async fn optimize_request_beam(
     optimize_request_internal(req, config, SolveMode::BeamEndpoint).await
 }
 
+pub async fn optimize_request_alns(
+    req: OptimizeRequest,
+    config: &AppConfig,
+) -> Result<OptimizeResponse, OptimizeError> {
+    optimize_request_internal(req, config, SolveMode::AlnsEndpoint).await
+}
+
 #[derive(Clone, Copy)]
 enum SolveMode {
     Default,
     BeamEndpoint,
+    AlnsEndpoint,
 }
 
 async fn optimize_request_internal(
@@ -162,6 +180,7 @@ async fn optimize_request_internal(
                 timeout_reason: None,
                 portfolio: None,
                 beam: None,
+                alns: None,
             },
             solutions: vec![],
             unplaced_items: prepared.oversized_items,
@@ -232,6 +251,48 @@ async fn optimize_request_internal(
             )
             .await?
         }
+        SolveMode::AlnsEndpoint => {
+            let alns_cfg = req.params.alns.as_ref();
+            let deadline_ms = alns_cfg
+                .and_then(|c| c.deadline_ms)
+                .unwrap_or(time_limit_ms)
+                .max(100);
+            let iterations = alns_cfg
+                .and_then(|c| c.iterations)
+                .unwrap_or(ALNS_DEFAULT_ITERATIONS)
+                .clamp(1, 512);
+            let segment_size = alns_cfg
+                .and_then(|c| c.segment_size)
+                .unwrap_or(ALNS_DEFAULT_SEGMENT_SIZE)
+                .clamp(1, 64);
+            let temperature_start = alns_cfg
+                .and_then(|c| c.temperature_start)
+                .unwrap_or(ALNS_DEFAULT_TEMP_START)
+                .max(0.0001);
+            let temperature_end = alns_cfg
+                .and_then(|c| c.temperature_end)
+                .unwrap_or(ALNS_DEFAULT_TEMP_END)
+                .max(0.0001)
+                .min(temperature_start);
+            let reaction_factor = alns_cfg
+                .and_then(|c| c.reaction_factor)
+                .unwrap_or(ALNS_DEFAULT_REACTION)
+                .clamp(0.0001, 1.0);
+            run_alns_anytime(
+                &req,
+                &prepared,
+                layout_mode,
+                used_seed,
+                deadline_ms,
+                iterations,
+                segment_size,
+                temperature_start,
+                temperature_end,
+                reaction_factor,
+                restarts_requested,
+            )
+            .await?
+        }
     };
 
     let time_ms = start.elapsed().as_millis() as u64;
@@ -265,6 +326,7 @@ async fn optimize_request_internal(
         timeout_reason: run_outcome.timeout_reason,
         portfolio: run_outcome.portfolio,
         beam: run_outcome.beam,
+        alns: run_outcome.alns,
     };
 
     let svg = if include_svg {
@@ -288,6 +350,7 @@ struct RunOutcome {
     timeout_reason: Option<String>,
     portfolio: Option<PortfolioTelemetry>,
     beam: Option<BeamTelemetry>,
+    alns: Option<AlnsTelemetry>,
 }
 
 #[derive(Clone)]
@@ -309,6 +372,21 @@ struct BeamCandidate {
     requested_restarts: u32,
     depth: u32,
     restarts_used: u32,
+}
+
+#[derive(Clone)]
+struct AlnsPlan {
+    seed: u64,
+    requested_restarts: u32,
+}
+
+struct AlnsOperatorState {
+    name: &'static str,
+    weight: f64,
+    score: f64,
+    selected: u32,
+    accepted: u32,
+    improved_best: u32,
 }
 
 async fn run_restarts_with_budget(
@@ -430,6 +508,7 @@ async fn run_restarts_with_budget(
             timeout_reason,
             portfolio: None,
             beam: None,
+            alns: None,
         });
     }
 
@@ -543,6 +622,7 @@ async fn run_portfolio_anytime(
                 winner_restarts_used,
             }),
             beam: None,
+            alns: None,
         });
     }
 
@@ -712,6 +792,7 @@ async fn run_beam_anytime(
                 winner_seed: best.seed,
                 winner_restarts_used: best.restarts_used,
             }),
+            alns: None,
         });
     }
 
@@ -722,6 +803,490 @@ async fn run_beam_anytime(
     Err(OptimizeError::Internal(
         "beam search could not produce a valid solution".to_string(),
     ))
+}
+
+async fn run_alns_anytime(
+    req: &OptimizeRequest,
+    prepared: &PreparedInput,
+    layout_mode: LayoutMode,
+    base_seed: u64,
+    deadline_ms: u64,
+    iterations: u32,
+    segment_size: u32,
+    temperature_start: f64,
+    temperature_end: f64,
+    reaction_factor: f64,
+    default_restarts: u32,
+) -> Result<RunOutcome, OptimizeError> {
+    let mut operators = vec![
+        AlnsOperatorState {
+            name: "destroy_small_repair_dense",
+            weight: 1.0,
+            score: 0.0,
+            selected: 0,
+            accepted: 0,
+            improved_best: 0,
+        },
+        AlnsOperatorState {
+            name: "destroy_large_repair_dense",
+            weight: 1.0,
+            score: 0.0,
+            selected: 0,
+            accepted: 0,
+            improved_best: 0,
+        },
+        AlnsOperatorState {
+            name: "destroy_small_repair_sparse",
+            weight: 1.0,
+            score: 0.0,
+            selected: 0,
+            accepted: 0,
+            improved_best: 0,
+        },
+        AlnsOperatorState {
+            name: "destroy_large_repair_sparse",
+            weight: 1.0,
+            score: 0.0,
+            selected: 0,
+            accepted: 0,
+            improved_best: 0,
+        },
+        AlnsOperatorState {
+            name: "destroy_focus_repair_boost",
+            weight: 1.0,
+            score: 0.0,
+            selected: 0,
+            accepted: 0,
+            improved_best: 0,
+        },
+        AlnsOperatorState {
+            name: "destroy_focus_repair_trim",
+            weight: 1.0,
+            score: 0.0,
+            selected: 0,
+            accepted: 0,
+            improved_best: 0,
+        },
+    ];
+
+    let started_at = Instant::now();
+    let mut rng_state = base_seed ^ 0x9E37_79B9_7F4A_7C15;
+    let base_plan = AlnsPlan {
+        seed: base_seed,
+        requested_restarts: default_restarts.max(1),
+    };
+    let mut incumbent: Option<(f64, AlnsPlan, u32)> = None;
+    let mut best: Option<(Candidate, u64, u32)> = None;
+
+    let mut candidates_evaluated: u32 = 0;
+    let mut candidates_timed_out: u32 = 0;
+    let mut candidates_failed: u32 = 0;
+    let mut accepted_worse: u32 = 0;
+    let mut improved_best: u32 = 0;
+    let mut iterations_completed: u32 = 0;
+    let mut budget_exhausted = false;
+    let mut timeout_streak: u32 = 0;
+
+    // Reserve a substantial first attempt to avoid cascades of tiny timed-out slices.
+    let min_baseline = ALNS_MIN_BASELINE_BUDGET_MS
+        .min(deadline_ms)
+        .max(MIN_SLICE_MS);
+    let bootstrap_budget = ((deadline_ms.saturating_mul(2)) / 3)
+        .max(min_baseline)
+        .min(deadline_ms.max(MIN_SLICE_MS));
+    let (boot_restarts, boot_slice) =
+        derive_restarts_and_slice(bootstrap_budget, base_plan.requested_restarts);
+    match run_restarts_with_budget(
+        req,
+        prepared,
+        boot_restarts,
+        boot_slice,
+        layout_mode,
+        base_plan.seed,
+        bootstrap_budget,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            candidates_evaluated = candidates_evaluated.saturating_add(1);
+            if outcome.timeout_reason.is_some() {
+                candidates_timed_out = candidates_timed_out.saturating_add(1);
+            }
+            let candidate = outcome.candidate;
+            let score = objective_score(&candidate, &req.params.objective);
+            incumbent = Some((score, base_plan.clone(), outcome.restarts_used.max(1)));
+            best = Some((candidate, base_plan.seed, outcome.restarts_used.max(1)));
+            timeout_streak = 0;
+        }
+        Err(OptimizeError::Timeout) => {
+            candidates_timed_out = candidates_timed_out.saturating_add(1);
+            timeout_streak = timeout_streak.saturating_add(1);
+        }
+        Err(OptimizeError::Constraint { .. }) | Err(OptimizeError::Internal(_)) => {
+            candidates_failed = candidates_failed.saturating_add(1);
+            timeout_streak = 0;
+        }
+    }
+
+    for iter in 0..iterations {
+        let elapsed = started_at.elapsed().as_millis() as u64;
+        if elapsed >= deadline_ms {
+            budget_exhausted = true;
+            break;
+        }
+        let remaining_ms = deadline_ms.saturating_sub(elapsed);
+        if remaining_ms < ALNS_MIN_ITER_BUDGET_MS {
+            break;
+        }
+        let remaining_iters = u64::from(iterations.saturating_sub(iter).max(1));
+        let max_iters_by_budget = (remaining_ms / ALNS_MIN_ITER_BUDGET_MS).max(1);
+        let planned_iters = remaining_iters.min(max_iters_by_budget).max(1);
+        let iter_budget_ms = (remaining_ms / planned_iters)
+            .max(ALNS_MIN_ITER_BUDGET_MS)
+            .min(remaining_ms);
+
+        let op_idx = choose_operator(&operators, &mut rng_state);
+        let operator = &mut operators[op_idx];
+        operator.selected = operator.selected.saturating_add(1);
+
+        let source_plan = incumbent
+            .as_ref()
+            .map(|(_, plan, _)| plan)
+            .unwrap_or(&base_plan);
+        let proposal = mutate_alns_plan(source_plan, op_idx, iter);
+        let iter_restarts = proposal
+            .requested_restarts
+            .min(ALNS_MAX_ITER_RESTARTS)
+            .max(1);
+        let (run_restarts, run_slice) = derive_restarts_and_slice(iter_budget_ms, iter_restarts);
+
+        match run_restarts_with_budget(
+            req,
+            prepared,
+            run_restarts,
+            run_slice,
+            layout_mode,
+            proposal.seed,
+            iter_budget_ms,
+        )
+        .await
+        {
+            Ok(outcome) => {
+                candidates_evaluated = candidates_evaluated.saturating_add(1);
+                if outcome.timeout_reason.is_some() {
+                    candidates_timed_out = candidates_timed_out.saturating_add(1);
+                }
+                iterations_completed = iterations_completed.saturating_add(1);
+                let candidate = outcome.candidate;
+                let candidate_score = objective_score(&candidate, &req.params.objective);
+                timeout_streak = 0;
+
+                let mut reward = 0.2_f64;
+                let mut accepted = false;
+
+                if let Some((inc_score, _, _)) = incumbent.as_ref() {
+                    if candidate_score <= *inc_score {
+                        accepted = true;
+                        reward = 3.0;
+                    } else {
+                        let temp = annealing_temperature(
+                            iter,
+                            iterations.max(1),
+                            temperature_start,
+                            temperature_end,
+                        );
+                        let delta = (candidate_score - *inc_score).max(0.0);
+                        let scale = (inc_score.abs().max(1.0)) * 0.001;
+                        let prob = (-delta / (scale * temp.max(1e-6))).exp().clamp(0.0, 1.0);
+                        if rand01(&mut rng_state) < prob {
+                            accepted = true;
+                            accepted_worse = accepted_worse.saturating_add(1);
+                            reward = 1.0;
+                        }
+                    }
+                } else {
+                    accepted = true;
+                    reward = 3.0;
+                }
+
+                let is_global_best = match best.as_ref() {
+                    None => true,
+                    Some((best_candidate, _, _)) => {
+                        is_better(&candidate, best_candidate, &req.params.objective)
+                    }
+                };
+                let mut moved_to_best = false;
+                if is_global_best {
+                    accepted = true;
+                    best = Some((candidate, proposal.seed, outcome.restarts_used.max(1)));
+                    moved_to_best = true;
+                    improved_best = improved_best.saturating_add(1);
+                    operator.improved_best = operator.improved_best.saturating_add(1);
+                    reward = reward.max(5.0);
+                }
+
+                if accepted {
+                    operator.accepted = operator.accepted.saturating_add(1);
+                    let new_score = if moved_to_best {
+                        best.as_ref()
+                            .map(|(c, _, _)| objective_score(c, &req.params.objective))
+                            .unwrap_or(candidate_score)
+                    } else {
+                        candidate_score
+                    };
+                    incumbent = Some((new_score, proposal, outcome.restarts_used.max(1)));
+                }
+
+                operator.score += reward;
+            }
+            Err(OptimizeError::Timeout) => {
+                candidates_timed_out = candidates_timed_out.saturating_add(1);
+                iterations_completed = iterations_completed.saturating_add(1);
+                timeout_streak = timeout_streak.saturating_add(1);
+            }
+            Err(OptimizeError::Constraint { .. }) | Err(OptimizeError::Internal(_)) => {
+                candidates_failed = candidates_failed.saturating_add(1);
+                iterations_completed = iterations_completed.saturating_add(1);
+                timeout_streak = 0;
+            }
+        }
+
+        if (iter + 1) % segment_size == 0 {
+            update_operator_weights(&mut operators, reaction_factor);
+        }
+
+        // Timed-out blocking slices may continue in background; limit queue buildup.
+        if timeout_streak >= ALNS_MAX_TIMEOUT_STREAK {
+            break;
+        }
+    }
+
+    if let Some((winner, winner_seed, winner_restarts_used)) = best {
+        let timeout_reason = if candidates_timed_out > 0 {
+            Some("slice_timeout".to_string())
+        } else if budget_exhausted {
+            Some("time_budget_exhausted".to_string())
+        } else {
+            None
+        };
+        return Ok(RunOutcome {
+            candidate: winner,
+            restarts_used: winner_restarts_used.max(1),
+            timeout_reason,
+            portfolio: None,
+            beam: None,
+            alns: Some(AlnsTelemetry {
+                deadline_ms,
+                iterations_requested: iterations,
+                iterations_completed,
+                segment_size,
+                temperature_start,
+                temperature_end,
+                reaction_factor,
+                candidates_evaluated,
+                candidates_timed_out,
+                candidates_failed,
+                accepted_worse,
+                improved_best,
+                winner_seed,
+                winner_restarts_used,
+                operators: operators
+                    .iter()
+                    .map(|op| AlnsOperatorTelemetry {
+                        name: op.name.to_string(),
+                        weight: op.weight,
+                        selected: op.selected,
+                        accepted: op.accepted,
+                        improved_best: op.improved_best,
+                    })
+                    .collect(),
+            }),
+        });
+    }
+
+    let fallback_seed = base_seed;
+    let (fallback_restarts, fallback_slice) = derive_restarts_and_slice(deadline_ms, 1);
+    match run_restarts_with_budget(
+        req,
+        prepared,
+        fallback_restarts,
+        fallback_slice,
+        layout_mode,
+        fallback_seed,
+        deadline_ms,
+    )
+    .await
+    {
+        Ok(fallback) => {
+            candidates_evaluated = candidates_evaluated.saturating_add(1);
+            if fallback.timeout_reason.is_some() {
+                candidates_timed_out = candidates_timed_out.saturating_add(1);
+            }
+            let timeout_reason = if candidates_timed_out > 0 {
+                Some("slice_timeout".to_string())
+            } else if budget_exhausted {
+                Some("time_budget_exhausted".to_string())
+            } else {
+                None
+            };
+            return Ok(RunOutcome {
+                candidate: fallback.candidate,
+                restarts_used: fallback.restarts_used.max(1),
+                timeout_reason,
+                portfolio: None,
+                beam: None,
+                alns: Some(AlnsTelemetry {
+                    deadline_ms,
+                    iterations_requested: iterations,
+                    iterations_completed,
+                    segment_size,
+                    temperature_start,
+                    temperature_end,
+                    reaction_factor,
+                    candidates_evaluated,
+                    candidates_timed_out,
+                    candidates_failed,
+                    accepted_worse,
+                    improved_best,
+                    winner_seed: fallback_seed,
+                    winner_restarts_used: fallback.restarts_used.max(1),
+                    operators: operators
+                        .iter()
+                        .map(|op| AlnsOperatorTelemetry {
+                            name: op.name.to_string(),
+                            weight: op.weight,
+                            selected: op.selected,
+                            accepted: op.accepted,
+                            improved_best: op.improved_best,
+                        })
+                        .collect(),
+                }),
+            });
+        }
+        Err(OptimizeError::Timeout) => {
+            candidates_timed_out = candidates_timed_out.saturating_add(1);
+        }
+        Err(OptimizeError::Constraint { .. }) | Err(OptimizeError::Internal(_)) => {
+            candidates_failed = candidates_failed.saturating_add(1);
+        }
+    }
+
+    if candidates_timed_out > 0 || budget_exhausted {
+        return Err(OptimizeError::Timeout);
+    }
+
+    Err(OptimizeError::Internal(format!(
+        "alns/lns could not produce a valid solution (failed_candidates={})",
+        candidates_failed
+    )))
+}
+
+fn choose_operator(operators: &[AlnsOperatorState], rng_state: &mut u64) -> usize {
+    let total: f64 = operators.iter().map(|op| op.weight.max(0.0001)).sum();
+    let mut r = rand01(rng_state) * total.max(0.0001);
+    for (idx, op) in operators.iter().enumerate() {
+        let w = op.weight.max(0.0001);
+        if r <= w {
+            return idx;
+        }
+        r -= w;
+    }
+    operators.len().saturating_sub(1)
+}
+
+fn mutate_alns_plan(base: &AlnsPlan, op_idx: usize, iter: u32) -> AlnsPlan {
+    let step = u64::from(iter.saturating_add(1));
+    let dense = base
+        .requested_restarts
+        .saturating_mul(2)
+        .clamp(1, ALNS_MAX_RESTARTS);
+    let sparse = (base.requested_restarts / 2).max(1);
+    let boost = base
+        .requested_restarts
+        .saturating_add(2)
+        .clamp(1, ALNS_MAX_RESTARTS);
+    let trim = base
+        .requested_restarts
+        .saturating_sub(1)
+        .max(1)
+        .clamp(1, ALNS_MAX_RESTARTS);
+
+    match op_idx % 6 {
+        0 => AlnsPlan {
+            seed: base
+                .seed
+                .wrapping_add(step.wrapping_mul(3).wrapping_mul(SEED_STRIDE)),
+            requested_restarts: dense,
+        },
+        1 => AlnsPlan {
+            seed: base
+                .seed
+                .wrapping_add(step.wrapping_mul(37).wrapping_mul(SEED_STRIDE)),
+            requested_restarts: dense,
+        },
+        2 => AlnsPlan {
+            seed: base
+                .seed
+                .wrapping_add(step.wrapping_mul(5).wrapping_mul(SEED_STRIDE)),
+            requested_restarts: sparse,
+        },
+        3 => AlnsPlan {
+            seed: base
+                .seed
+                .wrapping_add(step.wrapping_mul(41).wrapping_mul(SEED_STRIDE)),
+            requested_restarts: sparse,
+        },
+        4 => AlnsPlan {
+            seed: base.seed ^ step.wrapping_mul(13).wrapping_mul(SEED_STRIDE),
+            requested_restarts: boost,
+        },
+        _ => AlnsPlan {
+            seed: base.seed ^ step.wrapping_mul(19).wrapping_mul(SEED_STRIDE),
+            requested_restarts: trim,
+        },
+    }
+}
+
+fn update_operator_weights(operators: &mut [AlnsOperatorState], reaction_factor: f64) {
+    for op in operators {
+        if op.selected > 0 {
+            let avg_score = op.score / f64::from(op.selected);
+            op.weight = ((1.0 - reaction_factor) * op.weight + reaction_factor * avg_score)
+                .clamp(0.05, 20.0);
+        }
+    }
+}
+
+fn annealing_temperature(iter: u32, total_iters: u32, start: f64, end: f64) -> f64 {
+    if total_iters <= 1 {
+        return end.min(start).max(1e-6);
+    }
+    let alpha = f64::from(iter) / f64::from(total_iters.saturating_sub(1));
+    (start + (end - start) * alpha).max(1e-6)
+}
+
+fn objective_score(candidate: &Candidate, objective: &Objective) -> f64 {
+    match objective {
+        Objective::MinSheets => {
+            f64::from(candidate.used_stock_count) * 1_000_000_000.0
+                + candidate.total_waste_area_units as f64
+        }
+        Objective::MinWaste => {
+            candidate.total_waste_area_units as f64 * 1000.0 + f64::from(candidate.used_stock_count)
+        }
+    }
+}
+
+fn rand01(state: &mut u64) -> f64 {
+    let x = lcg_next(state) >> 11;
+    (x as f64) / ((1u64 << 53) as f64)
+}
+
+fn lcg_next(state: &mut u64) -> u64 {
+    *state = state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    *state
 }
 
 fn build_beam_expansions(
@@ -1416,5 +1981,53 @@ mod tests {
     fn is_better_stats_prefers_lower_waste_for_min_waste() {
         assert!(is_better_stats(4, 100, 2, 120, &Objective::MinWaste));
         assert!(!is_better_stats(1, 300, 2, 200, &Objective::MinWaste));
+    }
+
+    #[test]
+    fn annealing_temperature_decreases() {
+        let t0 = annealing_temperature(0, 10, 1.0, 0.1);
+        let t5 = annealing_temperature(5, 10, 1.0, 0.1);
+        let t9 = annealing_temperature(9, 10, 1.0, 0.1);
+        assert!(t0 >= t5);
+        assert!(t5 >= t9);
+        assert!(t9 > 0.0);
+    }
+
+    #[test]
+    fn mutate_alns_plan_changes_seed_or_restarts() {
+        let base = AlnsPlan {
+            seed: 123,
+            requested_restarts: 4,
+        };
+        let next = mutate_alns_plan(&base, 0, 1);
+        assert!(
+            next.seed != base.seed || next.requested_restarts != base.requested_restarts,
+            "mutation should change seed or restarts"
+        );
+    }
+
+    #[test]
+    fn choose_operator_returns_valid_index() {
+        let ops = vec![
+            AlnsOperatorState {
+                name: "a",
+                weight: 0.5,
+                score: 0.0,
+                selected: 0,
+                accepted: 0,
+                improved_best: 0,
+            },
+            AlnsOperatorState {
+                name: "b",
+                weight: 1.5,
+                score: 0.0,
+                selected: 0,
+                accepted: 0,
+                improved_best: 0,
+            },
+        ];
+        let mut rng = 42_u64;
+        let idx = choose_operator(&ops, &mut rng);
+        assert!(idx < ops.len());
     }
 }

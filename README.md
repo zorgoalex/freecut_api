@@ -47,6 +47,7 @@ docker run --rm -p 8088:8088 freecut-mvp
 ## Main Endpoints
 - `POST /v1/optimize` - standard optimizer (with optional portfolio mode).
 - `POST /v1/optimize/beam` - beam-search orchestration endpoint.
+- `POST /v1/optimize/alns` - ALNS/LNS orchestration endpoint.
 
 - Request/response are JSON.
 - All dimensions are in millimeters (`mm`).
@@ -116,6 +117,14 @@ Example file: `examples/optimize_request.json`
     - `beam_width`: Optional beam width (`1..8`, default `2`).
     - `beam_depth`: Optional beam depth (`1..8`, default `2`).
     - `branch_factor`: Optional branch factor (`1..8`, default `2`).
+  - `alns`: Optional ALNS/LNS settings (primarily for `/v1/optimize/alns`).
+    - `enabled`: Optional (`true` by default when object is present).
+    - `deadline_ms`: Optional ALNS deadline; defaults to `time_limit_ms`.
+    - `iterations`: Optional iteration count (`1..512`, default `24`).
+    - `segment_size`: Optional adaptive update cadence (`1..64`, default `6`).
+    - `temperature_start`: Optional start temperature (`>0`, default `1.0`).
+    - `temperature_end`: Optional end temperature (`>0`, `<= temperature_start`, default `0.12`).
+    - `reaction_factor`: Optional adaptive reaction (`(0,1]`, default `0.3`).
 - `stock`: Available sheet materials.
   - `id`: Stock identifier (your business label for a sheet type).
   - `width_mm`, `height_mm`: Sheet dimensions in mm.
@@ -191,6 +200,12 @@ Example file: `examples/optimize_response_ok.json`
     - `deadline_ms`, `beam_width`, `beam_depth`, `branch_factor`,
       `nodes_evaluated`, `nodes_timed_out`, `nodes_failed`, `nodes_pruned`,
       `winner_depth`, `winner_seed`, `winner_restarts_used`.
+  - `alns`: Optional telemetry for ALNS/LNS mode:
+    - `deadline_ms`, `iterations_requested`, `iterations_completed`, `segment_size`,
+      `temperature_start`, `temperature_end`, `reaction_factor`,
+      `candidates_evaluated`, `candidates_timed_out`, `candidates_failed`,
+      `accepted_worse`, `improved_best`, `winner_seed`, `winner_restarts_used`.
+    - `operators`: adaptive operator stats (`name`, `weight`, `selected`, `accepted`, `improved_best`).
 - `solutions`: Per-sheet layouts.
   - `stock_id`: Stock ID from request.
   - `index`: Sheet index for that stock type.

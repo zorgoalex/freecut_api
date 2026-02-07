@@ -21,7 +21,7 @@ mod validation;
 use config::AppConfig;
 use models::{ErrorResponse, OptimizeRequest, VersionResponse};
 use openapi::ApiDoc;
-use optimizer::{optimize_request, optimize_request_beam};
+use optimizer::{optimize_request, optimize_request_alns, optimize_request_beam};
 use validation::{validate_request, ValidationLimits};
 
 #[derive(Clone)]
@@ -69,6 +69,7 @@ fn build_app(config: AppConfig) -> Router {
         .route("/version", get(version))
         .route("/v1/optimize", post(optimize))
         .route("/v1/optimize/beam", post(optimize_beam))
+        .route("/v1/optimize/alns", post(optimize_alns))
         .merge(SwaggerUi::new("/docs").url("/openapi.json", openapi))
         .with_state(app_state)
         .layer(DefaultBodyLimit::max(config.max_body_bytes))
@@ -131,7 +132,7 @@ pub(crate) async fn optimize(
     State(state): State<AppState>,
     payload: Result<Json<OptimizeRequest>, JsonRejection>,
 ) -> impl IntoResponse {
-    optimize_common(state, payload, false).await
+    optimize_common(state, payload, OptimizeFlavor::Default).await
 }
 
 #[utoipa::path(
@@ -152,13 +153,41 @@ pub(crate) async fn optimize_beam(
     State(state): State<AppState>,
     payload: Result<Json<OptimizeRequest>, JsonRejection>,
 ) -> impl IntoResponse {
-    optimize_common(state, payload, true).await
+    optimize_common(state, payload, OptimizeFlavor::Beam).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/optimize/alns",
+    tag = "optimize",
+    request_body = OptimizeRequest,
+    responses(
+        (status = 200, description = "ALNS/LNS optimization result", body = models::OptimizeResponse),
+        (status = 400, description = "Invalid JSON", body = ErrorResponse),
+        (status = 429, description = "Too many concurrent optimize requests", body = ErrorResponse),
+        (status = 422, description = "Validation error", body = ErrorResponse),
+        (status = 408, description = "Optimization timeout", body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse)
+    )
+)]
+pub(crate) async fn optimize_alns(
+    State(state): State<AppState>,
+    payload: Result<Json<OptimizeRequest>, JsonRejection>,
+) -> impl IntoResponse {
+    optimize_common(state, payload, OptimizeFlavor::Alns).await
+}
+
+#[derive(Clone, Copy)]
+enum OptimizeFlavor {
+    Default,
+    Beam,
+    Alns,
 }
 
 async fn optimize_common(
     state: AppState,
     payload: Result<Json<OptimizeRequest>, JsonRejection>,
-    use_beam: bool,
+    flavor: OptimizeFlavor,
 ) -> Response {
     let req = match payload {
         Ok(Json(req)) => req,
@@ -192,10 +221,10 @@ async fn optimize_common(
         }
     };
 
-    let result = if use_beam {
-        optimize_request_beam(req, &state.config).await
-    } else {
-        optimize_request(req, &state.config).await
+    let result = match flavor {
+        OptimizeFlavor::Default => optimize_request(req, &state.config).await,
+        OptimizeFlavor::Beam => optimize_request_beam(req, &state.config).await,
+        OptimizeFlavor::Alns => optimize_request_alns(req, &state.config).await,
     };
 
     match result {
