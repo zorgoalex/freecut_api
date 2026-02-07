@@ -3,7 +3,8 @@ use utoipa::OpenApi;
 use crate::models::VersionResponse;
 use crate::models::{
     Artifacts, ErrorResponse, Item, LayoutMode, Objective, OptimizeRequest, OptimizeResponse,
-    Params, PatternDirection, Placement, Rotation, Solution, StockItem, Summary, Trim, Units,
+    Params, PatternDirection, Placement, PortfolioParams, PortfolioTelemetry, Rotation, Solution,
+    StockItem, Summary, Trim, Units,
 };
 
 #[derive(OpenApi)]
@@ -19,6 +20,7 @@ use crate::models::{
             OptimizeRequest,
             Units,
             Params,
+            PortfolioParams,
             LayoutMode,
             Trim,
             StockItem,
@@ -28,6 +30,7 @@ use crate::models::{
             Objective,
             OptimizeResponse,
             Summary,
+            PortfolioTelemetry,
             Solution,
             Placement,
             Artifacts,

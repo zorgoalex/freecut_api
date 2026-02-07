@@ -102,6 +102,24 @@ pub fn validate_request(
         }
     }
 
+    if let Some(portfolio) = &req.params.portfolio {
+        let portfolio_enabled = portfolio.enabled.unwrap_or(true);
+        if portfolio_enabled {
+            if let Some(deadline_ms) = portfolio.deadline_ms {
+                if deadline_ms < 100 {
+                    return Err(ValidationError::new("portfolio.deadline_ms must be >= 100"));
+                }
+            }
+            if let Some(candidate_count) = portfolio.candidate_count {
+                if candidate_count < 1 || candidate_count > 16 {
+                    return Err(ValidationError::new(
+                        "portfolio.candidate_count must be in range 1..=16",
+                    ));
+                }
+            }
+        }
+    }
+
     for stock in &req.stock {
         validate_stock(stock)?;
         validate_trim_against_stock(&req.params.trim_mm, stock)?;
@@ -167,14 +185,6 @@ fn validate_trim_against_stock(trim: &Trim, stock: &StockItem) -> Result<(), Val
             .with_details(serde_json::json!({"stock_id": stock.id})));
     }
     Ok(())
-}
-
-fn item_fits_any_stock(item: &Item, trim: &Trim, stock: &[StockItem]) -> bool {
-    stock.iter().any(|sheet| item_fits_stock(item, trim, sheet))
-}
-
-fn item_fits_stock(item: &Item, trim: &Trim, stock: &StockItem) -> bool {
-    item_fits_stock_with_gap(item, trim, 0.0, stock)
 }
 
 /// Check if item fits stock considering trim, gap (kerf+spacing), and rotation

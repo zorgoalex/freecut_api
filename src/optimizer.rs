@@ -10,7 +10,7 @@ use cut_optimizer_2d::{CutPiece, Optimizer, PatternDirection as CutPatternDirect
 use crate::config::AppConfig;
 use crate::models::{
     Artifacts, ErrorResponse, LayoutMode, Objective, OptimizeRequest, OptimizeResponse,
-    PatternDirection, Placement, Solution, Summary, Trim, UnplacedItem,
+    PatternDirection, Placement, PortfolioTelemetry, Solution, Summary, Trim, UnplacedItem,
 };
 use crate::validation::item_fits_any_stock_public;
 
@@ -18,6 +18,8 @@ const SCALE: f64 = 1000.0;
 const MIN_SLICE_MS: u64 = 80;
 const SEED_STRIDE: u64 = 1_000_003;
 const EARLY_STOP_NO_IMPROVE_PATIENCE: u32 = 4;
+const PORTFOLIO_DEFAULT_CANDIDATES: u32 = 4;
+const PORTFOLIO_MAX_CANDIDATES: u32 = 16;
 
 #[derive(Debug)]
 pub enum OptimizeError {
@@ -86,7 +88,6 @@ struct Candidate {
     solution: cut_optimizer_2d::Solution,
     used_stock_count: u32,
     total_waste_area_units: u128,
-    total_stock_area_units: u128,
 }
 
 pub async fn optimize_request(
@@ -108,12 +109,7 @@ pub async fn optimize_request(
         .unwrap_or(config.default_restarts)
         .max(1);
 
-    let mut restarts = u64::from(restarts_requested);
-    let mut slice_ms = time_limit_ms / restarts;
-    if slice_ms < MIN_SLICE_MS {
-        restarts = (time_limit_ms / MIN_SLICE_MS).max(1);
-        slice_ms = time_limit_ms / restarts;
-    }
+    let (restarts, slice_ms) = derive_restarts_and_slice(time_limit_ms, restarts_requested);
 
     let start = Instant::now();
 
@@ -138,6 +134,7 @@ pub async fn optimize_request(
                 used_seed,
                 layout_mode,
                 timeout_reason: None,
+                portfolio: None,
             },
             solutions: vec![],
             unplaced_items: prepared.oversized_items,
@@ -145,16 +142,37 @@ pub async fn optimize_request(
         });
     }
 
-    let run_outcome = run_restarts_with_budget(
-        &req,
-        &prepared,
-        restarts,
-        slice_ms,
-        layout_mode,
-        used_seed,
-        time_limit_ms,
-    )
-    .await?;
+    let run_outcome = match &req.params.portfolio {
+        Some(portfolio_cfg) if portfolio_cfg.enabled.unwrap_or(true) => {
+            let deadline_ms = portfolio_cfg.deadline_ms.unwrap_or(time_limit_ms).max(100);
+            let candidates = portfolio_cfg
+                .candidate_count
+                .unwrap_or(PORTFOLIO_DEFAULT_CANDIDATES)
+                .clamp(1, PORTFOLIO_MAX_CANDIDATES);
+            run_portfolio_anytime(
+                &req,
+                &prepared,
+                layout_mode,
+                used_seed,
+                deadline_ms,
+                candidates,
+                restarts_requested,
+            )
+            .await?
+        }
+        _ => {
+            run_restarts_with_budget(
+                &req,
+                &prepared,
+                restarts,
+                slice_ms,
+                layout_mode,
+                used_seed,
+                time_limit_ms,
+            )
+            .await?
+        }
+    };
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -185,6 +203,7 @@ pub async fn optimize_request(
         used_seed,
         layout_mode,
         timeout_reason: run_outcome.timeout_reason,
+        portfolio: run_outcome.portfolio,
     };
 
     let svg = if include_svg {
@@ -206,6 +225,14 @@ struct RunOutcome {
     candidate: Candidate,
     restarts_used: u32,
     timeout_reason: Option<String>,
+    portfolio: Option<PortfolioTelemetry>,
+}
+
+#[derive(Clone)]
+struct PortfolioPlan {
+    name: &'static str,
+    seed: u64,
+    requested_restarts: u32,
 }
 
 async fn run_restarts_with_budget(
@@ -325,6 +352,7 @@ async fn run_restarts_with_budget(
             candidate: best,
             restarts_used,
             timeout_reason,
+            portfolio: None,
         });
     }
 
@@ -341,6 +369,153 @@ async fn run_restarts_with_budget(
     }
 
     Err(OptimizeError::Internal("no solution produced".to_string()))
+}
+
+async fn run_portfolio_anytime(
+    req: &OptimizeRequest,
+    prepared: &PreparedInput,
+    layout_mode: LayoutMode,
+    base_seed: u64,
+    deadline_ms: u64,
+    candidate_count: u32,
+    default_restarts: u32,
+) -> Result<RunOutcome, OptimizeError> {
+    let plans = build_portfolio_plans(base_seed, default_restarts, candidate_count);
+    let candidates_total = plans.len() as u32;
+    let mut candidates_started: u32 = 0;
+    let mut candidates_completed: u32 = 0;
+    let mut candidates_timed_out: u32 = 0;
+    let mut candidates_failed: u32 = 0;
+    let started_at = Instant::now();
+
+    let mut best: Option<(Candidate, &'static str, u64, u32)> = None;
+
+    for (idx, plan) in plans.iter().enumerate() {
+        let elapsed = started_at.elapsed().as_millis() as u64;
+        if elapsed >= deadline_ms {
+            break;
+        }
+
+        candidates_started += 1;
+        let remaining = deadline_ms.saturating_sub(elapsed);
+        let slots_left = (plans.len() - idx) as u64;
+        let candidate_budget = (remaining / slots_left).max(MIN_SLICE_MS);
+        let (plan_restarts, plan_slice_ms) =
+            derive_restarts_and_slice(candidate_budget, plan.requested_restarts);
+
+        match run_restarts_with_budget(
+            req,
+            prepared,
+            plan_restarts,
+            plan_slice_ms,
+            layout_mode,
+            plan.seed,
+            candidate_budget,
+        )
+        .await
+        {
+            Ok(outcome) => {
+                candidates_completed += 1;
+                let maybe_update = match &best {
+                    None => true,
+                    Some((current, _, _, _)) => {
+                        is_better(&outcome.candidate, current, &req.params.objective)
+                    }
+                };
+                if maybe_update {
+                    best = Some((
+                        outcome.candidate,
+                        plan.name,
+                        plan.seed,
+                        outcome.restarts_used,
+                    ));
+                }
+            }
+            Err(OptimizeError::Timeout) => {
+                candidates_timed_out += 1;
+            }
+            Err(OptimizeError::Constraint { .. }) | Err(OptimizeError::Internal(_)) => {
+                candidates_failed += 1;
+            }
+        }
+    }
+
+    let candidates_skipped = candidates_total.saturating_sub(candidates_started);
+
+    if let Some((candidate, winner_strategy, winner_seed, winner_restarts_used)) = best {
+        let timeout_reason = if candidates_timed_out > 0 {
+            Some("slice_timeout".to_string())
+        } else if candidates_skipped > 0 {
+            Some("time_budget_exhausted".to_string())
+        } else {
+            None
+        };
+        return Ok(RunOutcome {
+            candidate,
+            restarts_used: winner_restarts_used,
+            timeout_reason,
+            portfolio: Some(PortfolioTelemetry {
+                deadline_ms,
+                candidates_total,
+                candidates_completed,
+                candidates_timed_out,
+                candidates_failed,
+                candidates_skipped,
+                winner_strategy: winner_strategy.to_string(),
+                winner_seed,
+                winner_restarts_used,
+            }),
+        });
+    }
+
+    if candidates_timed_out > 0 || candidates_skipped > 0 {
+        return Err(OptimizeError::Timeout);
+    }
+
+    Err(OptimizeError::Internal(
+        "portfolio could not produce a valid solution".to_string(),
+    ))
+}
+
+fn build_portfolio_plans(
+    base_seed: u64,
+    requested_restarts: u32,
+    candidate_count: u32,
+) -> Vec<PortfolioPlan> {
+    let mut plans = Vec::with_capacity(candidate_count as usize);
+    for idx in 0..candidate_count {
+        let (name, restarts) = match idx % 4 {
+            0 => ("baseline", requested_restarts.max(1)),
+            1 => ("seed_explore_fast", (requested_restarts / 2).max(1)),
+            2 => ("seed_explore_full", requested_restarts.max(1)),
+            _ => (
+                "restart_explore_dense",
+                requested_restarts.saturating_mul(2).clamp(1, 64),
+            ),
+        };
+        let seed = base_seed.wrapping_add(
+            (idx as u64)
+                .wrapping_add(1)
+                .wrapping_mul(17)
+                .wrapping_mul(SEED_STRIDE),
+        );
+        plans.push(PortfolioPlan {
+            name,
+            seed,
+            requested_restarts: restarts,
+        });
+    }
+    plans
+}
+
+fn derive_restarts_and_slice(total_budget_ms: u64, requested_restarts: u32) -> (u64, u64) {
+    let mut restarts = u64::from(requested_restarts.max(1));
+    let mut slice_ms = total_budget_ms / restarts;
+    if slice_ms < MIN_SLICE_MS {
+        restarts = (total_budget_ms / MIN_SLICE_MS).max(1);
+        slice_ms = total_budget_ms / restarts;
+    }
+    (restarts.max(1), slice_ms.max(1))
 }
 
 fn generate_seed() -> u64 {
@@ -482,7 +657,6 @@ fn map_optimizer_error(err: cut_optimizer_2d::Error, prepared: &PreparedInput) -
 }
 
 fn build_candidate(solution: cut_optimizer_2d::Solution) -> Candidate {
-    let mut total_stock_area: u128 = 0;
     let mut total_waste_area: u128 = 0;
 
     for stock in &solution.stock_pieces {
@@ -491,34 +665,48 @@ fn build_candidate(solution: cut_optimizer_2d::Solution) -> Candidate {
         for cut_piece in &stock.cut_pieces {
             used_area = used_area.saturating_add(area(cut_piece.width, cut_piece.length));
         }
-        total_stock_area = total_stock_area.saturating_add(stock_area);
         total_waste_area = total_waste_area.saturating_add(stock_area.saturating_sub(used_area));
     }
 
     Candidate {
         used_stock_count: solution.stock_pieces.len() as u32,
         total_waste_area_units: total_waste_area,
-        total_stock_area_units: total_stock_area,
         solution,
     }
 }
 
 fn is_better(candidate: &Candidate, best: &Candidate, objective: &Objective) -> bool {
+    is_better_stats(
+        candidate.used_stock_count,
+        candidate.total_waste_area_units,
+        best.used_stock_count,
+        best.total_waste_area_units,
+        objective,
+    )
+}
+
+fn is_better_stats(
+    candidate_used_stock: u32,
+    candidate_waste_units: u128,
+    best_used_stock: u32,
+    best_waste_units: u128,
+    objective: &Objective,
+) -> bool {
     match objective {
         Objective::MinSheets => {
-            if candidate.used_stock_count < best.used_stock_count {
+            if candidate_used_stock < best_used_stock {
                 true
-            } else if candidate.used_stock_count == best.used_stock_count {
-                candidate.total_waste_area_units < best.total_waste_area_units
+            } else if candidate_used_stock == best_used_stock {
+                candidate_waste_units < best_waste_units
             } else {
                 false
             }
         }
         Objective::MinWaste => {
-            if candidate.total_waste_area_units < best.total_waste_area_units {
+            if candidate_waste_units < best_waste_units {
                 true
-            } else if candidate.total_waste_area_units == best.total_waste_area_units {
-                candidate.used_stock_count < best.used_stock_count
+            } else if candidate_waste_units == best_waste_units {
+                candidate_used_stock < best_used_stock
             } else {
                 false
             }
@@ -908,20 +1096,6 @@ fn area(width: usize, length: usize) -> u128 {
     (width as u128).saturating_mul(length as u128)
 }
 
-fn units_area_to_mm2(units_area: u128) -> f64 {
-    let scale_sq = SCALE * SCALE;
-    (units_area as f64) / scale_sq
-}
-
-fn waste_percent(waste_area: u128, stock_area: u128) -> f64 {
-    if stock_area == 0 {
-        return 0.0;
-    }
-    let waste_mm2 = units_area_to_mm2(waste_area);
-    let stock_mm2 = units_area_to_mm2(stock_area);
-    (waste_mm2 / stock_mm2) * 100.0
-}
-
 fn error_response(
     status: StatusCode,
     code: &'static str,
@@ -935,4 +1109,35 @@ fn error_response(
         details,
     };
     (status, Json(body)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derive_restarts_and_slice_respects_min_slice() {
+        let (restarts, slice_ms) = derive_restarts_and_slice(200, 10);
+        assert_eq!(restarts, 2);
+        assert_eq!(slice_ms, 100);
+    }
+
+    #[test]
+    fn derive_restarts_and_slice_keeps_requested_when_possible() {
+        let (restarts, slice_ms) = derive_restarts_and_slice(4000, 10);
+        assert_eq!(restarts, 10);
+        assert_eq!(slice_ms, 400);
+    }
+
+    #[test]
+    fn is_better_stats_prefers_fewer_sheets_for_min_sheets() {
+        assert!(is_better_stats(2, 120, 3, 80, &Objective::MinSheets));
+        assert!(!is_better_stats(4, 10, 3, 500, &Objective::MinSheets));
+    }
+
+    #[test]
+    fn is_better_stats_prefers_lower_waste_for_min_waste() {
+        assert!(is_better_stats(4, 100, 2, 120, &Objective::MinWaste));
+        assert!(!is_better_stats(1, 300, 2, 200, &Objective::MinWaste));
+    }
 }

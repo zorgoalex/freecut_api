@@ -105,6 +105,10 @@ Example file: `examples/optimize_request.json`
     service generates a seed per request (Unix epoch in ms) and returns it as `used_seed`.
   - `layout_mode`: Layout mode: `"guillotine"` (default, guillotine-only cuts) or `"nested"`. Optional in the request.
   - `include_svg`: Optional flag (`true` by default). Set to `false` to skip SVG generation and omit `artifacts.svg` in response.
+  - `portfolio`: Optional anytime orchestration settings.
+    - `enabled`: Optional (`true` by default when object is present).
+    - `deadline_ms`: Optional total portfolio deadline; defaults to `time_limit_ms`.
+    - `candidate_count`: Optional number of portfolio candidates (`1..16`, default `4`).
 - `stock`: Available sheet materials.
   - `id`: Stock identifier (your business label for a sheet type).
   - `width_mm`, `height_mm`: Sheet dimensions in mm.
@@ -172,6 +176,10 @@ Example file: `examples/optimize_response_ok.json`
 - `used_seed`: Seed actually used (user-provided or auto-generated).
   - `layout_mode`: Layout mode actually used.
   - `timeout_reason`: Optional; appears when optimization stopped early due budget (`"slice_timeout"` or `"time_budget_exhausted"`).
+  - `portfolio`: Optional telemetry for portfolio mode:
+    - `deadline_ms`, `candidates_total`, `candidates_completed`, `candidates_timed_out`,
+      `candidates_failed`, `candidates_skipped`, `winner_strategy`, `winner_seed`,
+      `winner_restarts_used`.
 - `solutions`: Per-sheet layouts.
   - `stock_id`: Stock ID from request.
   - `index`: Sheet index for that stock type.
@@ -191,6 +199,26 @@ Example file: `examples/optimize_response_ok.json`
     - `"oversized"` — item dimensions exceed usable sheet area (after trim and gap).
     - `"qty_limit"` — item fits but no sheets available due to `stock.qty` limit.
 - `artifacts.svg`: Optional. Present when `params.include_svg=true` (default). Multiple sheets are rendered vertically with 50mm gap between them.
+
+## Quality Gate (Top-20 to Top-10)
+For this service's business context, metric-only ranking is not sufficient. Visual validation is mandatory because formulas do not capture all practical cutting nuances.
+
+1. Auto-filter to `Top-20`:
+- Drop candidates where placeable parts are not fully placed (`placeable_placed_ratio < 1.0`).
+- Drop candidates with internal holes (`internal_void > 0`).
+- Rank by: `internal_void -> occupied_perimeter -> void_compactness -> corridor_components -> waste_percent`.
+- Remove near-duplicate layouts to preserve diversity.
+
+2. Visual review `Top-20 -> Top-10`:
+- Check corridor/void geometry in SVG.
+- Check cut-path practicality and sheet usage logic.
+- Reject layouts with "artificially good" waste caused by under-placement.
+- Keep final `Top-10` with metrics + SVG artifacts for auditability.
+
+Example candidate generation command:
+```bash
+FREECUT_NUM_TESTS=500 FREECUT_TOP_N=20 python3 scripts/optimize_search.py
+```
 
 ## Environment Variables
 - `PORT` (default `8088`)

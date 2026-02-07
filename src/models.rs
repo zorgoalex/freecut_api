@@ -28,6 +28,18 @@ pub struct Params {
     pub layout_mode: Option<LayoutMode>,
     /// Include SVG artifact in response. Optional, defaults to true.
     pub include_svg: Option<bool>,
+    /// Optional portfolio/anytime orchestration settings.
+    pub portfolio: Option<PortfolioParams>,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
+pub struct PortfolioParams {
+    /// Enable portfolio mode. Optional, defaults to true when `portfolio` object is provided.
+    pub enabled: Option<bool>,
+    /// Total time budget for portfolio orchestration. Optional, defaults to `time_limit_ms`.
+    pub deadline_ms: Option<u64>,
+    /// Number of candidate strategies in portfolio. Optional, defaults to 4.
+    pub candidate_count: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
@@ -131,6 +143,21 @@ pub struct Summary {
     pub layout_mode: LayoutMode,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub portfolio: Option<PortfolioTelemetry>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PortfolioTelemetry {
+    pub deadline_ms: u64,
+    pub candidates_total: u32,
+    pub candidates_completed: u32,
+    pub candidates_timed_out: u32,
+    pub candidates_failed: u32,
+    pub candidates_skipped: u32,
+    pub winner_strategy: String,
+    pub winner_seed: u64,
+    pub winner_restarts_used: u32,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
