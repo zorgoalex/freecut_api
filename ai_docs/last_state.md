@@ -141,3 +141,23 @@
   - alns: `200=60/60`, `hard_ok=60/60`.
   - артефакты: `ai_docs/tmp/top10_algorithms_baseline_varied4_s60_hi/report.json`.
 - Вывод: fixed time-budget из oversized baseline не переносится на сложный varied-набор; для честного сравнения нужно указывать рабочие бюджеты per fixture/класс задачи.
+
+## 11) Актуальный отбор top-10 по каждому алгоритму (последний прогон)
+- Fixture: `tests/fixtures/multisheet_oversized.json`.
+- Параметры: `seeds=60`, `restarts=2`, лимиты:
+  - standard `2000ms`
+  - portfolio `3000ms`
+  - beam `4900ms`
+  - alns `1250ms`
+- Сводка: у всех алгоритмов `200=60/60`, `hard_ok=60/60`, `selected_top_n=10`.
+- Отчёт: `ai_docs/tmp/top10_algorithms_current_s60/report.json`.
+- Папки с раскладками:
+  - standard: `ai_docs/tmp/top10_algorithms_current_s60/standard`
+  - portfolio: `ai_docs/tmp/top10_algorithms_current_s60/portfolio`
+  - beam: `ai_docs/tmp/top10_algorithms_current_s60/beam`
+  - alns: `ai_docs/tmp/top10_algorithms_current_s60/alns`
+- В каждой папке:
+  - `manifest.json`
+  - `overview.png`
+  - `rank_01...rank_10_*.svg`
+- Практический вывод: на этом конкретном наборе top-10 между алгоритмами снова очень близки по форме; различия в основном на уровне seed/локальных перестановок, а не в макро-структуре раскладки.
