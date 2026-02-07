@@ -10,6 +10,8 @@ const VALID_REQUEST: &str = include_str!("../tests/fixtures/optimize_valid.json"
 const INVALID_TRIM_REQUEST: &str = include_str!("../tests/fixtures/optimize_invalid_trim.json");
 const MULTISHEET_OVERSIZED_REQUEST: &str =
     include_str!("../tests/fixtures/multisheet_oversized.json");
+const MULTISHEET_QTY_LIMIT_REQUEST: &str =
+    include_str!("../tests/fixtures/multisheet_qty_limit.json");
 
 fn app_for_test() -> Router {
     let config = AppConfig::from_env();
@@ -788,12 +790,14 @@ async fn benchmark_portfolio_vs_standard_250() {
     async fn run_series(app: &Router, mut base: Value, use_portfolio: bool, n: usize) -> Value {
         if let Some(params) = base.get_mut("params").and_then(Value::as_object_mut) {
             params.insert("include_svg".to_string(), Value::Bool(false));
+            params.insert("time_limit_ms".to_string(), Value::from(2000));
+            params.insert("restarts".to_string(), Value::from(2));
             if use_portfolio {
                 params.insert(
                     "portfolio".to_string(),
                     serde_json::json!({
                         "enabled": true,
-                        "deadline_ms": 1200,
+                        "deadline_ms": 2000,
                         "candidate_count": 2
                     }),
                 );
@@ -924,4 +928,185 @@ async fn benchmark_portfolio_vs_standard_250() {
         "portfolio": portfolio,
     });
     println!("{}", serde_json::to_string_pretty(&report).unwrap());
+}
+
+#[tokio::test]
+#[ignore = "benchmark-style test; run manually for stage metrics"]
+async fn benchmark_portfolio_vs_standard_250_qty_limit() {
+    const N: usize = 250;
+    let app = app_for_test();
+
+    async fn run_series(app: &Router, mut base: Value, use_portfolio: bool, n: usize) -> Value {
+        if let Some(params) = base.get_mut("params").and_then(Value::as_object_mut) {
+            params.insert("include_svg".to_string(), Value::Bool(false));
+            if use_portfolio {
+                params.insert(
+                    "portfolio".to_string(),
+                    serde_json::json!({
+                        "enabled": true,
+                        "deadline_ms": 1200,
+                        "candidate_count": 2
+                    }),
+                );
+            } else {
+                params.remove("portfolio");
+            }
+        }
+
+        let mut ok_runs: u64 = 0;
+        let mut status_counts: std::collections::BTreeMap<String, u64> =
+            std::collections::BTreeMap::new();
+        let mut time_ms: Vec<f64> = Vec::new();
+        let mut waste_percent: Vec<f64> = Vec::new();
+        let mut sheets_used: Vec<f64> = Vec::new();
+        let mut placeable_ratios: Vec<f64> = Vec::new();
+        let mut full_placeable: u64 = 0;
+        let mut timeout_reasons: std::collections::BTreeMap<String, u64> =
+            std::collections::BTreeMap::new();
+
+        for _ in 0..n {
+            let body = serde_json::to_string(&base).unwrap();
+            let (status, json) = post_json(app, "/v1/optimize", &body).await;
+            *status_counts
+                .entry(status.as_u16().to_string())
+                .or_insert(0) += 1;
+
+            if status == StatusCode::OK {
+                ok_runs += 1;
+                let summary = json.get("summary").cloned().unwrap_or(Value::Null);
+                if let Some(v) = summary.get("time_ms").and_then(Value::as_f64) {
+                    time_ms.push(v);
+                }
+                if let Some(v) = summary.get("waste_percent").and_then(Value::as_f64) {
+                    waste_percent.push(v);
+                }
+                if let Some(v) = summary.get("used_stock_count").and_then(Value::as_f64) {
+                    sheets_used.push(v);
+                }
+                if let Some(reason) = summary.get("timeout_reason").and_then(Value::as_str) {
+                    *timeout_reasons.entry(reason.to_string()).or_insert(0) += 1;
+                }
+
+                let placed = json
+                    .get("solutions")
+                    .and_then(Value::as_array)
+                    .map(|solutions| {
+                        solutions
+                            .iter()
+                            .map(|s| {
+                                s.get("placements")
+                                    .and_then(Value::as_array)
+                                    .map(|p| p.len())
+                                    .unwrap_or(0)
+                            })
+                            .sum::<usize>()
+                    })
+                    .unwrap_or(0);
+                let placeable_unplaced = json
+                    .get("unplaced_items")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter(|item| {
+                                item.get("reason")
+                                    .and_then(Value::as_str)
+                                    .map(|r| r != "oversized")
+                                    .unwrap_or(false)
+                            })
+                            .count()
+                    })
+                    .unwrap_or(0);
+                let placeable_total = placed + placeable_unplaced;
+                let ratio = if placeable_total > 0 {
+                    placed as f64 / placeable_total as f64
+                } else {
+                    1.0
+                };
+                placeable_ratios.push(ratio);
+                if placeable_unplaced == 0 {
+                    full_placeable += 1;
+                }
+            }
+        }
+
+        fn avg(vals: &[f64]) -> Option<f64> {
+            if vals.is_empty() {
+                None
+            } else {
+                Some(vals.iter().sum::<f64>() / vals.len() as f64)
+            }
+        }
+        fn percentile(vals: &mut [f64], q: f64) -> Option<f64> {
+            if vals.is_empty() {
+                return None;
+            }
+            vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let idx = ((vals.len() - 1) as f64 * q) as usize;
+            vals.get(idx).copied()
+        }
+
+        let mut time_sorted = time_ms.clone();
+        let mut waste_sorted = waste_percent.clone();
+
+        serde_json::json!({
+            "runs": n,
+            "ok_runs": ok_runs,
+            "status_counts": status_counts,
+            "avg_time_ms": avg(&time_ms),
+            "p50_time_ms": percentile(&mut time_sorted, 0.50),
+            "p95_time_ms": percentile(&mut time_sorted, 0.95),
+            "avg_waste_percent": avg(&waste_percent),
+            "p50_waste_percent": percentile(&mut waste_sorted, 0.50),
+            "avg_sheets_used": avg(&sheets_used),
+            "avg_placeable_placed_ratio": avg(&placeable_ratios),
+            "full_placeable_rate": if ok_runs > 0 { Some(full_placeable as f64 / ok_runs as f64) } else { None::<f64> },
+            "timeout_reasons": timeout_reasons,
+        })
+    }
+
+    let base: Value = serde_json::from_str(MULTISHEET_QTY_LIMIT_REQUEST).unwrap();
+    let standard = run_series(&app, base.clone(), false, N).await;
+    let portfolio = run_series(&app, base, true, N).await;
+
+    let report = serde_json::json!({
+        "fixture": "tests/fixtures/multisheet_qty_limit.json",
+        "standard": standard,
+        "portfolio": portfolio,
+    });
+    println!("{}", serde_json::to_string_pretty(&report).unwrap());
+}
+
+#[tokio::test]
+#[ignore = "probe helper for selecting benchmark scenario"]
+async fn probe_standard_status_on_mdf_scenarios() {
+    let app = app_for_test();
+    let scenarios = [
+        ("multisheet_qty_limit", MULTISHEET_QTY_LIMIT_REQUEST),
+        ("multisheet_oversized", MULTISHEET_OVERSIZED_REQUEST),
+    ];
+    let time_limits = [1000_u64, 2000_u64, 5000_u64, 10000_u64];
+
+    for (name, body) in scenarios {
+        let base: Value = serde_json::from_str(body).unwrap();
+        for tl in time_limits {
+            let mut status_counts: std::collections::BTreeMap<String, u64> =
+                std::collections::BTreeMap::new();
+            for _ in 0..10 {
+                let mut req = base.clone();
+                if let Some(params) = req.get_mut("params").and_then(Value::as_object_mut) {
+                    params.insert("include_svg".to_string(), Value::Bool(false));
+                    params.insert("time_limit_ms".to_string(), Value::from(tl));
+                    params.insert("restarts".to_string(), Value::from(2));
+                    params.remove("portfolio");
+                }
+                let (status, _) =
+                    post_json(&app, "/v1/optimize", &serde_json::to_string(&req).unwrap()).await;
+                *status_counts
+                    .entry(status.as_u16().to_string())
+                    .or_insert(0) += 1;
+            }
+            println!("scenario={name}, time_limit_ms={tl}, statuses={status_counts:?}");
+        }
+    }
 }
