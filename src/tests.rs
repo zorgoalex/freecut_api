@@ -208,6 +208,43 @@ async fn optimize_without_svg_omits_artifact_svg() {
 }
 
 #[tokio::test]
+async fn optimize_exposes_candidate_selection_telemetry() {
+    let app = app_for_test();
+    let (status, json) = post_json(&app, "/v1/optimize", VALID_REQUEST).await;
+    assert_eq!(status, StatusCode::OK, "unexpected status/body: {json}");
+    let selection = json
+        .pointer("/summary/candidate_selection")
+        .cloned()
+        .unwrap_or(Value::Null);
+    assert!(selection.is_object(), "missing candidate_selection: {json}");
+    let total = selection
+        .get("candidates_total")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let valid = selection
+        .get("candidates_valid")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let invalid = selection
+        .get("candidates_invalid_fitness")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    assert_eq!(
+        total,
+        valid + invalid,
+        "inconsistent candidate counters: {selection}"
+    );
+    assert!(
+        selection
+            .get("top_k_requested")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 1,
+        "top_k_requested must be >=1: {selection}"
+    );
+}
+
+#[tokio::test]
 async fn optimize_reproducible_seed() {
     let app = app_for_test();
     let (_, first) = post_json(&app, "/v1/optimize", VALID_REQUEST).await;
@@ -793,6 +830,53 @@ async fn optimize_invalid_sla_profile_returns_422() {
     let body = serde_json::to_string(&json).unwrap();
     let (status, json) = post_json(&app, "/v1/optimize", &body).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {json}");
+}
+
+#[tokio::test]
+async fn optimize_invalid_ga_override_returns_422() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert(
+            "ga_override".to_string(),
+            serde_json::json!({
+                "epochs": 0,
+                "breed_factor": 1.2,
+                "survival_factor": -0.1,
+                "top_k_candidates": 100
+            }),
+        );
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {json}");
+    assert_eq!(
+        json.get("error_code").and_then(Value::as_str),
+        Some("VALIDATION_ERROR")
+    );
+}
+
+#[tokio::test]
+async fn optimize_accepts_ga_profile_and_override() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("ga_profile".to_string(), Value::from("quality"));
+        params.insert(
+            "ga_override".to_string(),
+            serde_json::json!({
+                "epochs": 120,
+                "breed_factor": 0.55,
+                "survival_factor": 0.7,
+                "top_k_candidates": 8
+            }),
+        );
+        params.insert("include_svg".to_string(), Value::from(false));
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    assert_eq!(json.get("status").and_then(Value::as_str), Some("ok"));
 }
 
 #[tokio::test]

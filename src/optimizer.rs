@@ -9,9 +9,10 @@ use cut_optimizer_2d::{CutPiece, Optimizer, PatternDirection as CutPatternDirect
 
 use crate::config::AppConfig;
 use crate::models::{
-    AlnsOperatorTelemetry, AlnsTelemetry, Artifacts, BeamTelemetry, ErrorResponse, LayoutMode,
-    Objective, OptimizeRequest, OptimizeResponse, PatternDirection, Placement, PortfolioTelemetry,
-    RestartPolicyTelemetry, SlaProfile, Solution, Summary, Trim, UnplacedItem,
+    AlnsOperatorTelemetry, AlnsTelemetry, Artifacts, BeamTelemetry, CandidateSelectionTelemetry,
+    ErrorResponse, GaProfile, LayoutMode, Objective, OptimizeRequest, OptimizeResponse,
+    PatternDirection, Placement, PortfolioTelemetry, RestartPolicyTelemetry, SlaProfile, Solution,
+    Summary, Trim, UnplacedItem,
 };
 use crate::validation::item_fits_any_stock_public;
 
@@ -41,6 +42,18 @@ const STANDARD_BALANCED_MIN_EFFECTIVE_SLICE_MS: u64 = 550;
 const STANDARD_BALANCED_BASELINE_SHARE_PERCENT: u64 = 40;
 const STANDARD_QUALITY_MIN_EFFECTIVE_SLICE_MS: u64 = 400;
 const STANDARD_QUALITY_BASELINE_SHARE_PERCENT: u64 = 35;
+const GA_FAST_EPOCHS: u32 = 60;
+const GA_BALANCED_EPOCHS: u32 = 100;
+const GA_QUALITY_EPOCHS: u32 = 180;
+const GA_FAST_BREED_FACTOR: f64 = 0.45;
+const GA_BALANCED_BREED_FACTOR: f64 = 0.5;
+const GA_QUALITY_BREED_FACTOR: f64 = 0.55;
+const GA_FAST_SURVIVAL_FACTOR: f64 = 0.5;
+const GA_BALANCED_SURVIVAL_FACTOR: f64 = 0.6;
+const GA_QUALITY_SURVIVAL_FACTOR: f64 = 0.7;
+const GA_FAST_TOP_K: usize = 3;
+const GA_BALANCED_TOP_K: usize = 6;
+const GA_QUALITY_TOP_K: usize = 12;
 
 #[derive(Debug)]
 pub enum OptimizeError {
@@ -111,6 +124,15 @@ struct Candidate {
     total_waste_area_units: u128,
     total_bbox_area_units: u128,
     total_bbox_void_area_units: u128,
+    total_piece_perimeter_units: u128,
+}
+
+#[derive(Clone, Copy)]
+struct GaRuntime {
+    epochs: u32,
+    breed_factor: f64,
+    survival_factor: f64,
+    top_k: usize,
 }
 
 #[derive(Clone)]
@@ -123,6 +145,28 @@ struct RestartPlan {
     effective_restarts: u64,
     fallback_slice_ms: u64,
     schedule_ms: Vec<u64>,
+}
+
+#[derive(Default, Clone)]
+struct CandidateSelectionCounters {
+    top_k_requested: u32,
+    candidates_total: u32,
+    candidates_valid: u32,
+    candidates_invalid_fitness: u32,
+    candidates_rejected_primary_objective: u32,
+    candidates_rejected_tie_bbox_void: u32,
+    candidates_rejected_tie_bbox_area: u32,
+    candidates_rejected_tie_perimeter: u32,
+    candidates_rejected_equal: u32,
+}
+
+enum CandidateCompare {
+    Better,
+    WorseByPrimaryObjective,
+    WorseByTieBboxVoid,
+    WorseByTieBboxArea,
+    WorseByTiePerimeter,
+    Equal,
 }
 
 pub async fn optimize_request(
@@ -203,6 +247,7 @@ async fn optimize_request_internal(
                 portfolio: None,
                 beam: None,
                 alns: None,
+                candidate_selection: None,
             },
             solutions: vec![],
             unplaced_items: prepared.oversized_items,
@@ -352,6 +397,7 @@ async fn optimize_request_internal(
         portfolio: run_outcome.portfolio,
         beam: run_outcome.beam,
         alns: run_outcome.alns,
+        candidate_selection: run_outcome.candidate_selection,
     };
 
     let svg = if include_svg {
@@ -377,6 +423,7 @@ struct RunOutcome {
     portfolio: Option<PortfolioTelemetry>,
     beam: Option<BeamTelemetry>,
     alns: Option<AlnsTelemetry>,
+    candidate_selection: Option<CandidateSelectionTelemetry>,
 }
 
 #[derive(Clone)]
@@ -398,6 +445,7 @@ struct BeamCandidate {
     requested_restarts: u32,
     depth: u32,
     restarts_used: u32,
+    candidate_selection: Option<CandidateSelectionTelemetry>,
 }
 
 #[derive(Clone)]
@@ -415,6 +463,98 @@ struct AlnsOperatorState {
     improved_best: u32,
 }
 
+fn resolve_ga_runtime(req: &OptimizeRequest) -> GaRuntime {
+    let profile = req.params.ga_profile.unwrap_or(GaProfile::Balanced);
+    let mut runtime = match profile {
+        GaProfile::Fast => GaRuntime {
+            epochs: GA_FAST_EPOCHS,
+            breed_factor: GA_FAST_BREED_FACTOR,
+            survival_factor: GA_FAST_SURVIVAL_FACTOR,
+            top_k: GA_FAST_TOP_K,
+        },
+        GaProfile::Balanced => GaRuntime {
+            epochs: GA_BALANCED_EPOCHS,
+            breed_factor: GA_BALANCED_BREED_FACTOR,
+            survival_factor: GA_BALANCED_SURVIVAL_FACTOR,
+            top_k: GA_BALANCED_TOP_K,
+        },
+        GaProfile::Quality => GaRuntime {
+            epochs: GA_QUALITY_EPOCHS,
+            breed_factor: GA_QUALITY_BREED_FACTOR,
+            survival_factor: GA_QUALITY_SURVIVAL_FACTOR,
+            top_k: GA_QUALITY_TOP_K,
+        },
+    };
+    if let Some(override_cfg) = &req.params.ga_override {
+        if let Some(epochs) = override_cfg.epochs {
+            runtime.epochs = epochs.max(1);
+        }
+        if let Some(breed_factor) = override_cfg.breed_factor {
+            runtime.breed_factor = breed_factor.clamp(0.0001, 1.0);
+        }
+        if let Some(survival_factor) = override_cfg.survival_factor {
+            runtime.survival_factor = survival_factor.clamp(0.0, 1.0);
+        }
+        if let Some(top_k_candidates) = override_cfg.top_k_candidates {
+            runtime.top_k = usize::try_from(top_k_candidates)
+                .unwrap_or(GA_BALANCED_TOP_K)
+                .max(1);
+        }
+    }
+    runtime
+}
+
+fn pick_best_candidate(
+    set: cut_optimizer_2d::SolutionSet,
+    objective: &Objective,
+    counters: &mut CandidateSelectionCounters,
+) -> Option<Candidate> {
+    let mut best: Option<Candidate> = None;
+    for solution in set.solutions {
+        counters.candidates_total = counters.candidates_total.saturating_add(1);
+        if solution.fitness < 0.0 {
+            counters.candidates_invalid_fitness =
+                counters.candidates_invalid_fitness.saturating_add(1);
+            continue;
+        }
+        let candidate = build_candidate(solution);
+        counters.candidates_valid = counters.candidates_valid.saturating_add(1);
+        best = match best {
+            None => Some(candidate),
+            Some(current) => match compare_candidates(&candidate, &current, objective) {
+                CandidateCompare::Better => Some(candidate),
+                CandidateCompare::WorseByPrimaryObjective => {
+                    counters.candidates_rejected_primary_objective = counters
+                        .candidates_rejected_primary_objective
+                        .saturating_add(1);
+                    Some(current)
+                }
+                CandidateCompare::WorseByTieBboxVoid => {
+                    counters.candidates_rejected_tie_bbox_void =
+                        counters.candidates_rejected_tie_bbox_void.saturating_add(1);
+                    Some(current)
+                }
+                CandidateCompare::WorseByTieBboxArea => {
+                    counters.candidates_rejected_tie_bbox_area =
+                        counters.candidates_rejected_tie_bbox_area.saturating_add(1);
+                    Some(current)
+                }
+                CandidateCompare::WorseByTiePerimeter => {
+                    counters.candidates_rejected_tie_perimeter =
+                        counters.candidates_rejected_tie_perimeter.saturating_add(1);
+                    Some(current)
+                }
+                CandidateCompare::Equal => {
+                    counters.candidates_rejected_equal =
+                        counters.candidates_rejected_equal.saturating_add(1);
+                    Some(current)
+                }
+            },
+        };
+    }
+    best
+}
+
 async fn run_restarts_with_budget(
     req: &OptimizeRequest,
     prepared: &PreparedInput,
@@ -426,7 +566,12 @@ async fn run_restarts_with_budget(
     allow_timeout_rescue: bool,
     restart_plan: Option<&RestartPlan>,
 ) -> Result<RunOutcome, OptimizeError> {
+    let ga_runtime = resolve_ga_runtime(req);
     let mut best: Option<Candidate> = None;
+    let mut selection_counters = CandidateSelectionCounters {
+        top_k_requested: u32::try_from(ga_runtime.top_k).unwrap_or(u32::MAX),
+        ..Default::default()
+    };
     let mut timed_out = false;
     let mut budget_exhausted = false;
     let mut last_constraint: Option<OptimizeError> = None;
@@ -466,6 +611,7 @@ async fn run_restarts_with_budget(
         let cut_templates = Arc::clone(&cut_templates);
         let cut_width = prepared.cut_width;
         let restart_idx = i;
+        let ga_runtime = ga_runtime;
 
         let mut handle = tokio::task::spawn_blocking(move || {
             let diversified_stock = diversify_stock_order(&stock_templates, seed, restart_idx);
@@ -474,27 +620,35 @@ async fn run_restarts_with_budget(
             optimizer
                 .set_random_seed(seed)
                 .set_cut_width(cut_width)
+                .set_ga_epochs(ga_runtime.epochs)
+                .set_ga_breed_factor(ga_runtime.breed_factor)
+                .set_ga_survival_factor(ga_runtime.survival_factor)
                 .add_stock_pieces(diversified_stock.into_iter())
                 .add_cut_pieces(diversified_cut.into_iter());
             match mode {
-                LayoutMode::Nested => optimizer.optimize_nested(|_| {}),
-                LayoutMode::Guillotine => optimizer.optimize_guillotine(|_| {}),
+                LayoutMode::Nested => optimizer.optimize_nested_top_k(ga_runtime.top_k, |_| {}),
+                LayoutMode::Guillotine => {
+                    optimizer.optimize_guillotine_top_k(ga_runtime.top_k, |_| {})
+                }
             }
         });
 
         let run = tokio::time::timeout(Duration::from_millis(this_slice_ms), &mut handle).await;
         match run {
             Ok(join_result) => match join_result {
-                Ok(Ok(solution)) => {
+                Ok(Ok(solution_set)) => {
                     restarts_used += 1;
-                    if solution.fitness < 0.0 {
+                    let Some(candidate) = pick_best_candidate(
+                        solution_set,
+                        &req.params.objective,
+                        &mut selection_counters,
+                    ) else {
                         last_constraint = Some(OptimizeError::Constraint {
                             message: "no valid solution".to_string(),
                             details: None,
                         });
                         continue;
-                    }
-                    let candidate = build_candidate(solution);
+                    };
                     if best_found_at_restart.is_none() {
                         best_found_at_restart = Some((i + 1) as u32);
                     }
@@ -504,12 +658,19 @@ async fn run_restarts_with_budget(
                             Some(candidate)
                         }
                         Some(current) => {
-                            if is_better(&candidate, &current, &req.params.objective) {
-                                no_improve_streak = 0;
-                                Some(candidate)
-                            } else {
-                                no_improve_streak = no_improve_streak.saturating_add(1);
-                                Some(current)
+                            match compare_candidates(&candidate, &current, &req.params.objective) {
+                                CandidateCompare::Better => {
+                                    no_improve_streak = 0;
+                                    Some(candidate)
+                                }
+                                CandidateCompare::WorseByPrimaryObjective
+                                | CandidateCompare::WorseByTieBboxVoid
+                                | CandidateCompare::WorseByTieBboxArea
+                                | CandidateCompare::WorseByTiePerimeter
+                                | CandidateCompare::Equal => {
+                                    no_improve_streak = no_improve_streak.saturating_add(1);
+                                    Some(current)
+                                }
                             }
                         }
                     };
@@ -546,6 +707,10 @@ async fn run_restarts_with_budget(
     }
 
     if let Some(best) = best {
+        let candidate_selection = Some(build_candidate_selection_telemetry(
+            &selection_counters,
+            &best,
+        ));
         let restart_policy = restart_plan.map(|plan| RestartPolicyTelemetry {
             profile: plan.profile,
             min_slice_ms: MIN_SLICE_MS,
@@ -576,6 +741,7 @@ async fn run_restarts_with_budget(
             portfolio: None,
             beam: None,
             alns: None,
+            candidate_selection,
         });
     }
 
@@ -589,6 +755,7 @@ async fn run_restarts_with_budget(
             let cut_templates = Arc::clone(&cut_templates);
             let cut_width = prepared.cut_width;
             let restart_idx = planned_restarts;
+            let ga_runtime = ga_runtime;
             let mut rescue_handle = tokio::task::spawn_blocking(move || {
                 let diversified_stock =
                     diversify_stock_order(&stock_templates, rescue_seed, restart_idx);
@@ -597,11 +764,16 @@ async fn run_restarts_with_budget(
                 optimizer
                     .set_random_seed(rescue_seed)
                     .set_cut_width(cut_width)
+                    .set_ga_epochs(ga_runtime.epochs)
+                    .set_ga_breed_factor(ga_runtime.breed_factor)
+                    .set_ga_survival_factor(ga_runtime.survival_factor)
                     .add_stock_pieces(diversified_stock.into_iter())
                     .add_cut_pieces(diversified_cut.into_iter());
                 match mode {
-                    LayoutMode::Nested => optimizer.optimize_nested(|_| {}),
-                    LayoutMode::Guillotine => optimizer.optimize_guillotine(|_| {}),
+                    LayoutMode::Nested => optimizer.optimize_nested_top_k(ga_runtime.top_k, |_| {}),
+                    LayoutMode::Guillotine => {
+                        optimizer.optimize_guillotine_top_k(ga_runtime.top_k, |_| {})
+                    }
                 }
             });
 
@@ -610,16 +782,24 @@ async fn run_restarts_with_budget(
                     .await;
             match rescue_run {
                 Ok(join_result) => match join_result {
-                    Ok(Ok(solution)) => {
+                    Ok(Ok(solution_set)) => {
                         restarts_used = restarts_used.saturating_add(1);
-                        if solution.fitness >= 0.0 {
+                        if let Some(candidate) = pick_best_candidate(
+                            solution_set,
+                            &req.params.objective,
+                            &mut selection_counters,
+                        ) {
                             rescue_used = true;
                             rescue_budget_ms = Some(rescue_budget);
                             if best_found_at_restart.is_none() {
                                 best_found_at_restart = Some(planned_restarts as u32 + 1);
                             }
+                            let candidate_selection = Some(build_candidate_selection_telemetry(
+                                &selection_counters,
+                                &candidate,
+                            ));
                             return Ok(RunOutcome {
-                                candidate: build_candidate(solution),
+                                candidate,
                                 restarts_used: restarts_used.max(1),
                                 timeout_reason: Some("slice_timeout".to_string()),
                                 restart_policy: restart_plan.map(|plan| RestartPolicyTelemetry {
@@ -640,6 +820,7 @@ async fn run_restarts_with_budget(
                                 portfolio: None,
                                 beam: None,
                                 alns: None,
+                                candidate_selection,
                             });
                         }
                         last_constraint = Some(OptimizeError::Constraint {
@@ -695,7 +876,13 @@ async fn run_portfolio_anytime(
     let mut candidates_failed: u32 = 0;
     let started_at = Instant::now();
 
-    let mut best: Option<(Candidate, &'static str, u64, u32)> = None;
+    let mut best: Option<(
+        Candidate,
+        &'static str,
+        u64,
+        u32,
+        Option<CandidateSelectionTelemetry>,
+    )> = None;
 
     for (idx, plan) in plans.iter().enumerate() {
         let elapsed = started_at.elapsed().as_millis() as u64;
@@ -727,7 +914,7 @@ async fn run_portfolio_anytime(
                 candidates_completed += 1;
                 let maybe_update = match &best {
                     None => true,
-                    Some((current, _, _, _)) => {
+                    Some((current, _, _, _, _)) => {
                         is_better(&outcome.candidate, current, &req.params.objective)
                     }
                 };
@@ -737,6 +924,7 @@ async fn run_portfolio_anytime(
                         plan.name,
                         plan.seed,
                         outcome.restarts_used,
+                        outcome.candidate_selection,
                     ));
                 }
             }
@@ -751,7 +939,14 @@ async fn run_portfolio_anytime(
 
     let candidates_skipped = candidates_total.saturating_sub(candidates_started);
 
-    if let Some((candidate, winner_strategy, winner_seed, winner_restarts_used)) = best {
+    if let Some((
+        candidate,
+        winner_strategy,
+        winner_seed,
+        winner_restarts_used,
+        candidate_selection,
+    )) = best
+    {
         let timeout_reason = if candidates_timed_out > 0 {
             Some("slice_timeout".to_string())
         } else if candidates_skipped > 0 {
@@ -777,6 +972,7 @@ async fn run_portfolio_anytime(
             }),
             beam: None,
             alns: None,
+            candidate_selection,
         });
     }
 
@@ -867,6 +1063,7 @@ async fn run_beam_anytime(
                             requested_restarts: expansion.requested_restarts,
                             depth,
                             restarts_used: outcome.restarts_used,
+                            candidate_selection: outcome.candidate_selection,
                         });
                     }
                     Err(OptimizeError::Timeout) => {
@@ -950,6 +1147,7 @@ async fn run_beam_anytime(
                 winner_restarts_used: best.restarts_used,
             }),
             alns: None,
+            candidate_selection: best.candidate_selection,
         });
     }
 
@@ -1033,7 +1231,7 @@ async fn run_alns_anytime(
         requested_restarts: default_restarts.max(1),
     };
     let mut incumbent: Option<(f64, AlnsPlan, u32)> = None;
-    let mut best: Option<(Candidate, u64, u32)> = None;
+    let mut best: Option<(Candidate, u64, u32, Option<CandidateSelectionTelemetry>)> = None;
 
     let mut candidates_evaluated: u32 = 0;
     let mut candidates_timed_out: u32 = 0;
@@ -1074,7 +1272,12 @@ async fn run_alns_anytime(
             let candidate = outcome.candidate;
             let score = objective_score(&candidate, &req.params.objective);
             incumbent = Some((score, base_plan.clone(), outcome.restarts_used.max(1)));
-            best = Some((candidate, base_plan.seed, outcome.restarts_used.max(1)));
+            best = Some((
+                candidate,
+                base_plan.seed,
+                outcome.restarts_used.max(1),
+                outcome.candidate_selection,
+            ));
             timeout_streak = 0;
         }
         Err(OptimizeError::Timeout) => {
@@ -1172,14 +1375,19 @@ async fn run_alns_anytime(
 
                 let is_global_best = match best.as_ref() {
                     None => true,
-                    Some((best_candidate, _, _)) => {
+                    Some((best_candidate, _, _, _)) => {
                         is_better(&candidate, best_candidate, &req.params.objective)
                     }
                 };
                 let mut moved_to_best = false;
                 if is_global_best {
                     accepted = true;
-                    best = Some((candidate, proposal.seed, outcome.restarts_used.max(1)));
+                    best = Some((
+                        candidate,
+                        proposal.seed,
+                        outcome.restarts_used.max(1),
+                        outcome.candidate_selection,
+                    ));
                     moved_to_best = true;
                     improved_best = improved_best.saturating_add(1);
                     operator.improved_best = operator.improved_best.saturating_add(1);
@@ -1190,7 +1398,7 @@ async fn run_alns_anytime(
                     operator.accepted = operator.accepted.saturating_add(1);
                     let new_score = if moved_to_best {
                         best.as_ref()
-                            .map(|(c, _, _)| objective_score(c, &req.params.objective))
+                            .map(|(c, _, _, _)| objective_score(c, &req.params.objective))
                             .unwrap_or(candidate_score)
                     } else {
                         candidate_score
@@ -1222,7 +1430,7 @@ async fn run_alns_anytime(
         }
     }
 
-    if let Some((winner, winner_seed, winner_restarts_used)) = best {
+    if let Some((winner, winner_seed, winner_restarts_used, candidate_selection)) = best {
         let timeout_reason = if candidates_timed_out > 0 {
             Some("slice_timeout".to_string())
         } else if budget_exhausted {
@@ -1263,6 +1471,7 @@ async fn run_alns_anytime(
                     })
                     .collect(),
             }),
+            candidate_selection,
         });
     }
 
@@ -1293,13 +1502,13 @@ async fn run_alns_anytime(
             } else {
                 None
             };
-        return Ok(RunOutcome {
-            candidate: fallback.candidate,
-            restarts_used: fallback.restarts_used.max(1),
-            timeout_reason,
-            restart_policy: None,
-            portfolio: None,
-            beam: None,
+            return Ok(RunOutcome {
+                candidate: fallback.candidate,
+                restarts_used: fallback.restarts_used.max(1),
+                timeout_reason,
+                restart_policy: None,
+                portfolio: None,
+                beam: None,
                 alns: Some(AlnsTelemetry {
                     deadline_ms,
                     iterations_requested: iterations,
@@ -1326,6 +1535,7 @@ async fn run_alns_anytime(
                         })
                         .collect(),
                 }),
+                candidate_selection: fallback.candidate_selection,
             });
         }
         Err(OptimizeError::Timeout) => {
@@ -1547,7 +1757,8 @@ fn derive_standard_restart_plan(
     };
     let min_effective_slice_ms = min_effective_slice_ms.max(MIN_SLICE_MS);
     let reserve_ms = min_effective_slice_ms / 2;
-    let cap_by_effective_slice = total_budget_ms.saturating_sub(reserve_ms) / min_effective_slice_ms;
+    let cap_by_effective_slice =
+        total_budget_ms.saturating_sub(reserve_ms) / min_effective_slice_ms;
     let effective_restarts = requested.min(cap_by_effective_slice.max(1)).max(1);
     let progressive_slicing = !matches!(profile, SlaProfile::Fast);
     let schedule_ms = build_restart_slice_schedule(
@@ -1557,7 +1768,10 @@ fn derive_standard_restart_plan(
         baseline_share_percent,
         progressive_slicing,
     );
-    let baseline_budget_ms = schedule_ms.first().copied().unwrap_or(total_budget_ms.max(1));
+    let baseline_budget_ms = schedule_ms
+        .first()
+        .copied()
+        .unwrap_or(total_budget_ms.max(1));
     let fallback_slice_ms = if schedule_ms.len() <= 1 {
         total_budget_ms.max(1)
     } else {
@@ -1803,6 +2017,7 @@ fn build_candidate(solution: cut_optimizer_2d::Solution) -> Candidate {
     let mut total_waste_area: u128 = 0;
     let mut total_bbox_area: u128 = 0;
     let mut total_bbox_void_area: u128 = 0;
+    let mut total_piece_perimeter: u128 = 0;
 
     for stock in &solution.stock_pieces {
         let stock_area = area(stock.width, stock.length);
@@ -1813,6 +2028,9 @@ fn build_candidate(solution: cut_optimizer_2d::Solution) -> Candidate {
         let mut max_y: usize = 0;
         for cut_piece in &stock.cut_pieces {
             used_area = used_area.saturating_add(area(cut_piece.width, cut_piece.length));
+            total_piece_perimeter = total_piece_perimeter.saturating_add(
+                (2_u128).saturating_mul((cut_piece.width + cut_piece.length) as u128),
+            );
             min_x = min_x.min(cut_piece.x);
             min_y = min_y.min(cut_piece.y);
             max_x = max_x.max(cut_piece.x.saturating_add(cut_piece.width));
@@ -1823,7 +2041,8 @@ fn build_candidate(solution: cut_optimizer_2d::Solution) -> Candidate {
             let bbox_h = max_y.saturating_sub(min_y);
             let bbox_area = area(bbox_w, bbox_h);
             total_bbox_area = total_bbox_area.saturating_add(bbox_area);
-            total_bbox_void_area = total_bbox_void_area.saturating_add(bbox_area.saturating_sub(used_area));
+            total_bbox_void_area =
+                total_bbox_void_area.saturating_add(bbox_area.saturating_sub(used_area));
         }
         total_waste_area = total_waste_area.saturating_add(stock_area.saturating_sub(used_area));
     }
@@ -1833,11 +2052,23 @@ fn build_candidate(solution: cut_optimizer_2d::Solution) -> Candidate {
         total_waste_area_units: total_waste_area,
         total_bbox_area_units: total_bbox_area,
         total_bbox_void_area_units: total_bbox_void_area,
+        total_piece_perimeter_units: total_piece_perimeter,
         solution,
     }
 }
 
 fn is_better(candidate: &Candidate, best: &Candidate, objective: &Objective) -> bool {
+    matches!(
+        compare_candidates(candidate, best, objective),
+        CandidateCompare::Better
+    )
+}
+
+fn compare_candidates(
+    candidate: &Candidate,
+    best: &Candidate,
+    objective: &Objective,
+) -> CandidateCompare {
     if is_better_stats(
         candidate.used_stock_count,
         candidate.total_waste_area_units,
@@ -1845,7 +2076,7 @@ fn is_better(candidate: &Candidate, best: &Candidate, objective: &Objective) -> 
         best.total_waste_area_units,
         objective,
     ) {
-        return true;
+        return CandidateCompare::Better;
     }
     if is_better_stats(
         best.used_stock_count,
@@ -1854,18 +2085,53 @@ fn is_better(candidate: &Candidate, best: &Candidate, objective: &Objective) -> 
         candidate.total_waste_area_units,
         objective,
     ) {
-        return false;
+        return CandidateCompare::WorseByPrimaryObjective;
     }
 
     // Tie-break for same primary objective: prefer denser occupied bounding region
     // to reduce recurring fragmented void patterns and ragged occupancy contours.
     if candidate.total_bbox_void_area_units != best.total_bbox_void_area_units {
-        return candidate.total_bbox_void_area_units < best.total_bbox_void_area_units;
+        if candidate.total_bbox_void_area_units < best.total_bbox_void_area_units {
+            return CandidateCompare::Better;
+        }
+        return CandidateCompare::WorseByTieBboxVoid;
     }
     if candidate.total_bbox_area_units != best.total_bbox_area_units {
-        return candidate.total_bbox_area_units < best.total_bbox_area_units;
+        if candidate.total_bbox_area_units < best.total_bbox_area_units {
+            return CandidateCompare::Better;
+        }
+        return CandidateCompare::WorseByTieBboxArea;
     }
-    false
+    if candidate.total_piece_perimeter_units != best.total_piece_perimeter_units {
+        if candidate.total_piece_perimeter_units < best.total_piece_perimeter_units {
+            return CandidateCompare::Better;
+        }
+        return CandidateCompare::WorseByTiePerimeter;
+    }
+    CandidateCompare::Equal
+}
+
+fn build_candidate_selection_telemetry(
+    counters: &CandidateSelectionCounters,
+    winner: &Candidate,
+) -> CandidateSelectionTelemetry {
+    CandidateSelectionTelemetry {
+        source: "top_k_population".to_string(),
+        top_k_requested: counters.top_k_requested.max(1),
+        candidates_total: counters.candidates_total,
+        candidates_valid: counters.candidates_valid,
+        candidates_invalid_fitness: counters.candidates_invalid_fitness,
+        candidates_rejected_primary_objective: counters.candidates_rejected_primary_objective,
+        candidates_rejected_tie_bbox_void: counters.candidates_rejected_tie_bbox_void,
+        candidates_rejected_tie_bbox_area: counters.candidates_rejected_tie_bbox_area,
+        candidates_rejected_tie_perimeter: counters.candidates_rejected_tie_perimeter,
+        candidates_rejected_equal: counters.candidates_rejected_equal,
+        winner_used_stock_count: winner.used_stock_count,
+        winner_waste_area_mm2: from_area_units(winner.total_waste_area_units),
+        winner_bbox_void_area_mm2: from_area_units(winner.total_bbox_void_area_units),
+        winner_bbox_area_mm2: from_area_units(winner.total_bbox_area_units),
+        winner_piece_perimeter_mm: from_linear_units_u128(winner.total_piece_perimeter_units),
+    }
 }
 
 fn cut_piece_area(piece: &CutPiece) -> u128 {
@@ -2366,6 +2632,14 @@ fn to_units(value: f64) -> Result<usize, OptimizeError> {
 
 fn from_units(value: usize) -> f64 {
     value as f64 / SCALE
+}
+
+fn from_linear_units_u128(value: u128) -> f64 {
+    value as f64 / SCALE
+}
+
+fn from_area_units(value: u128) -> f64 {
+    value as f64 / (SCALE * SCALE)
 }
 
 fn area(width: usize, length: usize) -> u128 {

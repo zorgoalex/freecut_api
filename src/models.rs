@@ -28,6 +28,10 @@ pub struct Params {
     pub layout_mode: Option<LayoutMode>,
     /// Service-level profile for restart budgeting in `/v1/optimize`. Optional, defaults to `balanced`.
     pub sla_profile: Option<SlaProfile>,
+    /// GA profile for optimizer internals. Optional, defaults to `balanced`.
+    pub ga_profile: Option<GaProfile>,
+    /// Optional GA parameter override for advanced tuning.
+    pub ga_override: Option<GaOverrideParams>,
     /// Include SVG artifact in response. Optional, defaults to true.
     pub include_svg: Option<bool>,
     /// Optional portfolio/anytime orchestration settings.
@@ -100,6 +104,26 @@ pub enum SlaProfile {
     Fast,
     Balanced,
     Quality,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GaProfile {
+    Fast,
+    Balanced,
+    Quality,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
+pub struct GaOverrideParams {
+    /// Number of GA epochs in range 1..=2000.
+    pub epochs: Option<u32>,
+    /// Breed factor in range (0, 1].
+    pub breed_factor: Option<f64>,
+    /// Survival factor in range [0, 1].
+    pub survival_factor: Option<f64>,
+    /// Top-K population candidates to evaluate by business scorer in range 1..=64.
+    pub top_k_candidates: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy)]
@@ -197,6 +221,8 @@ pub struct Summary {
     pub beam: Option<BeamTelemetry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alns: Option<AlnsTelemetry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_selection: Option<CandidateSelectionTelemetry>,
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
@@ -273,6 +299,36 @@ pub struct AlnsOperatorTelemetry {
     pub selected: u32,
     pub accepted: u32,
     pub improved_best: u32,
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone)]
+pub struct CandidateSelectionTelemetry {
+    /// Selection source (currently top-K population scoring inside restart).
+    pub source: String,
+    /// Configured top-K candidate pool size.
+    pub top_k_requested: u32,
+    /// Total candidates seen by scorer.
+    pub candidates_total: u32,
+    /// Candidates with valid fitness considered for ranking.
+    pub candidates_valid: u32,
+    /// Candidates discarded due to invalid fitness.
+    pub candidates_invalid_fitness: u32,
+    /// Rejected because primary objective was worse.
+    pub candidates_rejected_primary_objective: u32,
+    /// Rejected by tie-break on bbox internal void area.
+    pub candidates_rejected_tie_bbox_void: u32,
+    /// Rejected by tie-break on bbox area.
+    pub candidates_rejected_tie_bbox_area: u32,
+    /// Rejected by tie-break on total perimeter.
+    pub candidates_rejected_tie_perimeter: u32,
+    /// Rejected because score was exactly equal to current best.
+    pub candidates_rejected_equal: u32,
+    /// Winner snapshot metrics.
+    pub winner_used_stock_count: u32,
+    pub winner_waste_area_mm2: f64,
+    pub winner_bbox_void_area_mm2: f64,
+    pub winner_bbox_area_mm2: f64,
+    pub winner_piece_perimeter_mm: f64,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

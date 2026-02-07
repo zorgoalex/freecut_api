@@ -102,6 +102,37 @@ pub fn validate_request(
         }
     }
 
+    if let Some(ga) = &req.params.ga_override {
+        if let Some(epochs) = ga.epochs {
+            if !(1..=2000).contains(&epochs) {
+                return Err(ValidationError::new(
+                    "ga_override.epochs must be in range 1..=2000",
+                ));
+            }
+        }
+        if let Some(breed_factor) = ga.breed_factor {
+            if !breed_factor.is_finite() || breed_factor <= 0.0 || breed_factor > 1.0 {
+                return Err(ValidationError::new(
+                    "ga_override.breed_factor must be finite and in range (0, 1]",
+                ));
+            }
+        }
+        if let Some(survival_factor) = ga.survival_factor {
+            if !survival_factor.is_finite() || !(0.0..=1.0).contains(&survival_factor) {
+                return Err(ValidationError::new(
+                    "ga_override.survival_factor must be finite and in range [0, 1]",
+                ));
+            }
+        }
+        if let Some(top_k) = ga.top_k_candidates {
+            if !(1..=64).contains(&top_k) {
+                return Err(ValidationError::new(
+                    "ga_override.top_k_candidates must be in range 1..=64",
+                ));
+            }
+        }
+    }
+
     if let Some(portfolio) = &req.params.portfolio {
         let portfolio_enabled = portfolio.enabled.unwrap_or(true);
         if portfolio_enabled {

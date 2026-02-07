@@ -190,8 +190,6 @@ dependencies = [
 [[package]]
 name = "cut-optimizer-2d"
 version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b7c91abf8192921255742a75fdd5c99d2f4c73768f8154e236608e59f0d9775"
 dependencies = [
  "fnv",
  "rand 0.8.5",
