@@ -400,6 +400,629 @@ async fn optimize_seed_diversity_snapshot_multisheet_varied() {
 }
 
 #[tokio::test]
+#[ignore = "manual sweep: tie_break_jitter on/off across seeds (multisheet varied, nested)"]
+async fn optimize_tie_break_jitter_seed_sweep_multisheet_varied_nested() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(MULTISHEET_VARIED_4SHEETS_REQUEST).unwrap();
+    let seeds: Vec<u64> = (1..=5).collect();
+    let variants = [
+        ("jitter_off", None),
+        (
+            "jitter_on",
+            Some(serde_json::json!({ "tie_break_jitter": 0.01 })),
+        ),
+    ];
+
+    for (label, bias) in variants {
+        let mut unique_sum: u64 = 0;
+        let mut winner_void_sum: f64 = 0.0;
+        let mut winner_void_min: f64 = f64::INFINITY;
+        let mut winner_void_max: f64 = 0.0;
+        let mut time_sum_ms: u64 = 0;
+        let mut ok_count: u64 = 0;
+
+        for seed in &seeds {
+            if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+                params.insert("seed".to_string(), Value::from(*seed));
+                params.insert("time_limit_ms".to_string(), Value::from(20000));
+                params.insert("restarts".to_string(), Value::from(1));
+                params.insert("include_svg".to_string(), Value::Bool(false));
+                params.insert("layout_mode".to_string(), Value::from("nested"));
+                params.insert(
+                    "ga_override".to_string(),
+                    serde_json::json!({
+                        "epochs": 30
+                    }),
+                );
+                match &bias {
+                    Some(bias) => {
+                        params.insert("placement_bias".to_string(), bias.clone());
+                    }
+                    None => {
+                        params.remove("placement_bias");
+                    }
+                }
+            }
+
+            let body = serde_json::to_string(&json).unwrap();
+            let (status, resp) = post_json(&app, "/v1/optimize", &body).await;
+            assert_eq!(status, StatusCode::OK, "unexpected status/body: {resp}");
+
+            let selection = resp
+                .pointer("/summary/candidate_selection")
+                .cloned()
+                .unwrap_or(Value::Null);
+            let unique = selection
+                .get("top_k_unique_signatures")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let winner_void = selection
+                .get("winner_bbox_void_area_mm2")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let time_ms = resp
+                .pointer("/summary/time_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+
+            println!(
+                "[jitter_seed_sweep] variant={label} seed={seed} unique={unique} winner_void_mm2={winner_void:.3} time_ms={time_ms}"
+            );
+
+            unique_sum = unique_sum.saturating_add(unique);
+            winner_void_sum += winner_void;
+            winner_void_min = winner_void_min.min(winner_void);
+            winner_void_max = winner_void_max.max(winner_void);
+            time_sum_ms = time_sum_ms.saturating_add(time_ms);
+            ok_count = ok_count.saturating_add(1);
+        }
+
+        let denom = ok_count.max(1) as f64;
+        println!(
+            "[jitter_seed_sweep_summary] variant={label} seeds={} unique_mean={:.3} winner_void_mean_mm2={:.3} winner_void_min_mm2={:.3} winner_void_max_mm2={:.3} time_mean_ms={:.1}",
+            ok_count,
+            unique_sum as f64 / denom,
+            winner_void_sum / denom,
+            winner_void_min,
+            winner_void_max,
+            time_sum_ms as f64 / denom
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "manual sweep: edge_penalty x tie_break_jitter across seeds (multisheet varied, nested)"]
+async fn optimize_edge_penalty_x_jitter_seed_sweep_multisheet_varied_nested() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(MULTISHEET_VARIED_4SHEETS_REQUEST).unwrap();
+    let seeds: Vec<u64> = (1..=5).collect();
+
+    let mut variants: Vec<(String, Option<Value>)> = Vec::new();
+    variants.push(("edge0.00_j0.00".to_string(), None));
+
+    for edge in [0.10_f64, 0.25, 0.35] {
+        variants.push((
+            format!("edge{edge:.2}_j0.00"),
+            Some(serde_json::json!({ "edge_penalty": edge })),
+        ));
+        variants.push((
+            format!("edge{edge:.2}_j0.01"),
+            Some(serde_json::json!({ "edge_penalty": edge, "tie_break_jitter": 0.01 })),
+        ));
+    }
+
+    for (label, bias) in variants {
+        let mut unique_sum: u64 = 0;
+        let mut winner_void_sum: f64 = 0.0;
+        let mut winner_void_min: f64 = f64::INFINITY;
+        let mut winner_void_max: f64 = 0.0;
+        let mut time_sum_ms: u64 = 0;
+        let mut ok_count: u64 = 0;
+
+        for seed in &seeds {
+            if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+                params.insert("seed".to_string(), Value::from(*seed));
+                params.insert("time_limit_ms".to_string(), Value::from(20000));
+                params.insert("restarts".to_string(), Value::from(1));
+                params.insert("include_svg".to_string(), Value::Bool(false));
+                params.insert("layout_mode".to_string(), Value::from("nested"));
+                params.insert(
+                    "ga_override".to_string(),
+                    serde_json::json!({
+                        "epochs": 30
+                    }),
+                );
+                match &bias {
+                    Some(bias) => {
+                        params.insert("placement_bias".to_string(), bias.clone());
+                    }
+                    None => {
+                        params.remove("placement_bias");
+                    }
+                }
+            }
+
+            let body = serde_json::to_string(&json).unwrap();
+            let (status, resp) = post_json(&app, "/v1/optimize", &body).await;
+            assert_eq!(status, StatusCode::OK, "unexpected status/body: {resp}");
+
+            let selection = resp
+                .pointer("/summary/candidate_selection")
+                .cloned()
+                .unwrap_or(Value::Null);
+            let unique = selection
+                .get("top_k_unique_signatures")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let winner_void = selection
+                .get("winner_bbox_void_area_mm2")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let time_ms = resp
+                .pointer("/summary/time_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+
+            println!(
+                "[edge_x_jitter_seed_sweep] variant={label} seed={seed} unique={unique} winner_void_mm2={winner_void:.3} time_ms={time_ms}"
+            );
+
+            unique_sum = unique_sum.saturating_add(unique);
+            winner_void_sum += winner_void;
+            winner_void_min = winner_void_min.min(winner_void);
+            winner_void_max = winner_void_max.max(winner_void);
+            time_sum_ms = time_sum_ms.saturating_add(time_ms);
+            ok_count = ok_count.saturating_add(1);
+        }
+
+        let denom = ok_count.max(1) as f64;
+        println!(
+            "[edge_x_jitter_seed_sweep_summary] variant={label} seeds={} unique_mean={:.3} winner_void_mean_mm2={:.3} winner_void_min_mm2={:.3} winner_void_max_mm2={:.3} time_mean_ms={:.1}",
+            ok_count,
+            unique_sum as f64 / denom,
+            winner_void_sum / denom,
+            winner_void_min,
+            winner_void_max,
+            time_sum_ms as f64 / denom
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "manual sweep: fragmentation_penalty x bbox_weight across seeds (multisheet varied, nested)"]
+async fn optimize_fragmentation_penalty_x_bbox_weight_seed_sweep_multisheet_varied_nested() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(MULTISHEET_VARIED_4SHEETS_REQUEST).unwrap();
+    let seeds: Vec<u64> = (1..=5).collect();
+
+    let mut variants: Vec<(String, Option<Value>)> = Vec::new();
+    variants.push(("f0.00_b0.00".to_string(), None));
+
+    for frag in [0.10_f64, 0.25, 0.50] {
+        for bbox in [0.05_f64, 0.10, 0.20] {
+            variants.push((
+                format!("f{frag:.2}_b{bbox:.2}"),
+                Some(serde_json::json!({
+                    "fragmentation_penalty": frag,
+                    "bbox_weight": bbox
+                })),
+            ));
+        }
+    }
+
+    for (label, bias) in variants {
+        let mut unique_sum: u64 = 0;
+        let mut winner_void_sum: f64 = 0.0;
+        let mut winner_void_min: f64 = f64::INFINITY;
+        let mut winner_void_max: f64 = 0.0;
+        let mut time_sum_ms: u64 = 0;
+        let mut ok_count: u64 = 0;
+
+        for seed in &seeds {
+            if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+                params.insert("seed".to_string(), Value::from(*seed));
+                params.insert("time_limit_ms".to_string(), Value::from(20000));
+                params.insert("restarts".to_string(), Value::from(1));
+                params.insert("include_svg".to_string(), Value::Bool(false));
+                params.insert("layout_mode".to_string(), Value::from("nested"));
+                params.insert(
+                    "ga_override".to_string(),
+                    serde_json::json!({
+                        "epochs": 30
+                    }),
+                );
+                match &bias {
+                    Some(bias) => {
+                        params.insert("placement_bias".to_string(), bias.clone());
+                    }
+                    None => {
+                        params.remove("placement_bias");
+                    }
+                }
+            }
+
+            let body = serde_json::to_string(&json).unwrap();
+            let (status, resp) = post_json(&app, "/v1/optimize", &body).await;
+            assert_eq!(status, StatusCode::OK, "unexpected status/body: {resp}");
+
+            let selection = resp
+                .pointer("/summary/candidate_selection")
+                .cloned()
+                .unwrap_or(Value::Null);
+            let unique = selection
+                .get("top_k_unique_signatures")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let winner_void = selection
+                .get("winner_bbox_void_area_mm2")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let time_ms = resp
+                .pointer("/summary/time_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+
+            println!(
+                "[frag_x_bbox_seed_sweep] variant={label} seed={seed} unique={unique} winner_void_mm2={winner_void:.3} time_ms={time_ms}"
+            );
+
+            unique_sum = unique_sum.saturating_add(unique);
+            winner_void_sum += winner_void;
+            winner_void_min = winner_void_min.min(winner_void);
+            winner_void_max = winner_void_max.max(winner_void);
+            time_sum_ms = time_sum_ms.saturating_add(time_ms);
+            ok_count = ok_count.saturating_add(1);
+        }
+
+        let denom = ok_count.max(1) as f64;
+        println!(
+            "[frag_x_bbox_seed_sweep_summary] variant={label} seeds={} unique_mean={:.3} winner_void_mean_mm2={:.3} winner_void_min_mm2={:.3} winner_void_max_mm2={:.3} time_mean_ms={:.1}",
+            ok_count,
+            unique_sum as f64 / denom,
+            winner_void_sum / denom,
+            winner_void_min,
+            winner_void_max,
+            time_sum_ms as f64 / denom
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "manual sweep: ablation for fragmentation_penalty vs bbox_weight (multisheet varied, nested)"]
+async fn optimize_fragmentation_bbox_ablation_seed_sweep_multisheet_varied_nested() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(MULTISHEET_VARIED_4SHEETS_REQUEST).unwrap();
+    let seeds: Vec<u64> = (1..=5).collect();
+
+    let variants: Vec<(String, Option<Value>)> = vec![
+        ("none".to_string(), None),
+        (
+            "bbox_only".to_string(),
+            Some(serde_json::json!({ "bbox_weight": 0.10 })),
+        ),
+        (
+            "frag_only".to_string(),
+            Some(serde_json::json!({ "fragmentation_penalty": 0.25 })),
+        ),
+        (
+            "frag0.25_bbox0.10".to_string(),
+            Some(serde_json::json!({
+                "fragmentation_penalty": 0.25,
+                "bbox_weight": 0.10
+            })),
+        ),
+    ];
+
+    for (label, bias) in variants {
+        let mut unique_sum: u64 = 0;
+        let mut winner_void_sum: f64 = 0.0;
+        let mut winner_void_min: f64 = f64::INFINITY;
+        let mut winner_void_max: f64 = 0.0;
+        let mut time_sum_ms: u64 = 0;
+        let mut ok_count: u64 = 0;
+
+        for seed in &seeds {
+            if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+                params.insert("seed".to_string(), Value::from(*seed));
+                params.insert("time_limit_ms".to_string(), Value::from(20000));
+                params.insert("restarts".to_string(), Value::from(1));
+                params.insert("include_svg".to_string(), Value::Bool(false));
+                params.insert("layout_mode".to_string(), Value::from("nested"));
+                params.insert(
+                    "ga_override".to_string(),
+                    serde_json::json!({
+                        "epochs": 30
+                    }),
+                );
+                match &bias {
+                    Some(bias) => {
+                        params.insert("placement_bias".to_string(), bias.clone());
+                    }
+                    None => {
+                        params.remove("placement_bias");
+                    }
+                }
+            }
+
+            let body = serde_json::to_string(&json).unwrap();
+            let (status, resp) = post_json(&app, "/v1/optimize", &body).await;
+            assert_eq!(status, StatusCode::OK, "unexpected status/body: {resp}");
+
+            let selection = resp
+                .pointer("/summary/candidate_selection")
+                .cloned()
+                .unwrap_or(Value::Null);
+            let unique = selection
+                .get("top_k_unique_signatures")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let winner_void = selection
+                .get("winner_bbox_void_area_mm2")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let time_ms = resp
+                .pointer("/summary/time_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+
+            println!(
+                "[frag_bbox_ablation] variant={label} seed={seed} unique={unique} winner_void_mm2={winner_void:.3} time_ms={time_ms}"
+            );
+
+            unique_sum = unique_sum.saturating_add(unique);
+            winner_void_sum += winner_void;
+            winner_void_min = winner_void_min.min(winner_void);
+            winner_void_max = winner_void_max.max(winner_void);
+            time_sum_ms = time_sum_ms.saturating_add(time_ms);
+            ok_count = ok_count.saturating_add(1);
+        }
+
+        let denom = ok_count.max(1) as f64;
+        println!(
+            "[frag_bbox_ablation_summary] variant={label} seeds={} unique_mean={:.3} winner_void_mean_mm2={:.3} winner_void_min_mm2={:.3} winner_void_max_mm2={:.3} time_mean_ms={:.1}",
+            ok_count,
+            unique_sum as f64 / denom,
+            winner_void_sum / denom,
+            winner_void_min,
+            winner_void_max,
+            time_sum_ms as f64 / denom
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "manual sweep: placement_heuristic across seeds (multisheet varied, nested+guillotine)"]
+async fn optimize_placement_heuristic_seed_sweep_multisheet_varied() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(MULTISHEET_VARIED_4SHEETS_REQUEST).unwrap();
+    let seeds: Vec<u64> = (1..=5).collect();
+
+    let nested_heuristics: [(&str, Option<&str>); 6] = [
+        ("default", None),
+        ("best_area", Some("best_area")),
+        ("best_short_side", Some("best_short_side")),
+        ("best_long_side", Some("best_long_side")),
+        ("bottom_left", Some("bottom_left")),
+        ("contact_point", Some("contact_point")),
+    ];
+    let guillotine_heuristics: [(&str, Option<&str>); 5] = [
+        ("default", None),
+        ("best_area", Some("best_area")),
+        ("best_short_side", Some("best_short_side")),
+        ("best_long_side", Some("best_long_side")),
+        ("smallest_y", Some("smallest_y")),
+    ];
+    let modes = [
+        ("nested", nested_heuristics.as_slice()),
+        ("guillotine", guillotine_heuristics.as_slice()),
+    ];
+
+    for (layout_mode, heuristics) in modes {
+        for (heur_label, heur_value) in heuristics {
+            let mut unique_sum: u64 = 0;
+            let mut winner_void_sum: f64 = 0.0;
+            let mut winner_void_min: f64 = f64::INFINITY;
+            let mut winner_void_max: f64 = 0.0;
+            let mut time_sum_ms: u64 = 0;
+            let mut ok_count: u64 = 0;
+
+            for seed in &seeds {
+                if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+                    params.insert("seed".to_string(), Value::from(*seed));
+                    params.insert("time_limit_ms".to_string(), Value::from(20000));
+                    params.insert("restarts".to_string(), Value::from(1));
+                    params.insert("include_svg".to_string(), Value::Bool(false));
+                    params.insert("layout_mode".to_string(), Value::from(layout_mode));
+                    params.insert(
+                        "ga_override".to_string(),
+                        serde_json::json!({
+                            "epochs": 30
+                        }),
+                    );
+                    match heur_value {
+                        Some(heuristic) => {
+                            params.insert(
+                                "placement_heuristic".to_string(),
+                                Value::from(*heuristic),
+                            );
+                        }
+                        None => {
+                            params.remove("placement_heuristic");
+                        }
+                    }
+                    params.remove("placement_bias");
+                }
+
+                let body = serde_json::to_string(&json).unwrap();
+                let (status, resp) = post_json(&app, "/v1/optimize", &body).await;
+                assert_eq!(status, StatusCode::OK, "unexpected status/body: {resp}");
+
+                let selection = resp
+                    .pointer("/summary/candidate_selection")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let unique = selection
+                    .get("top_k_unique_signatures")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let winner_void = selection
+                    .get("winner_bbox_void_area_mm2")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0);
+                let time_ms = resp
+                    .pointer("/summary/time_ms")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+
+                println!(
+                    "[heur_seed_sweep] mode={layout_mode} heuristic={heur_label} seed={seed} unique={unique} winner_void_mm2={winner_void:.3} time_ms={time_ms}"
+                );
+
+                unique_sum = unique_sum.saturating_add(unique);
+                winner_void_sum += winner_void;
+                winner_void_min = winner_void_min.min(winner_void);
+                winner_void_max = winner_void_max.max(winner_void);
+                time_sum_ms = time_sum_ms.saturating_add(time_ms);
+                ok_count = ok_count.saturating_add(1);
+            }
+
+            let denom = ok_count.max(1) as f64;
+            println!(
+                "[heur_seed_sweep_summary] mode={layout_mode} heuristic={heur_label} seeds={} unique_mean={:.3} winner_void_mean_mm2={:.3} winner_void_min_mm2={:.3} winner_void_max_mm2={:.3} time_mean_ms={:.1}",
+                ok_count,
+                unique_sum as f64 / denom,
+                winner_void_sum / denom,
+                winner_void_min,
+                winner_void_max,
+                time_sum_ms as f64 / denom
+            );
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "manual sweep: cross-fixture sanity for a few promising profiles"]
+async fn optimize_cross_fixture_profile_sweep() {
+    let app = app_for_test();
+    let seeds: Vec<u64> = (1..=3).collect();
+    let fixtures: [(&str, &str); 2] = [("valid", VALID_REQUEST), ("oversized", MULTISHEET_OVERSIZED_REQUEST)];
+
+    let profiles: Vec<(&str, &str, Option<&str>, Option<Value>)> = vec![
+        ("guillotine_default", "guillotine", None, None),
+        ("nested_default", "nested", None, None),
+        ("nested_bottom_left", "nested", Some("bottom_left"), None),
+        (
+            "nested_frag0.25_bbox0.10",
+            "nested",
+            None,
+            Some(serde_json::json!({
+                "fragmentation_penalty": 0.25,
+                "bbox_weight": 0.10
+            })),
+        ),
+        (
+            "nested_bottom_left_frag0.25_bbox0.10",
+            "nested",
+            Some("bottom_left"),
+            Some(serde_json::json!({
+                "fragmentation_penalty": 0.25,
+                "bbox_weight": 0.10
+            })),
+        ),
+    ];
+
+    for (fixture_label, fixture) in fixtures {
+        for (profile_label, layout_mode, heuristic, bias) in &profiles {
+            let mut unique_sum: u64 = 0;
+            let mut winner_void_sum: f64 = 0.0;
+            let mut winner_void_min: f64 = f64::INFINITY;
+            let mut winner_void_max: f64 = 0.0;
+            let mut time_sum_ms: u64 = 0;
+            let mut ok_count: u64 = 0;
+
+            for seed in &seeds {
+                let mut json: Value = serde_json::from_str(fixture).unwrap();
+                if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+                    params.insert("seed".to_string(), Value::from(*seed));
+                    params.insert("time_limit_ms".to_string(), Value::from(5000));
+                    params.insert("restarts".to_string(), Value::from(1));
+                    params.insert("include_svg".to_string(), Value::Bool(false));
+                    params.insert("layout_mode".to_string(), Value::from(*layout_mode));
+                    params.insert(
+                        "ga_override".to_string(),
+                        serde_json::json!({
+                            "epochs": 30
+                        }),
+                    );
+                    match heuristic {
+                        Some(heuristic) => {
+                            params.insert(
+                                "placement_heuristic".to_string(),
+                                Value::from(*heuristic),
+                            );
+                        }
+                        None => {
+                            params.remove("placement_heuristic");
+                        }
+                    }
+                    match bias {
+                        Some(bias) => {
+                            params.insert("placement_bias".to_string(), bias.clone());
+                        }
+                        None => {
+                            params.remove("placement_bias");
+                        }
+                    }
+                }
+
+                let body = serde_json::to_string(&json).unwrap();
+                let (status, resp) = post_json(&app, "/v1/optimize", &body).await;
+                assert_eq!(status, StatusCode::OK, "unexpected status/body: {resp}");
+
+                let selection = resp
+                    .pointer("/summary/candidate_selection")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let unique = selection
+                    .get("top_k_unique_signatures")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let winner_void = selection
+                    .get("winner_bbox_void_area_mm2")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0);
+                let time_ms = resp
+                    .pointer("/summary/time_ms")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+
+                println!(
+                    "[cross_fixture] fixture={fixture_label} profile={profile_label} seed={seed} unique={unique} winner_void_mm2={winner_void:.3} time_ms={time_ms}"
+                );
+
+                unique_sum = unique_sum.saturating_add(unique);
+                winner_void_sum += winner_void;
+                winner_void_min = winner_void_min.min(winner_void);
+                winner_void_max = winner_void_max.max(winner_void);
+                time_sum_ms = time_sum_ms.saturating_add(time_ms);
+                ok_count = ok_count.saturating_add(1);
+            }
+
+            let denom = ok_count.max(1) as f64;
+            println!(
+                "[cross_fixture_summary] fixture={fixture_label} profile={profile_label} seeds={} unique_mean={:.3} winner_void_mean_mm2={:.3} winner_void_min_mm2={:.3} winner_void_max_mm2={:.3} time_mean_ms={:.1}",
+                ok_count,
+                unique_sum as f64 / denom,
+                winner_void_sum / denom,
+                winner_void_min,
+                winner_void_max,
+                time_sum_ms as f64 / denom
+            );
+        }
+    }
+}
+
+#[tokio::test]
 #[ignore = "manual svg snapshot for comparing heuristics on multisheet varied"]
 async fn optimize_save_svg_for_heuristics_multisheet_varied() {
     let app = app_for_test();
