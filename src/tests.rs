@@ -12,6 +12,8 @@ const MULTISHEET_OVERSIZED_REQUEST: &str =
     include_str!("../tests/fixtures/multisheet_oversized.json");
 const MULTISHEET_QTY_LIMIT_REQUEST: &str =
     include_str!("../tests/fixtures/multisheet_qty_limit.json");
+const MULTISHEET_VARIED_4SHEETS_REQUEST: &str =
+    include_str!("../tests/fixtures/multisheet_varied_4sheets.json");
 
 fn app_for_test() -> Router {
     let config = AppConfig::from_env();
@@ -333,6 +335,52 @@ async fn optimize_seed_diversity_snapshot() {
             .unwrap_or(0.0);
         println!(
             "[seed_diversity] seed={seed} unique_signatures={unique} waste_mean_mm2={waste_mean:.3}"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "manual snapshot for comparing phenotype diversity across seeds (multisheet varied)"]
+async fn optimize_seed_diversity_snapshot_multisheet_varied() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(MULTISHEET_VARIED_4SHEETS_REQUEST).unwrap();
+    for seed in [1_u64, 2_u64] {
+        if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+            params.insert("seed".to_string(), Value::from(seed));
+            params.insert("time_limit_ms".to_string(), Value::from(20000));
+            params.insert("restarts".to_string(), Value::from(1));
+            params.insert(
+                "ga_override".to_string(),
+                serde_json::json!({
+                    "epochs": 30
+                }),
+            );
+            let tl = params
+                .get("time_limit_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let restarts = params.get("restarts").and_then(Value::as_u64).unwrap_or(0);
+            println!(
+                "[seed_diversity_multisheet_varied] request seed={seed} time_limit_ms={tl} restarts={restarts}"
+            );
+        }
+        let body = serde_json::to_string(&json).unwrap();
+        let (status, resp) = post_json(&app, "/v1/optimize", &body).await;
+        assert_eq!(status, StatusCode::OK, "unexpected status/body: {resp}");
+        let selection = resp
+            .pointer("/summary/candidate_selection")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let unique = selection
+            .get("top_k_unique_signatures")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let waste_mean = selection
+            .get("top_k_waste_area_mm2_mean")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        println!(
+            "[seed_diversity_multisheet_varied] seed={seed} unique_signatures={unique} waste_mean_mm2={waste_mean:.3}"
         );
     }
 }
