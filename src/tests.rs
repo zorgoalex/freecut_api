@@ -446,13 +446,29 @@ async fn optimize_save_svg_for_heuristics_multisheet_varied() {
 async fn optimize_fitness_weights_sweep_multisheet_varied() {
     let app = app_for_test();
     let out_dir = Path::new("ai_docs/tmp/fitness_weight_sweep2");
+    run_fitness_weight_sweep(&app, out_dir, "guillotine").await;
+}
+
+#[tokio::test]
+#[ignore = "manual sweep for fitness weights on multisheet varied (nested)"]
+async fn optimize_fitness_weights_sweep_multisheet_varied_nested() {
+    let app = app_for_test();
+    let out_dir = Path::new("ai_docs/tmp/fitness_weight_sweep2_nested");
+    run_fitness_weight_sweep(&app, out_dir, "nested").await;
+}
+
+fn fmt_weight(value: f64) -> String {
+    format!("{value:.2}").replace('.', "_")
+}
+
+async fn run_fitness_weight_sweep(app: &Router, out_dir: &Path, layout_mode: &str) {
     std::fs::create_dir_all(out_dir).unwrap();
     let summary_path = out_dir.join("summary.csv");
     let mut summary = std::fs::File::create(&summary_path).unwrap();
     use std::io::Write;
     writeln!(
         summary,
-        "profile,seed,unique,waste_mean_mm2,winner_void_mm2,winner_bbox_area_mm2,winner_perim_mm"
+        "profile,seed,layout_mode,unique,waste_mean_mm2,winner_void_mm2,winner_bbox_area_mm2,winner_perim_mm"
     )
     .unwrap();
 
@@ -523,6 +539,7 @@ async fn optimize_fitness_weights_sweep_multisheet_varied() {
                 params.insert("time_limit_ms".to_string(), Value::from(20000));
                 params.insert("restarts".to_string(), Value::from(1));
                 params.insert("include_svg".to_string(), Value::Bool(true));
+                params.insert("layout_mode".to_string(), Value::from(layout_mode));
                 params.insert("fitness_weights".to_string(), weights.clone());
                 params.insert(
                     "ga_override".to_string(),
@@ -532,7 +549,7 @@ async fn optimize_fitness_weights_sweep_multisheet_varied() {
                 );
             }
             let body = serde_json::to_string(&json).unwrap();
-            let (status, resp) = post_json(&app, "/v1/optimize", &body).await;
+            let (status, resp) = post_json(app, "/v1/optimize", &body).await;
             assert_eq!(status, StatusCode::OK, "unexpected status/body: {resp}");
             let selection = resp
                 .pointer("/summary/candidate_selection")
@@ -559,11 +576,11 @@ async fn optimize_fitness_weights_sweep_multisheet_varied() {
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0);
             println!(
-                "[fitness_sweep] profile={label} seed={seed} unique={unique} waste_mean_mm2={waste_mean:.3} winner_void_mm2={winner_void:.3} winner_bbox_mm2={winner_bbox:.3} winner_perim_mm={winner_perim:.3}"
+                "[fitness_sweep] mode={layout_mode} profile={label} seed={seed} unique={unique} waste_mean_mm2={waste_mean:.3} winner_void_mm2={winner_void:.3} winner_bbox_mm2={winner_bbox:.3} winner_perim_mm={winner_perim:.3}"
             );
             writeln!(
                 summary,
-                "{label},{seed},{unique},{waste_mean:.3},{winner_void:.3},{winner_bbox:.3},{winner_perim:.3}"
+                "{label},{seed},{layout_mode},{unique},{waste_mean:.3},{winner_void:.3},{winner_bbox:.3},{winner_perim:.3}"
             )
             .unwrap();
 
@@ -581,10 +598,6 @@ async fn optimize_fitness_weights_sweep_multisheet_varied() {
             println!("[svg] {} bytes -> {}", svg.len(), path.display());
         }
     }
-}
-
-fn fmt_weight(value: f64) -> String {
-    format!("{value:.2}").replace('.', "_")
 }
 
 #[tokio::test]
