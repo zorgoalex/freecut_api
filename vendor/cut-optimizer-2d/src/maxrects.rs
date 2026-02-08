@@ -111,12 +111,29 @@ impl Bin for MaxRectsBin {
         }
     }
 
-    fn fitness(&self) -> f64 {
+    fn fitness(&self, weights: &FitnessWeights) -> f64 {
+        if self.cut_pieces.is_empty() {
+            return 0.0;
+        }
+
         // We don't want cut loss from the blade width to penalize the fitness
         // so we calculate the used area including the cut loss.
         let half_blade_width = self.blade_width as f64 / 2.0;
-        let used_area = self.cut_pieces.iter().fold(0.0, |acc, p| {
-            let rect = &p.rect;
+        let mut used_area_with_kerf = 0.0;
+        let mut used_area_raw: u64 = 0;
+        let mut min_x = usize::MAX;
+        let mut min_y = usize::MAX;
+        let mut max_x = 0;
+        let mut max_y = 0;
+        for cut_piece in &self.cut_pieces {
+            let rect = &cut_piece.rect;
+            used_area_raw =
+                used_area_raw.saturating_add(rect.width as u64 * rect.length as u64);
+            min_x = min_x.min(rect.x);
+            min_y = min_y.min(rect.y);
+            max_x = max_x.max(rect.x.saturating_add(rect.width));
+            max_y = max_y.max(rect.y.saturating_add(rect.length));
+
             let width: f64 = rect.width as f64
                 + f64::min(rect.x as f64, half_blade_width)
                 + f64::min(
@@ -131,11 +148,26 @@ impl Bin for MaxRectsBin {
                     half_blade_width,
                 );
 
-            acc + width * length
-        });
+            used_area_with_kerf += width * length;
+        }
 
-        (used_area / (self.width as f64 * self.length as f64))
-            .powf(2.0 + self.free_rects.len() as f64 * 0.01)
+        let base = (used_area_with_kerf / (self.width as f64 * self.length as f64))
+            .powf(2.0 + self.free_rects.len() as f64 * 0.01);
+
+        let bbox_w = max_x.saturating_sub(min_x) as f64;
+        let bbox_h = max_y.saturating_sub(min_y) as f64;
+        let bbox_area = bbox_w * bbox_h;
+        let bbox_perimeter = 2.0 * (bbox_w + bbox_h);
+        let stock_area = self.width as f64 * self.length as f64;
+
+        apply_fitness_weights(
+            base,
+            used_area_raw as f64,
+            bbox_area,
+            bbox_perimeter,
+            stock_area,
+            weights,
+        )
     }
 
     fn price(&self) -> usize {

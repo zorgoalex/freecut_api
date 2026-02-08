@@ -5,14 +5,17 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use cut_optimizer_2d::{CutPiece, Optimizer, PatternDirection as CutPatternDirection, StockPiece};
+use cut_optimizer_2d::{
+    CutPiece, FitnessWeights as EngineFitnessWeights, Optimizer,
+    PatternDirection as CutPatternDirection, StockPiece,
+};
 
 use crate::config::AppConfig;
 use crate::models::{
     AlnsOperatorTelemetry, AlnsTelemetry, Artifacts, BeamTelemetry, CandidateSelectionTelemetry,
-    ErrorResponse, GaProfile, LayoutMode, Objective, OptimizeRequest, OptimizeResponse,
-    PatternDirection, Placement, PlacementHeuristic, PortfolioTelemetry, RestartPolicyTelemetry,
-    SlaProfile, Solution, Summary, Trim, UnplacedItem,
+    ErrorResponse, FitnessWeights, GaProfile, LayoutMode, Objective, OptimizeRequest,
+    OptimizeResponse, PatternDirection, Placement, PlacementHeuristic, PortfolioTelemetry,
+    RestartPolicyTelemetry, SlaProfile, Solution, Summary, Trim, UnplacedItem,
 };
 use crate::validation::item_fits_any_stock_public;
 
@@ -221,8 +224,12 @@ impl CandidatePoolStats {
             self.bbox_void_max = self.bbox_void_max.max(candidate.total_bbox_void_area_units);
             self.bbox_area_min = self.bbox_area_min.min(candidate.total_bbox_area_units);
             self.bbox_area_max = self.bbox_area_max.max(candidate.total_bbox_area_units);
-            self.perimeter_min = self.perimeter_min.min(candidate.total_piece_perimeter_units);
-            self.perimeter_max = self.perimeter_max.max(candidate.total_piece_perimeter_units);
+            self.perimeter_min = self
+                .perimeter_min
+                .min(candidate.total_piece_perimeter_units);
+            self.perimeter_max = self
+                .perimeter_max
+                .max(candidate.total_piece_perimeter_units);
         }
         self.used_stock_sum = self
             .used_stock_sum
@@ -589,6 +596,18 @@ fn resolve_ga_runtime(req: &OptimizeRequest) -> GaRuntime {
     runtime
 }
 
+fn resolve_fitness_weights(weights: Option<&FitnessWeights>) -> EngineFitnessWeights {
+    match weights {
+        None => EngineFitnessWeights::default(),
+        Some(weights) => EngineFitnessWeights {
+            waste: weights.waste.unwrap_or(1.0),
+            void: weights.void.unwrap_or(0.0),
+            compactness: weights.compactness.unwrap_or(0.0),
+            perimeter: weights.perimeter.unwrap_or(0.0),
+        },
+    }
+}
+
 fn pick_best_candidate(
     set: cut_optimizer_2d::SolutionSet,
     objective: &Objective,
@@ -657,6 +676,7 @@ async fn run_restarts_with_budget(
     let ga_runtime = resolve_ga_runtime(req);
     let guillotine_preset = placement_heuristic.and_then(to_guillotine_preset);
     let nested_preset = placement_heuristic.and_then(to_nested_preset);
+    let fitness_weights = resolve_fitness_weights(req.params.fitness_weights.as_ref());
     let mut best: Option<Candidate> = None;
     let mut selection_counters = CandidateSelectionCounters {
         top_k_requested: u32::try_from(ga_runtime.top_k).unwrap_or(u32::MAX),
@@ -703,6 +723,7 @@ async fn run_restarts_with_budget(
         let cut_width = prepared.cut_width;
         let restart_idx = i;
         let ga_runtime = ga_runtime;
+        let fitness_weights = fitness_weights;
 
         let mut handle = tokio::task::spawn_blocking(move || {
             let diversified_stock = diversify_stock_order(&stock_templates, seed, restart_idx);
@@ -711,6 +732,7 @@ async fn run_restarts_with_budget(
             optimizer
                 .set_random_seed(seed)
                 .set_cut_width(cut_width)
+                .set_fitness_weights(fitness_weights)
                 .set_ga_epochs(ga_runtime.epochs)
                 .set_ga_breed_factor(ga_runtime.breed_factor)
                 .set_ga_survival_factor(ga_runtime.survival_factor)
@@ -718,13 +740,19 @@ async fn run_restarts_with_budget(
                 .add_cut_pieces(diversified_cut.into_iter());
             match mode {
                 LayoutMode::Nested => match nested_preset {
-                    Some(preset) => optimizer
-                        .optimize_nested_top_k_with_heuristic(ga_runtime.top_k, preset, |_| {}),
+                    Some(preset) => optimizer.optimize_nested_top_k_with_heuristic(
+                        ga_runtime.top_k,
+                        preset,
+                        |_| {},
+                    ),
                     None => optimizer.optimize_nested_top_k(ga_runtime.top_k, |_| {}),
                 },
                 LayoutMode::Guillotine => match guillotine_preset {
-                    Some(preset) => optimizer
-                        .optimize_guillotine_top_k_with_heuristic(ga_runtime.top_k, preset, |_| {}),
+                    Some(preset) => optimizer.optimize_guillotine_top_k_with_heuristic(
+                        ga_runtime.top_k,
+                        preset,
+                        |_| {},
+                    ),
                     None => optimizer.optimize_guillotine_top_k(ga_runtime.top_k, |_| {}),
                 },
             }
@@ -855,6 +883,7 @@ async fn run_restarts_with_budget(
             let cut_width = prepared.cut_width;
             let restart_idx = planned_restarts;
             let ga_runtime = ga_runtime;
+            let fitness_weights = fitness_weights;
             let mut rescue_handle = tokio::task::spawn_blocking(move || {
                 let diversified_stock =
                     diversify_stock_order(&stock_templates, rescue_seed, restart_idx);
@@ -863,6 +892,7 @@ async fn run_restarts_with_budget(
                 optimizer
                     .set_random_seed(rescue_seed)
                     .set_cut_width(cut_width)
+                    .set_fitness_weights(fitness_weights)
                     .set_ga_epochs(ga_runtime.epochs)
                     .set_ga_breed_factor(ga_runtime.breed_factor)
                     .set_ga_survival_factor(ga_runtime.survival_factor)
@@ -995,8 +1025,13 @@ async fn run_portfolio_anytime(
     let mut candidates_failed: u32 = 0;
     let started_at = Instant::now();
 
-    let mut best: Option<(Candidate, String, u64, u32, Option<CandidateSelectionTelemetry>)> =
-        None;
+    let mut best: Option<(
+        Candidate,
+        String,
+        u64,
+        u32,
+        Option<CandidateSelectionTelemetry>,
+    )> = None;
 
     for (idx, plan) in plans.iter().enumerate() {
         let elapsed = started_at.elapsed().as_millis() as u64;
@@ -1853,21 +1888,27 @@ fn to_guillotine_preset(
     heuristic: PlacementHeuristic,
 ) -> Option<cut_optimizer_2d::GuillotineHeuristicPreset> {
     match heuristic {
-        PlacementHeuristic::BestArea => Some(cut_optimizer_2d::GuillotineHeuristicPreset::BestAreaFit),
+        PlacementHeuristic::BestArea => {
+            Some(cut_optimizer_2d::GuillotineHeuristicPreset::BestAreaFit)
+        }
         PlacementHeuristic::BestShortSide => {
             Some(cut_optimizer_2d::GuillotineHeuristicPreset::BestShortSideFit)
         }
         PlacementHeuristic::BestLongSide => {
             Some(cut_optimizer_2d::GuillotineHeuristicPreset::BestLongSideFit)
         }
-        PlacementHeuristic::WorstArea => Some(cut_optimizer_2d::GuillotineHeuristicPreset::WorstAreaFit),
+        PlacementHeuristic::WorstArea => {
+            Some(cut_optimizer_2d::GuillotineHeuristicPreset::WorstAreaFit)
+        }
         PlacementHeuristic::WorstShortSide => {
             Some(cut_optimizer_2d::GuillotineHeuristicPreset::WorstShortSideFit)
         }
         PlacementHeuristic::WorstLongSide => {
             Some(cut_optimizer_2d::GuillotineHeuristicPreset::WorstLongSideFit)
         }
-        PlacementHeuristic::SmallestY => Some(cut_optimizer_2d::GuillotineHeuristicPreset::SmallestY),
+        PlacementHeuristic::SmallestY => {
+            Some(cut_optimizer_2d::GuillotineHeuristicPreset::SmallestY)
+        }
         PlacementHeuristic::BottomLeft | PlacementHeuristic::ContactPoint => None,
     }
 }
@@ -1876,7 +1917,9 @@ fn to_nested_preset(
     heuristic: PlacementHeuristic,
 ) -> Option<cut_optimizer_2d::MaxRectsHeuristicPreset> {
     match heuristic {
-        PlacementHeuristic::BestArea => Some(cut_optimizer_2d::MaxRectsHeuristicPreset::BestAreaFit),
+        PlacementHeuristic::BestArea => {
+            Some(cut_optimizer_2d::MaxRectsHeuristicPreset::BestAreaFit)
+        }
         PlacementHeuristic::BestShortSide => {
             Some(cut_optimizer_2d::MaxRectsHeuristicPreset::BestShortSideFit)
         }

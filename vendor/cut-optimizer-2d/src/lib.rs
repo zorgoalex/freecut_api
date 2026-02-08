@@ -388,7 +388,7 @@ trait Bin {
     ) -> Self;
 
     /// Computes the fitness of this `Bin` on a scale of 0.0 to 1.0, with 1.0 being the most fit.
-    fn fitness(&self) -> f64;
+    fn fitness(&self, weights: &FitnessWeights) -> f64;
 
     fn price(&self) -> usize;
 
@@ -442,6 +442,7 @@ where
     unused_cut_pieces: FnvHashSet<CutPieceWithId>,
 
     blade_width: usize,
+    fitness_weights: FitnessWeights,
 }
 
 impl<'a, B> Clone for OptimizerUnit<'a, B>
@@ -455,6 +456,7 @@ where
             available_stock_pieces: self.available_stock_pieces.clone(),
             unused_cut_pieces: self.unused_cut_pieces.clone(),
             blade_width: self.blade_width,
+            fitness_weights: self.fitness_weights,
         }
     }
 }
@@ -467,6 +469,7 @@ where
         possible_stock_pieces: &'a [StockPiece],
         cut_pieces: &[&CutPieceWithId],
         blade_width: usize,
+        fitness_weights: FitnessWeights,
         rng: &mut R,
     ) -> Result<OptimizerUnit<'a, B>>
     where
@@ -478,6 +481,7 @@ where
             available_stock_pieces: possible_stock_pieces.to_vec(),
             unused_cut_pieces: Default::default(),
             blade_width,
+            fitness_weights,
         };
 
         for cut_piece in cut_pieces {
@@ -493,6 +497,7 @@ where
         possible_stock_pieces: &'a [StockPiece],
         cut_pieces: &[&CutPieceWithId],
         blade_width: usize,
+        fitness_weights: FitnessWeights,
         heuristic: &B::Heuristic,
         rng: &mut R,
     ) -> Result<OptimizerUnit<'a, B>>
@@ -505,6 +510,7 @@ where
             available_stock_pieces: possible_stock_pieces.to_vec(),
             unused_cut_pieces: Default::default(),
             blade_width,
+            fitness_weights,
         };
 
         for cut_piece in cut_pieces {
@@ -520,6 +526,7 @@ where
         possible_stock_pieces: &'a [StockPiece],
         cut_pieces: Vec<&CutPieceWithId>,
         blade_width: usize,
+        fitness_weights: FitnessWeights,
         random_seed: u64,
     ) -> Result<Vec<OptimizerUnit<'a, B>>>
     where
@@ -530,6 +537,7 @@ where
             possible_stock_pieces,
             cut_pieces,
             blade_width,
+            fitness_weights,
             random_seed,
             &heuristics,
         )
@@ -539,6 +547,7 @@ where
         possible_stock_pieces: &'a [StockPiece],
         mut cut_pieces: Vec<&CutPieceWithId>,
         blade_width: usize,
+        fitness_weights: FitnessWeights,
         random_seed: u64,
         heuristics: &[B::Heuristic],
     ) -> Result<Vec<OptimizerUnit<'a, B>>>
@@ -584,6 +593,7 @@ where
                 possible_stock_pieces,
                 &cut_pieces,
                 blade_width,
+                fitness_weights,
                 heuristic,
                 &mut rng,
             )?);
@@ -596,6 +606,7 @@ where
                     possible_stock_pieces,
                     &cut_pieces,
                     blade_width,
+                    fitness_weights,
                     heuristic,
                     &mut rng,
                 )?);
@@ -610,6 +621,7 @@ where
                     possible_stock_pieces,
                     &cut_pieces,
                     blade_width,
+                    fitness_weights,
                     heuristic,
                     &mut rng,
                 )?);
@@ -711,6 +723,7 @@ where
             // Start with no unused cut pieces, and update below.
             unused_cut_pieces: Default::default(),
             blade_width: self.blade_width,
+            fitness_weights: self.fitness_weights,
         };
 
         let mut unused_cut_pieces = self.unused_cut_pieces.clone();
@@ -817,7 +830,10 @@ where
         let fitness = if self.bins.is_empty() {
             0.0
         } else {
-            self.bins.iter().fold(0.0, |acc, b| acc + b.fitness()) / self.bins.len() as f64
+            self.bins
+                .iter()
+                .fold(0.0, |acc, b| acc + b.fitness(&self.fitness_weights))
+                / self.bins.len() as f64
         };
 
         if self.unused_cut_pieces.is_empty() {
@@ -914,6 +930,74 @@ pub enum MaxRectsHeuristicPreset {
     ContactPointRule,
 }
 
+/// Weights for composite fitness scoring.
+#[derive(Clone, Copy, Debug)]
+pub struct FitnessWeights {
+    /// Weight for waste minimization (legacy fitness).
+    pub waste: f64,
+    /// Weight for internal void reduction (bbox void area).
+    pub void: f64,
+    /// Weight for compactness (used_area / bbox_area).
+    pub compactness: f64,
+    /// Weight for perimeter compactness (4*sqrt(area) / perimeter).
+    pub perimeter: f64,
+}
+
+impl Default for FitnessWeights {
+    fn default() -> Self {
+        Self {
+            waste: 1.0,
+            void: 0.0,
+            compactness: 0.0,
+            perimeter: 0.0,
+        }
+    }
+}
+
+#[inline]
+fn apply_fitness_weights(
+    base: f64,
+    used_area: f64,
+    bbox_area: f64,
+    bbox_perimeter: f64,
+    stock_area: f64,
+    weights: &FitnessWeights,
+) -> f64 {
+    let mut total_weight = 0.0;
+    let mut score = 0.0;
+
+    if weights.waste.is_finite() && weights.waste > 0.0 {
+        score += weights.waste * base;
+        total_weight += weights.waste;
+    }
+
+    if bbox_area > 0.0 && stock_area > 0.0 {
+        if weights.void.is_finite() && weights.void > 0.0 {
+            let void_area = (bbox_area - used_area).max(0.0);
+            let void_score = (1.0 - (void_area / stock_area)).clamp(0.0, 1.0);
+            score += weights.void * void_score;
+            total_weight += weights.void;
+        }
+        if weights.compactness.is_finite() && weights.compactness > 0.0 {
+            let compactness_score = (used_area / bbox_area).clamp(0.0, 1.0);
+            score += weights.compactness * compactness_score;
+            total_weight += weights.compactness;
+        }
+        if weights.perimeter.is_finite() && weights.perimeter > 0.0 && bbox_perimeter > 0.0 {
+            let perimeter_score = (4.0 * used_area.max(0.0).sqrt() / bbox_perimeter)
+                .clamp(0.0, 1.0);
+            score += weights.perimeter * perimeter_score;
+            total_weight += weights.perimeter;
+        }
+    }
+
+    if total_weight <= 0.0 {
+        base
+    } else {
+        score / total_weight
+    }
+}
+
 /// Optimizer for optimizing rectangular cut pieces from rectangular
 /// stock pieces.
 pub struct Optimizer {
@@ -925,6 +1009,7 @@ pub struct Optimizer {
     ga_epochs: u32,
     ga_breed_factor: f64,
     ga_survival_factor: f64,
+    fitness_weights: FitnessWeights,
 }
 
 impl Default for Optimizer {
@@ -938,6 +1023,7 @@ impl Default for Optimizer {
             ga_epochs: 100,
             ga_breed_factor: 0.5,
             ga_survival_factor: 0.6,
+            fitness_weights: FitnessWeights::default(),
         }
     }
 }
@@ -1035,6 +1121,12 @@ impl Optimizer {
     /// the same random seed will give you the same result for the same input.
     pub fn set_random_seed(&mut self, seed: u64) -> &mut Self {
         self.random_seed = seed;
+        self
+    }
+
+    /// Set composite fitness weights for the optimizer.
+    pub fn set_fitness_weights(&mut self, weights: FitnessWeights) -> &mut Self {
+        self.fitness_weights = weights;
         self
     }
 
@@ -1389,6 +1481,7 @@ impl Optimizer {
             stock_pieces,
             cut_pieces,
             self.cut_width,
+            self.fitness_weights,
             self.random_seed,
         )?;
 
@@ -1460,6 +1553,7 @@ impl Optimizer {
             stock_pieces,
             cut_pieces,
             self.cut_width,
+            self.fitness_weights,
             self.random_seed,
             heuristics,
         )?;

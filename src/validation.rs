@@ -5,8 +5,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 
 use crate::models::{
-    ErrorResponse, Item, LayoutMode, OptimizeRequest, PlacementHeuristic, Rotation, StockItem,
-    Trim,
+    ErrorResponse, Item, LayoutMode, OptimizeRequest, PlacementHeuristic, Rotation, StockItem, Trim,
 };
 
 #[derive(Debug, Clone)]
@@ -122,13 +121,54 @@ pub fn validate_request(
             ),
         };
         if !supported {
+            return Err(ValidationError::new(
+                "placement_heuristic is not supported for layout_mode",
+            )
+            .with_details(serde_json::json!({
+                "layout_mode": layout_mode,
+                "placement_heuristic": placement
+            })));
+        }
+    }
+
+    if let Some(weights) = &req.params.fitness_weights {
+        let mut invalid_fields: Vec<&'static str> = Vec::new();
+        let mut check_weight = |field: &'static str, value: f64| {
+            if !value.is_finite() || value < 0.0 {
+                invalid_fields.push(field);
+            }
+        };
+        if let Some(weight) = weights.waste {
+            check_weight("fitness_weights.waste", weight);
+        }
+        if let Some(weight) = weights.void {
+            check_weight("fitness_weights.void", weight);
+        }
+        if let Some(weight) = weights.compactness {
+            check_weight("fitness_weights.compactness", weight);
+        }
+        if let Some(weight) = weights.perimeter {
+            check_weight("fitness_weights.perimeter", weight);
+        }
+        if !invalid_fields.is_empty() {
             return Err(
-                ValidationError::new("placement_heuristic is not supported for layout_mode")
-                    .with_details(serde_json::json!({
-                        "layout_mode": layout_mode,
-                        "placement_heuristic": placement
-                    })),
+                ValidationError::new("fitness_weights must be finite and >= 0").with_details(
+                    serde_json::json!({
+                        "invalid_fields": invalid_fields
+                    }),
+                ),
             );
+        }
+
+        let waste = weights.waste.unwrap_or(1.0);
+        let void = weights.void.unwrap_or(0.0);
+        let compactness = weights.compactness.unwrap_or(0.0);
+        let perimeter = weights.perimeter.unwrap_or(0.0);
+        let total = waste + void + compactness + perimeter;
+        if total <= 0.0 {
+            return Err(ValidationError::new(
+                "fitness_weights must have a positive total weight",
+            ));
         }
     }
 

@@ -115,6 +115,11 @@ Example file: `examples/optimize_request.json`
     - For `layout_mode="nested"`: `"best_area"`, `"best_short_side"`, `"best_long_side"`,
       `"bottom_left"`, `"contact_point"`.
     - Portfolio mode will rotate heuristics across candidates when this value is omitted.
+  - `fitness_weights`: Optional composite fitness weights for internal GA scoring. Omit to keep legacy waste-only scoring.
+  - `fitness_weights.waste`: Weight for waste minimization (legacy fitness). Optional, defaults to 1.0.
+  - `fitness_weights.void`: Weight for internal void reduction (bbox void area). Optional.
+  - `fitness_weights.compactness`: Weight for compactness (used_area / bbox_area). Optional.
+  - `fitness_weights.perimeter`: Weight for perimeter compactness (4*sqrt(area) / perimeter). Optional.
   - `include_svg`: Optional flag (`true` by default). Set to `false` to skip SVG generation and omit `artifacts.svg` in response.
   - `portfolio`: Optional anytime orchestration settings.
     - `enabled`: Optional (`true` by default when object is present).

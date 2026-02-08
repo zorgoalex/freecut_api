@@ -249,7 +249,10 @@ async fn optimize_exposes_candidate_selection_telemetry() {
         .get("top_k_unique_signatures")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    assert!(unique >= 1, "expected at least one unique signature: {selection}");
+    assert!(
+        unique >= 1,
+        "expected at least one unique signature: {selection}"
+    );
     let waste_min = selection
         .get("top_k_waste_area_mm2_min")
         .and_then(Value::as_f64)
@@ -902,7 +905,10 @@ async fn optimize_invalid_placement_heuristic_for_guillotine_returns_422() {
     let mut json: Value = serde_json::from_str(MULTISHEET_OVERSIZED_REQUEST).unwrap();
     if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
         params.insert("include_svg".to_string(), Value::Bool(false));
-        params.insert("placement_heuristic".to_string(), Value::from("bottom_left"));
+        params.insert(
+            "placement_heuristic".to_string(),
+            Value::from("bottom_left"),
+        );
     }
     let body = serde_json::to_string(&json).unwrap();
     let (status, json) = post_json(&app, "/v1/optimize", &body).await;
@@ -936,7 +942,10 @@ async fn optimize_accepts_placement_heuristic_for_nested() {
     let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
     if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
         params.insert("include_svg".to_string(), Value::Bool(false));
-        params.insert("placement_heuristic".to_string(), Value::from("bottom_left"));
+        params.insert(
+            "placement_heuristic".to_string(),
+            Value::from("bottom_left"),
+        );
     }
     let body = serde_json::to_string(&json).unwrap();
     let (status, json) = post_json(&app, "/v1/optimize", &body).await;
@@ -950,7 +959,77 @@ async fn optimize_accepts_placement_heuristic_for_guillotine() {
     if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
         params.insert("include_svg".to_string(), Value::Bool(false));
         params.insert("layout_mode".to_string(), Value::from("guillotine"));
-        params.insert("placement_heuristic".to_string(), Value::from("best_short_side"));
+        params.insert(
+            "placement_heuristic".to_string(),
+            Value::from("best_short_side"),
+        );
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+}
+
+#[tokio::test]
+async fn optimize_invalid_fitness_weights_returns_422() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("include_svg".to_string(), Value::Bool(false));
+        params.insert(
+            "fitness_weights".to_string(),
+            serde_json::json!({
+                "waste": -1.0,
+                "compactness": 0.5
+            }),
+        );
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {json}");
+    assert_eq!(
+        json.get("error_code").and_then(Value::as_str),
+        Some("VALIDATION_ERROR")
+    );
+}
+
+#[tokio::test]
+async fn optimize_zero_sum_fitness_weights_returns_422() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("include_svg".to_string(), Value::Bool(false));
+        params.insert(
+            "fitness_weights".to_string(),
+            serde_json::json!({
+                "waste": 0.0,
+                "void": 0.0,
+                "compactness": 0.0,
+                "perimeter": 0.0
+            }),
+        );
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {json}");
+    assert_eq!(
+        json.get("error_code").and_then(Value::as_str),
+        Some("VALIDATION_ERROR")
+    );
+}
+
+#[tokio::test]
+async fn optimize_accepts_fitness_weights() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("include_svg".to_string(), Value::Bool(false));
+        params.insert(
+            "fitness_weights".to_string(),
+            serde_json::json!({
+                "compactness": 0.35,
+                "perimeter": 0.15
+            }),
+        );
     }
     let body = serde_json::to_string(&json).unwrap();
     let (status, json) = post_json(&app, "/v1/optimize", &body).await;

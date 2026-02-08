@@ -173,19 +173,49 @@ impl Bin for GuillotineBin {
         }
     }
 
-    fn fitness(&self) -> f64 {
-        let used_area = self
-            .cut_pieces
+    fn fitness(&self, weights: &FitnessWeights) -> f64 {
+        if self.cut_pieces.is_empty() {
+            return 0.0;
+        }
+
+        let mut used_area: u64 = 0;
+        let mut min_x = usize::MAX;
+        let mut min_y = usize::MAX;
+        let mut max_x = 0;
+        let mut max_y = 0;
+        for cut_piece in &self.cut_pieces {
+            used_area = used_area.saturating_add(
+                cut_piece.rect.width as u64 * cut_piece.rect.length as u64,
+            );
+            min_x = min_x.min(cut_piece.rect.x);
+            min_y = min_y.min(cut_piece.rect.y);
+            max_x = max_x.max(cut_piece.rect.x.saturating_add(cut_piece.rect.width));
+            max_y = max_y.max(cut_piece.rect.y.saturating_add(cut_piece.rect.length));
+        }
+
+        let free_area = self
+            .free_rects
             .iter()
-            .fold(0, |acc, p| acc + p.rect.width as u64 * p.rect.length as u64)
-            as f64;
+            .fold(0, |acc, fr| acc + fr.width as u64 * fr.length as u64) as f64;
 
-        let free_area =
-            self.free_rects
-                .iter()
-                .fold(0, |acc, fr| acc + fr.width as u64 * fr.length as u64) as f64;
+        let used_area_f64 = used_area as f64;
+        let base =
+            (used_area_f64 / (used_area_f64 + free_area)).powf(2.0 + self.free_rects.len() as f64 * 0.01);
 
-        (used_area / (used_area + free_area) as f64).powf(2.0 + self.free_rects.len() as f64 * 0.01)
+        let bbox_w = max_x.saturating_sub(min_x) as f64;
+        let bbox_h = max_y.saturating_sub(min_y) as f64;
+        let bbox_area = bbox_w * bbox_h;
+        let bbox_perimeter = 2.0 * (bbox_w + bbox_h);
+        let stock_area = self.width as f64 * self.length as f64;
+
+        apply_fitness_weights(
+            base,
+            used_area_f64,
+            bbox_area,
+            bbox_perimeter,
+            stock_area,
+            weights,
+        )
     }
 
     fn price(&self) -> usize {

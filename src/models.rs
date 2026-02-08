@@ -28,6 +28,8 @@ pub struct Params {
     pub layout_mode: Option<LayoutMode>,
     /// Optional placement heuristic preset. Defaults to engine preset mix.
     pub placement_heuristic: Option<PlacementHeuristic>,
+    /// Optional weights for composite fitness in the optimizer.
+    pub fitness_weights: Option<FitnessWeights>,
     /// Service-level profile for restart budgeting in `/v1/optimize`. Optional, defaults to `balanced`.
     pub sla_profile: Option<SlaProfile>,
     /// GA profile for optimizer internals. Optional, defaults to `balanced`.
@@ -112,6 +114,18 @@ pub enum PlacementHeuristic {
     SmallestY,
     BottomLeft,
     ContactPoint,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
+pub struct FitnessWeights {
+    /// Weight for waste minimization (legacy fitness). Optional, defaults to 1.0 when omitted.
+    pub waste: Option<f64>,
+    /// Weight for internal void reduction (bbox void area). Optional.
+    pub void: Option<f64>,
+    /// Weight for compactness (used_area / bbox_area). Optional.
+    pub compactness: Option<f64>,
+    /// Weight for perimeter compactness (4*sqrt(area) / perimeter). Optional.
+    pub perimeter: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]
