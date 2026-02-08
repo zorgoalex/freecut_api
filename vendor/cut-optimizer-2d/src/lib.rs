@@ -15,7 +15,7 @@ use genetic::unit::Unit;
 use guillotine::GuillotineBin;
 use maxrects::MaxRectsBin;
 
-use fnv::FnvHashSet;
+use fnv::{FnvHashSet, FnvHasher};
 use rand::prelude::*;
 use rand::seq::SliceRandom;
 
@@ -998,6 +998,47 @@ fn apply_fitness_weights(
     }
 }
 
+fn bin_signature<B: Bin>(bin: &B, grid: usize) -> u64 {
+    let grid = grid.max(1);
+    let mut pieces: Vec<&UsedCutPiece> = bin.cut_pieces().collect();
+    pieces.sort_by_key(|p| {
+        (
+            p.rect.x / grid,
+            p.rect.y / grid,
+            p.rect.width / grid,
+            p.rect.length / grid,
+            p.is_rotated,
+            p.id,
+        )
+    });
+    let mut hasher = FnvHasher::default();
+    for piece in pieces {
+        (piece.rect.x / grid).hash(&mut hasher);
+        (piece.rect.y / grid).hash(&mut hasher);
+        (piece.rect.width / grid).hash(&mut hasher);
+        (piece.rect.length / grid).hash(&mut hasher);
+        piece.is_rotated.hash(&mut hasher);
+        piece.pattern_direction.hash(&mut hasher);
+        piece.id.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn unit_signature_hash<B: Bin>(unit: &OptimizerUnit<B>) -> u64 {
+    let grid = unit.blade_width.max(1);
+    let mut bin_hashes: Vec<u64> = unit
+        .bins
+        .iter()
+        .map(|bin| bin_signature(bin, grid))
+        .collect();
+    bin_hashes.sort_unstable();
+    let mut hasher = FnvHasher::default();
+    for hash in bin_hashes {
+        hash.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 /// Optimizer for optimizing rectangular cut pieces from rectangular
 /// stock pieces.
 pub struct Optimizer {
@@ -1505,9 +1546,15 @@ impl Optimizer {
         }
 
         let mut solutions: Vec<Solution> = Vec::with_capacity(top_k);
+        let mut seen_signatures: FnvHashSet<u64> = FnvHashSet::default();
         for mut unit in result_units.drain(..) {
             if !unit.unused_cut_pieces.is_empty() {
                 break;
+            }
+
+            let signature = unit_signature_hash(&unit);
+            if !seen_signatures.insert(signature) {
+                continue;
             }
 
             let fitness = unit.fitness();
@@ -1578,9 +1625,15 @@ impl Optimizer {
         }
 
         let mut solutions: Vec<Solution> = Vec::with_capacity(top_k);
+        let mut seen_signatures: FnvHashSet<u64> = FnvHashSet::default();
         for mut unit in result_units.drain(..) {
             if !unit.unused_cut_pieces.is_empty() {
                 break;
+            }
+
+            let signature = unit_signature_hash(&unit);
+            if !seen_signatures.insert(signature) {
+                continue;
             }
 
             let fitness = unit.fitness();
