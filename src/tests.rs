@@ -442,6 +442,98 @@ async fn optimize_save_svg_for_heuristics_multisheet_varied() {
 }
 
 #[tokio::test]
+#[ignore = "manual sweep for fitness weights on multisheet varied"]
+async fn optimize_fitness_weights_sweep_multisheet_varied() {
+    let app = app_for_test();
+    let weight_profiles: [(&str, Value); 9] = [
+        ("default", serde_json::json!({})),
+        ("void_0_5", serde_json::json!({ "void": 0.5 })),
+        ("compact_0_5", serde_json::json!({ "compactness": 0.5 })),
+        ("perim_0_5", serde_json::json!({ "perimeter": 0.5 })),
+        (
+            "geom_balanced",
+            serde_json::json!({ "void": 0.25, "compactness": 0.5, "perimeter": 0.25 }),
+        ),
+        (
+            "low_waste_geom",
+            serde_json::json!({ "waste": 0.25, "void": 0.5, "compactness": 0.25 }),
+        ),
+        (
+            "void_heavy",
+            serde_json::json!({ "waste": 0.25, "void": 0.75 }),
+        ),
+        (
+            "compact_heavy",
+            serde_json::json!({ "waste": 0.25, "compactness": 0.75 }),
+        ),
+        (
+            "perim_heavy",
+            serde_json::json!({ "waste": 0.25, "perimeter": 0.75 }),
+        ),
+    ];
+    let out_dir = Path::new("ai_docs/tmp/fitness_weight_sweep");
+    std::fs::create_dir_all(out_dir).unwrap();
+
+    for (label, weights) in weight_profiles {
+        for seed in [1_u64, 2_u64] {
+            let mut json: Value = serde_json::from_str(MULTISHEET_VARIED_4SHEETS_REQUEST).unwrap();
+            if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+                params.insert("seed".to_string(), Value::from(seed));
+                params.insert("time_limit_ms".to_string(), Value::from(20000));
+                params.insert("restarts".to_string(), Value::from(1));
+                params.insert("include_svg".to_string(), Value::Bool(true));
+                params.insert("fitness_weights".to_string(), weights.clone());
+                params.insert(
+                    "ga_override".to_string(),
+                    serde_json::json!({
+                        "epochs": 30
+                    }),
+                );
+            }
+            let body = serde_json::to_string(&json).unwrap();
+            let (status, resp) = post_json(&app, "/v1/optimize", &body).await;
+            assert_eq!(status, StatusCode::OK, "unexpected status/body: {resp}");
+            let selection = resp
+                .pointer("/summary/candidate_selection")
+                .cloned()
+                .unwrap_or(Value::Null);
+            let unique = selection
+                .get("top_k_unique_signatures")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let waste_mean = selection
+                .get("top_k_waste_area_mm2_mean")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let winner_void = selection
+                .get("winner_bbox_void_area_mm2")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let winner_perim = selection
+                .get("winner_piece_perimeter_mm")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            println!(
+                "[fitness_sweep] profile={label} seed={seed} unique={unique} waste_mean_mm2={waste_mean:.3} winner_void_mm2={winner_void:.3} winner_perim_mm={winner_perim:.3}"
+            );
+
+            let svg = resp
+                .pointer("/artifacts/svg")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            assert!(
+                svg.starts_with("<svg") && svg.ends_with("</svg>"),
+                "expected svg artifact, body: {resp}"
+            );
+            let filename = format!("multisheet_varied_{label}_seed{seed}.svg");
+            let path = out_dir.join(filename);
+            std::fs::write(&path, svg).unwrap();
+            println!("[svg] {} bytes -> {}", svg.len(), path.display());
+        }
+    }
+}
+
+#[tokio::test]
 async fn optimize_portfolio_returns_telemetry() {
     let app = app_for_test();
     let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
