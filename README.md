@@ -109,6 +109,12 @@ Example file: `examples/optimize_request.json`
   - `seed`: Optional deterministic seed for reproducible results. If omitted, the
     service generates a seed per request (Unix epoch in ms) and returns it as `used_seed`.
   - `layout_mode`: Layout mode: `"guillotine"` (default, guillotine-only cuts) or `"nested"`. Optional in the request.
+  - `placement_heuristic`: Optional placement heuristic preset. If omitted, the engine uses its default heuristic mix.
+    - For `layout_mode="guillotine"`: `"best_area"`, `"best_short_side"`, `"best_long_side"`,
+      `"worst_area"`, `"worst_short_side"`, `"worst_long_side"`, `"smallest_y"`.
+    - For `layout_mode="nested"`: `"best_area"`, `"best_short_side"`, `"best_long_side"`,
+      `"bottom_left"`, `"contact_point"`.
+    - Portfolio mode will rotate heuristics across candidates when this value is omitted.
   - `include_svg`: Optional flag (`true` by default). Set to `false` to skip SVG generation and omit `artifacts.svg` in response.
   - `portfolio`: Optional anytime orchestration settings.
     - `enabled`: Optional (`true` by default when object is present).

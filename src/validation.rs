@@ -4,7 +4,10 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 
-use crate::models::{ErrorResponse, Item, OptimizeRequest, Rotation, StockItem, Trim};
+use crate::models::{
+    ErrorResponse, Item, LayoutMode, OptimizeRequest, PlacementHeuristic, Rotation, StockItem,
+    Trim,
+};
 
 #[derive(Debug, Clone)]
 pub struct ValidationLimits {
@@ -93,6 +96,39 @@ pub fn validate_request(
     if let Some(time_limit_ms) = req.params.time_limit_ms {
         if time_limit_ms < 100 {
             return Err(ValidationError::new("time_limit_ms must be >= 100"));
+        }
+    }
+
+    if let Some(placement) = req.params.placement_heuristic {
+        let layout_mode = req.params.layout_mode.unwrap_or(LayoutMode::Guillotine);
+        let supported = match layout_mode {
+            LayoutMode::Guillotine => matches!(
+                placement,
+                PlacementHeuristic::BestArea
+                    | PlacementHeuristic::BestShortSide
+                    | PlacementHeuristic::BestLongSide
+                    | PlacementHeuristic::WorstArea
+                    | PlacementHeuristic::WorstShortSide
+                    | PlacementHeuristic::WorstLongSide
+                    | PlacementHeuristic::SmallestY
+            ),
+            LayoutMode::Nested => matches!(
+                placement,
+                PlacementHeuristic::BestArea
+                    | PlacementHeuristic::BestShortSide
+                    | PlacementHeuristic::BestLongSide
+                    | PlacementHeuristic::BottomLeft
+                    | PlacementHeuristic::ContactPoint
+            ),
+        };
+        if !supported {
+            return Err(
+                ValidationError::new("placement_heuristic is not supported for layout_mode")
+                    .with_details(serde_json::json!({
+                        "layout_mode": layout_mode,
+                        "placement_heuristic": placement
+                    })),
+            );
         }
     }
 

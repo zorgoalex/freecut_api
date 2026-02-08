@@ -11,8 +11,8 @@ use crate::config::AppConfig;
 use crate::models::{
     AlnsOperatorTelemetry, AlnsTelemetry, Artifacts, BeamTelemetry, CandidateSelectionTelemetry,
     ErrorResponse, GaProfile, LayoutMode, Objective, OptimizeRequest, OptimizeResponse,
-    PatternDirection, Placement, PortfolioTelemetry, RestartPolicyTelemetry, SlaProfile, Solution,
-    Summary, Trim, UnplacedItem,
+    PatternDirection, Placement, PlacementHeuristic, PortfolioTelemetry, RestartPolicyTelemetry,
+    SlaProfile, Solution, Summary, Trim, UnplacedItem,
 };
 use crate::validation::item_fits_any_stock_public;
 
@@ -365,6 +365,7 @@ async fn optimize_request_internal(
                     standard_restart_plan.fallback_slice_ms,
                     layout_mode,
                     used_seed,
+                    req.params.placement_heuristic,
                     time_limit_ms,
                     true,
                     Some(&standard_restart_plan),
@@ -511,9 +512,10 @@ struct RunOutcome {
 
 #[derive(Clone)]
 struct PortfolioPlan {
-    name: &'static str,
+    name: String,
     seed: u64,
     requested_restarts: u32,
+    placement_heuristic: Option<PlacementHeuristic>,
 }
 
 #[derive(Clone)]
@@ -647,11 +649,14 @@ async fn run_restarts_with_budget(
     slice_ms: u64,
     layout_mode: LayoutMode,
     base_seed: u64,
+    placement_heuristic: Option<PlacementHeuristic>,
     total_budget_ms: u64,
     allow_timeout_rescue: bool,
     restart_plan: Option<&RestartPlan>,
 ) -> Result<RunOutcome, OptimizeError> {
     let ga_runtime = resolve_ga_runtime(req);
+    let guillotine_preset = placement_heuristic.and_then(to_guillotine_preset);
+    let nested_preset = placement_heuristic.and_then(to_nested_preset);
     let mut best: Option<Candidate> = None;
     let mut selection_counters = CandidateSelectionCounters {
         top_k_requested: u32::try_from(ga_runtime.top_k).unwrap_or(u32::MAX),
@@ -712,10 +717,16 @@ async fn run_restarts_with_budget(
                 .add_stock_pieces(diversified_stock.into_iter())
                 .add_cut_pieces(diversified_cut.into_iter());
             match mode {
-                LayoutMode::Nested => optimizer.optimize_nested_top_k(ga_runtime.top_k, |_| {}),
-                LayoutMode::Guillotine => {
-                    optimizer.optimize_guillotine_top_k(ga_runtime.top_k, |_| {})
-                }
+                LayoutMode::Nested => match nested_preset {
+                    Some(preset) => optimizer
+                        .optimize_nested_top_k_with_heuristic(ga_runtime.top_k, preset, |_| {}),
+                    None => optimizer.optimize_nested_top_k(ga_runtime.top_k, |_| {}),
+                },
+                LayoutMode::Guillotine => match guillotine_preset {
+                    Some(preset) => optimizer
+                        .optimize_guillotine_top_k_with_heuristic(ga_runtime.top_k, preset, |_| {}),
+                    None => optimizer.optimize_guillotine_top_k(ga_runtime.top_k, |_| {}),
+                },
             }
         });
 
@@ -858,10 +869,22 @@ async fn run_restarts_with_budget(
                     .add_stock_pieces(diversified_stock.into_iter())
                     .add_cut_pieces(diversified_cut.into_iter());
                 match mode {
-                    LayoutMode::Nested => optimizer.optimize_nested_top_k(ga_runtime.top_k, |_| {}),
-                    LayoutMode::Guillotine => {
-                        optimizer.optimize_guillotine_top_k(ga_runtime.top_k, |_| {})
-                    }
+                    LayoutMode::Nested => match nested_preset {
+                        Some(preset) => optimizer.optimize_nested_top_k_with_heuristic(
+                            ga_runtime.top_k,
+                            preset,
+                            |_| {},
+                        ),
+                        None => optimizer.optimize_nested_top_k(ga_runtime.top_k, |_| {}),
+                    },
+                    LayoutMode::Guillotine => match guillotine_preset {
+                        Some(preset) => optimizer.optimize_guillotine_top_k_with_heuristic(
+                            ga_runtime.top_k,
+                            preset,
+                            |_| {},
+                        ),
+                        None => optimizer.optimize_guillotine_top_k(ga_runtime.top_k, |_| {}),
+                    },
                 }
             });
 
@@ -958,7 +981,13 @@ async fn run_portfolio_anytime(
     candidate_count: u32,
     default_restarts: u32,
 ) -> Result<RunOutcome, OptimizeError> {
-    let plans = build_portfolio_plans(base_seed, default_restarts, candidate_count);
+    let plans = build_portfolio_plans(
+        base_seed,
+        default_restarts,
+        candidate_count,
+        layout_mode,
+        req.params.placement_heuristic,
+    );
     let candidates_total = plans.len() as u32;
     let mut candidates_started: u32 = 0;
     let mut candidates_completed: u32 = 0;
@@ -966,13 +995,8 @@ async fn run_portfolio_anytime(
     let mut candidates_failed: u32 = 0;
     let started_at = Instant::now();
 
-    let mut best: Option<(
-        Candidate,
-        &'static str,
-        u64,
-        u32,
-        Option<CandidateSelectionTelemetry>,
-    )> = None;
+    let mut best: Option<(Candidate, String, u64, u32, Option<CandidateSelectionTelemetry>)> =
+        None;
 
     for (idx, plan) in plans.iter().enumerate() {
         let elapsed = started_at.elapsed().as_millis() as u64;
@@ -994,6 +1018,7 @@ async fn run_portfolio_anytime(
             plan_slice_ms,
             layout_mode,
             plan.seed,
+            plan.placement_heuristic,
             candidate_budget,
             false,
             None,
@@ -1011,7 +1036,7 @@ async fn run_portfolio_anytime(
                 if maybe_update {
                     best = Some((
                         outcome.candidate,
-                        plan.name,
+                        plan.name.clone(),
                         plan.seed,
                         outcome.restarts_used,
                         outcome.candidate_selection,
@@ -1056,7 +1081,7 @@ async fn run_portfolio_anytime(
                 candidates_timed_out,
                 candidates_failed,
                 candidates_skipped,
-                winner_strategy: winner_strategy.to_string(),
+                winner_strategy,
                 winner_seed,
                 winner_restarts_used,
             }),
@@ -1137,6 +1162,7 @@ async fn run_beam_anytime(
                     run_slice_ms,
                     layout_mode,
                     expansion.seed,
+                    req.params.placement_heuristic,
                     run_budget_ms,
                     false,
                     None,
@@ -1348,6 +1374,7 @@ async fn run_alns_anytime(
         boot_slice,
         layout_mode,
         base_plan.seed,
+        req.params.placement_heuristic,
         bootstrap_budget,
         false,
         None,
@@ -1419,6 +1446,7 @@ async fn run_alns_anytime(
             run_slice,
             layout_mode,
             proposal.seed,
+            req.params.placement_heuristic,
             iter_budget_ms,
             false,
             None,
@@ -1574,6 +1602,7 @@ async fn run_alns_anytime(
         fallback_slice,
         layout_mode,
         fallback_seed,
+        req.params.placement_heuristic,
         deadline_ms,
         false,
         None,
@@ -1784,14 +1813,108 @@ fn build_beam_expansions(
     plans
 }
 
+const PORTFOLIO_GUILLOTINE_HEURISTICS: &[PlacementHeuristic] = &[
+    PlacementHeuristic::BestArea,
+    PlacementHeuristic::BestShortSide,
+    PlacementHeuristic::BestLongSide,
+    PlacementHeuristic::SmallestY,
+];
+
+const PORTFOLIO_NESTED_HEURISTICS: &[PlacementHeuristic] = &[
+    PlacementHeuristic::BestShortSide,
+    PlacementHeuristic::BestLongSide,
+    PlacementHeuristic::BestArea,
+    PlacementHeuristic::BottomLeft,
+    PlacementHeuristic::ContactPoint,
+];
+
+fn placement_heuristic_label(heuristic: PlacementHeuristic) -> &'static str {
+    match heuristic {
+        PlacementHeuristic::BestArea => "best_area",
+        PlacementHeuristic::BestShortSide => "best_short_side",
+        PlacementHeuristic::BestLongSide => "best_long_side",
+        PlacementHeuristic::WorstArea => "worst_area",
+        PlacementHeuristic::WorstShortSide => "worst_short_side",
+        PlacementHeuristic::WorstLongSide => "worst_long_side",
+        PlacementHeuristic::SmallestY => "smallest_y",
+        PlacementHeuristic::BottomLeft => "bottom_left",
+        PlacementHeuristic::ContactPoint => "contact_point",
+    }
+}
+
+fn default_portfolio_heuristics(layout_mode: LayoutMode) -> &'static [PlacementHeuristic] {
+    match layout_mode {
+        LayoutMode::Guillotine => PORTFOLIO_GUILLOTINE_HEURISTICS,
+        LayoutMode::Nested => PORTFOLIO_NESTED_HEURISTICS,
+    }
+}
+
+fn to_guillotine_preset(
+    heuristic: PlacementHeuristic,
+) -> Option<cut_optimizer_2d::GuillotineHeuristicPreset> {
+    match heuristic {
+        PlacementHeuristic::BestArea => Some(cut_optimizer_2d::GuillotineHeuristicPreset::BestAreaFit),
+        PlacementHeuristic::BestShortSide => {
+            Some(cut_optimizer_2d::GuillotineHeuristicPreset::BestShortSideFit)
+        }
+        PlacementHeuristic::BestLongSide => {
+            Some(cut_optimizer_2d::GuillotineHeuristicPreset::BestLongSideFit)
+        }
+        PlacementHeuristic::WorstArea => Some(cut_optimizer_2d::GuillotineHeuristicPreset::WorstAreaFit),
+        PlacementHeuristic::WorstShortSide => {
+            Some(cut_optimizer_2d::GuillotineHeuristicPreset::WorstShortSideFit)
+        }
+        PlacementHeuristic::WorstLongSide => {
+            Some(cut_optimizer_2d::GuillotineHeuristicPreset::WorstLongSideFit)
+        }
+        PlacementHeuristic::SmallestY => Some(cut_optimizer_2d::GuillotineHeuristicPreset::SmallestY),
+        PlacementHeuristic::BottomLeft | PlacementHeuristic::ContactPoint => None,
+    }
+}
+
+fn to_nested_preset(
+    heuristic: PlacementHeuristic,
+) -> Option<cut_optimizer_2d::MaxRectsHeuristicPreset> {
+    match heuristic {
+        PlacementHeuristic::BestArea => Some(cut_optimizer_2d::MaxRectsHeuristicPreset::BestAreaFit),
+        PlacementHeuristic::BestShortSide => {
+            Some(cut_optimizer_2d::MaxRectsHeuristicPreset::BestShortSideFit)
+        }
+        PlacementHeuristic::BestLongSide => {
+            Some(cut_optimizer_2d::MaxRectsHeuristicPreset::BestLongSideFit)
+        }
+        PlacementHeuristic::BottomLeft => {
+            Some(cut_optimizer_2d::MaxRectsHeuristicPreset::BottomLeftRule)
+        }
+        PlacementHeuristic::ContactPoint => {
+            Some(cut_optimizer_2d::MaxRectsHeuristicPreset::ContactPointRule)
+        }
+        PlacementHeuristic::WorstArea
+        | PlacementHeuristic::WorstShortSide
+        | PlacementHeuristic::WorstLongSide
+        | PlacementHeuristic::SmallestY => None,
+    }
+}
+
 fn build_portfolio_plans(
     base_seed: u64,
     requested_restarts: u32,
     candidate_count: u32,
+    layout_mode: LayoutMode,
+    placement_heuristic: Option<PlacementHeuristic>,
 ) -> Vec<PortfolioPlan> {
     let mut plans = Vec::with_capacity(candidate_count as usize);
+    let heuristics = placement_heuristic
+        .map(|h| vec![h])
+        .unwrap_or_else(|| default_portfolio_heuristics(layout_mode).to_vec());
+    let heuristics = if heuristics.is_empty() {
+        default_portfolio_heuristics(layout_mode).to_vec()
+    } else {
+        heuristics
+    };
+
     for idx in 0..candidate_count {
-        let (name, restarts) = match idx % 4 {
+        let (base_name, restarts) = match idx % 4 {
             0 => ("baseline", requested_restarts.max(1)),
             1 => ("seed_explore_fast", (requested_restarts / 2).max(1)),
             2 => ("seed_explore_full", requested_restarts.max(1)),
@@ -1806,10 +1929,15 @@ fn build_portfolio_plans(
                 .wrapping_mul(17)
                 .wrapping_mul(SEED_STRIDE),
         );
+        let heuristic = heuristics[idx as usize % heuristics.len()];
+        let mut name = base_name.to_string();
+        name.push('/');
+        name.push_str(placement_heuristic_label(heuristic));
         plans.push(PortfolioPlan {
             name,
             seed,
             requested_restarts: restarts,
+            placement_heuristic: Some(heuristic),
         });
     }
     plans

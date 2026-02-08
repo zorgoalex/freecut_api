@@ -32,6 +32,43 @@ impl Distribution<FreeRectChoiceHeuristic> for Standard {
     }
 }
 
+const ROTATE_HEURISTICS: [RotateCutPieceHeuristic; 2] = [
+    RotateCutPieceHeuristic::PreferUpright,
+    RotateCutPieceHeuristic::PreferRotated,
+];
+
+fn heuristics_for_rect_choice(
+    choice: FreeRectChoiceHeuristic,
+) -> Vec<(FreeRectChoiceHeuristic, RotateCutPieceHeuristic)> {
+    let mut out = Vec::with_capacity(ROTATE_HEURISTICS.len());
+    for rotate in ROTATE_HEURISTICS {
+        out.push((choice, rotate));
+    }
+    out
+}
+
+pub(crate) fn heuristics_for_preset(
+    preset: MaxRectsHeuristicPreset,
+) -> Vec<(FreeRectChoiceHeuristic, RotateCutPieceHeuristic)> {
+    match preset {
+        MaxRectsHeuristicPreset::BestShortSideFit => {
+            heuristics_for_rect_choice(FreeRectChoiceHeuristic::BestShortSideFit)
+        }
+        MaxRectsHeuristicPreset::BestLongSideFit => {
+            heuristics_for_rect_choice(FreeRectChoiceHeuristic::BestLongSideFit)
+        }
+        MaxRectsHeuristicPreset::BestAreaFit => {
+            heuristics_for_rect_choice(FreeRectChoiceHeuristic::BestAreaFit)
+        }
+        MaxRectsHeuristicPreset::BottomLeftRule => {
+            heuristics_for_rect_choice(FreeRectChoiceHeuristic::BottomLeftRule)
+        }
+        MaxRectsHeuristicPreset::ContactPointRule => {
+            heuristics_for_rect_choice(FreeRectChoiceHeuristic::ContactPointRule)
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct MaxRectsBin {
     width: usize,

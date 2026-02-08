@@ -26,6 +26,8 @@ pub struct Params {
     pub objective: Objective,
     pub seed: Option<u64>,
     pub layout_mode: Option<LayoutMode>,
+    /// Optional placement heuristic preset. Defaults to engine preset mix.
+    pub placement_heuristic: Option<PlacementHeuristic>,
     /// Service-level profile for restart budgeting in `/v1/optimize`. Optional, defaults to `balanced`.
     pub sla_profile: Option<SlaProfile>,
     /// GA profile for optimizer internals. Optional, defaults to `balanced`.
@@ -96,6 +98,20 @@ pub enum Objective {
 pub enum LayoutMode {
     Nested,
     Guillotine,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlacementHeuristic {
+    BestArea,
+    BestShortSide,
+    BestLongSide,
+    WorstArea,
+    WorstShortSide,
+    WorstLongSide,
+    SmallestY,
+    BottomLeft,
+    ContactPoint,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]

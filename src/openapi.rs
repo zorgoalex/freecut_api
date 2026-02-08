@@ -5,6 +5,7 @@ use crate::models::{
     AlnsOperatorTelemetry, AlnsParams, AlnsTelemetry, Artifacts, BeamParams, BeamTelemetry,
     CandidateSelectionTelemetry, ErrorResponse, GaOverrideParams, GaProfile, Item, LayoutMode,
     Objective, OptimizeRequest, OptimizeResponse, Params, PatternDirection, Placement,
+    PlacementHeuristic,
     PortfolioParams, PortfolioTelemetry, RestartPolicyTelemetry, Rotation, SlaProfile, Solution,
     StockItem, Summary, Trim, Units,
 };
@@ -28,6 +29,7 @@ use crate::models::{
             BeamParams,
             AlnsParams,
             LayoutMode,
+            PlacementHeuristic,
             SlaProfile,
             GaProfile,
             GaOverrideParams,

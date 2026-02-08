@@ -518,10 +518,33 @@ where
 
     pub(crate) fn generate_initial_units(
         possible_stock_pieces: &'a [StockPiece],
+        cut_pieces: Vec<&CutPieceWithId>,
+        blade_width: usize,
+        random_seed: u64,
+    ) -> Result<Vec<OptimizerUnit<'a, B>>>
+    where
+        B::Heuristic: Clone,
+    {
+        let heuristics = B::possible_heuristics();
+        OptimizerUnit::generate_initial_units_with_heuristics(
+            possible_stock_pieces,
+            cut_pieces,
+            blade_width,
+            random_seed,
+            &heuristics,
+        )
+    }
+
+    pub(crate) fn generate_initial_units_with_heuristics(
+        possible_stock_pieces: &'a [StockPiece],
         mut cut_pieces: Vec<&CutPieceWithId>,
         blade_width: usize,
         random_seed: u64,
-    ) -> Result<Vec<OptimizerUnit<'a, B>>> {
+        heuristics: &[B::Heuristic],
+    ) -> Result<Vec<OptimizerUnit<'a, B>>>
+    where
+        B::Heuristic: Clone,
+    {
         let mut set = FnvHashSet::default();
         for cut_piece in &cut_pieces {
             set.insert((
@@ -533,10 +556,13 @@ where
         }
         let unique_cut_pieces = set.len();
 
-        let possible_heuristics = B::possible_heuristics();
+        let mut possible_heuristics: Vec<B::Heuristic> = heuristics.to_vec();
+        if possible_heuristics.is_empty() {
+            possible_heuristics = B::possible_heuristics();
+        }
 
         let num_units = if cut_pieces.len() < 3 {
-            possible_heuristics.len()
+            possible_heuristics.len().max(1)
         } else {
             let denom = if cut_pieces.len() > 1 {
                 (cut_pieces.len() as f64).log10()
@@ -545,7 +571,7 @@ where
             };
 
             cmp::max(
-                possible_heuristics.len() * 3,
+                possible_heuristics.len().max(1) * 3,
                 (cut_pieces.len() as f64 / denom + ((unique_cut_pieces - 1) * 10) as f64) as usize,
             )
         };
@@ -575,12 +601,16 @@ where
                 )?);
             }
 
-            for _ in 0..num_units - units.len() {
+            for _ in 0..num_units.saturating_sub(units.len()) {
                 cut_pieces.shuffle(&mut rng);
-                units.push(OptimizerUnit::with_random_heuristics(
+                let heuristic = possible_heuristics
+                    .choose(&mut rng)
+                    .expect("heuristics list should not be empty");
+                units.push(OptimizerUnit::with_heuristic(
                     possible_stock_pieces,
                     &cut_pieces,
                     blade_width,
+                    heuristic,
                     &mut rng,
                 )?);
             }
@@ -850,6 +880,40 @@ pub struct SolutionSet {
     pub solutions: Vec<Solution>,
 }
 
+/// Preset placement heuristic for guillotine (panel saw) layouts.
+#[derive(Clone, Copy, Debug)]
+pub enum GuillotineHeuristicPreset {
+    /// Best area fit free-rectangle heuristic.
+    BestAreaFit,
+    /// Best short-side fit free-rectangle heuristic.
+    BestShortSideFit,
+    /// Best long-side fit free-rectangle heuristic.
+    BestLongSideFit,
+    /// Worst area fit free-rectangle heuristic.
+    WorstAreaFit,
+    /// Worst short-side fit free-rectangle heuristic.
+    WorstShortSideFit,
+    /// Worst long-side fit free-rectangle heuristic.
+    WorstLongSideFit,
+    /// Choose the smallest Y position when placing.
+    SmallestY,
+}
+
+/// Preset placement heuristic for nested (max-rects) layouts.
+#[derive(Clone, Copy, Debug)]
+pub enum MaxRectsHeuristicPreset {
+    /// Best short-side fit heuristic.
+    BestShortSideFit,
+    /// Best long-side fit heuristic.
+    BestLongSideFit,
+    /// Best area fit heuristic.
+    BestAreaFit,
+    /// Bottom-left rule heuristic.
+    BottomLeftRule,
+    /// Contact-point rule heuristic.
+    ContactPointRule,
+}
+
 /// Optimizer for optimizing rectangular cut pieces from rectangular
 /// stock pieces.
 pub struct Optimizer {
@@ -1028,6 +1092,41 @@ impl Optimizer {
         self.optimize_top_k::<GuillotineBin, F>(top_k, progress_callback)
     }
 
+    /// Optimize using a specific guillotine placement heuristic preset and return top-K candidates.
+    pub fn optimize_guillotine_top_k_with_heuristic<F>(
+        &self,
+        top_k: usize,
+        preset: GuillotineHeuristicPreset,
+        progress_callback: F,
+    ) -> Result<SolutionSet>
+    where
+        F: Fn(f64),
+    {
+        let heuristics = guillotine::heuristics_for_preset(preset);
+        self.optimize_top_k_with_heuristics::<GuillotineBin, F>(top_k, &heuristics, progress_callback)
+    }
+
+    /// Optimize using a specific guillotine placement heuristic preset.
+    pub fn optimize_guillotine_with_heuristic<F>(
+        &self,
+        preset: GuillotineHeuristicPreset,
+        progress_callback: F,
+    ) -> Result<Solution>
+    where
+        F: Fn(f64),
+    {
+        let mut set =
+            self.optimize_guillotine_top_k_with_heuristic(1, preset, progress_callback)?;
+        match set.solutions.pop() {
+            Some(solution) => Ok(solution),
+            None => Err(no_fit_for_cut_piece_error(
+                self.cut_pieces
+                    .first()
+                    .expect("cut pieces should be non-empty when optimize() runs"),
+            )),
+        }
+    }
+
     /// Optimize without the requirement of guillotine cuts. Cuts can start and stop in the middle
     /// of the stock piece.
     ///
@@ -1050,9 +1149,45 @@ impl Optimizer {
         self.optimize_top_k::<MaxRectsBin, F>(top_k, progress_callback)
     }
 
+    /// Optimize using a specific max-rects placement heuristic preset and return top-K candidates.
+    pub fn optimize_nested_top_k_with_heuristic<F>(
+        &self,
+        top_k: usize,
+        preset: MaxRectsHeuristicPreset,
+        progress_callback: F,
+    ) -> Result<SolutionSet>
+    where
+        F: Fn(f64),
+    {
+        let heuristics = maxrects::heuristics_for_preset(preset);
+        self.optimize_top_k_with_heuristics::<MaxRectsBin, F>(top_k, &heuristics, progress_callback)
+    }
+
+    /// Optimize using a specific max-rects placement heuristic preset.
+    pub fn optimize_nested_with_heuristic<F>(
+        &self,
+        preset: MaxRectsHeuristicPreset,
+        progress_callback: F,
+    ) -> Result<Solution>
+    where
+        F: Fn(f64),
+    {
+        let mut set =
+            self.optimize_nested_top_k_with_heuristic(1, preset, progress_callback)?;
+        match set.solutions.pop() {
+            Some(solution) => Ok(solution),
+            None => Err(no_fit_for_cut_piece_error(
+                self.cut_pieces
+                    .first()
+                    .expect("cut pieces should be non-empty when optimize() runs"),
+            )),
+        }
+    }
+
     fn optimize<B, F>(&self, progress_callback: F) -> Result<Solution>
     where
         B: Bin + Clone + Send + Into<ResultStockPiece>,
+        B::Heuristic: Clone,
         F: Fn(f64),
     {
         let mut set = self.optimize_top_k::<B, F>(1, progress_callback)?;
@@ -1069,6 +1204,7 @@ impl Optimizer {
     fn optimize_top_k<B, F>(&self, top_k: usize, progress_callback: F) -> Result<SolutionSet>
     where
         B: Bin + Clone + Send + Into<ResultStockPiece>,
+        B::Heuristic: Clone,
         F: Fn(f64),
     {
         let top_k = top_k.max(1);
@@ -1135,6 +1271,84 @@ impl Optimizer {
         })
     }
 
+    fn optimize_top_k_with_heuristics<B, F>(
+        &self,
+        top_k: usize,
+        heuristics: &[B::Heuristic],
+        progress_callback: F,
+    ) -> Result<SolutionSet>
+    where
+        B: Bin + Clone + Send + Into<ResultStockPiece>,
+        B::Heuristic: Clone,
+        F: Fn(f64),
+    {
+        let top_k = top_k.max(1);
+        // If there are no cut pieces, there's nothing to optimize.
+        if self.cut_pieces.is_empty() {
+            return Ok(SolutionSet {
+                solutions: vec![Solution {
+                    fitness: 1.0,
+                    stock_pieces: Vec::new(),
+                    price: 0,
+                }],
+            });
+        }
+
+        let size_set: FnvHashSet<(usize, usize)> = self
+            .stock_pieces
+            .iter()
+            .map(|sp| (sp.width, sp.length))
+            .collect();
+
+        let num_runs = size_set.len() + if self.allow_mixed_stock_sizes { 1 } else { 0 };
+        let callback = |progress| {
+            progress_callback(progress / num_runs as f64);
+        };
+
+        let mut all_candidates: Vec<Solution> = Vec::new();
+        if self.allow_mixed_stock_sizes {
+            // Optimize with all stock sizes
+            if let Ok(mut candidates) = self.optimize_with_stock_pieces_top_k_with_heuristics::<
+                B,
+                _,
+            >(&self.stock_pieces.clone(), top_k, heuristics, &callback)
+            {
+                all_candidates.append(&mut candidates);
+            }
+        }
+
+        // Optimize each stock size separately and see if any have better result than
+        // when optimizing with all stock sizes.
+        for (i, (width, length)) in size_set.iter().enumerate() {
+            let stock_pieces: Vec<StockPiece> = self
+                .stock_pieces
+                .iter()
+                .filter(|sp| sp.width == *width && sp.length == *length)
+                .cloned()
+                .collect();
+
+            let completed_runs = i + 1;
+            if let Ok(mut candidates) = self.optimize_with_stock_pieces_top_k_with_heuristics::<
+                B,
+                _,
+            >(&stock_pieces, top_k, heuristics, &|progress| {
+                progress_callback((completed_runs as f64 + progress) / num_runs as f64);
+            }) {
+                all_candidates.append(&mut candidates);
+            }
+        }
+
+        if all_candidates.is_empty() {
+            return Err(no_fit_for_cut_piece_error(&self.cut_pieces[0]));
+        }
+
+        all_candidates.sort_by(solution_ordering_desc);
+        all_candidates.truncate(top_k);
+        Ok(SolutionSet {
+            solutions: all_candidates,
+        })
+    }
+
     fn optimize_with_stock_pieces<B, F>(
         &self,
         stock_pieces: &[StockPiece],
@@ -1142,6 +1356,7 @@ impl Optimizer {
     ) -> Result<Solution>
     where
         B: Bin + Clone + Send + Into<ResultStockPiece>,
+        B::Heuristic: Clone,
         F: Fn(f64),
     {
         let mut candidates =
@@ -1164,6 +1379,7 @@ impl Optimizer {
     ) -> Result<Vec<Solution>>
     where
         B: Bin + Clone + Send + Into<ResultStockPiece>,
+        B::Heuristic: Clone,
         F: Fn(f64),
     {
         let top_k = top_k.max(1);
@@ -1174,6 +1390,78 @@ impl Optimizer {
             cut_pieces,
             self.cut_width,
             self.random_seed,
+        )?;
+
+        let population_size = units.len();
+        let mut result_units = Population::new(units)
+            .set_size(population_size)
+            .set_rand_seed(self.random_seed)
+            .set_breed_factor(self.ga_breed_factor)
+            .set_survival_factor(self.ga_survival_factor)
+            .epochs(self.ga_epochs, progress_callback)
+            .finish();
+
+        if result_units.is_empty() {
+            return Err(no_fit_for_cut_piece_error(&self.cut_pieces[0]));
+        }
+
+        if !result_units[0].unused_cut_pieces.is_empty() {
+            return Err(no_fit_for_cut_piece_error(
+                result_units[0].unused_cut_pieces.iter().next().unwrap(),
+            ));
+        }
+
+        let mut solutions: Vec<Solution> = Vec::with_capacity(top_k);
+        for mut unit in result_units.drain(..) {
+            if !unit.unused_cut_pieces.is_empty() {
+                break;
+            }
+
+            let fitness = unit.fitness();
+            let price = unit.bins.iter().map(|bin| bin.price()).sum();
+
+            let mut used_stock_pieces: Vec<ResultStockPiece> =
+                unit.bins.drain(..).map(Into::into).collect();
+            used_stock_pieces.sort_by_key(|p| cmp::Reverse((p.width, p.length)));
+
+            solutions.push(Solution {
+                fitness,
+                stock_pieces: used_stock_pieces,
+                price,
+            });
+            if solutions.len() >= top_k {
+                break;
+            }
+        }
+
+        if solutions.is_empty() {
+            return Err(no_fit_for_cut_piece_error(&self.cut_pieces[0]));
+        }
+
+        Ok(solutions)
+    }
+
+    fn optimize_with_stock_pieces_top_k_with_heuristics<B, F>(
+        &self,
+        stock_pieces: &[StockPiece],
+        top_k: usize,
+        heuristics: &[B::Heuristic],
+        progress_callback: &F,
+    ) -> Result<Vec<Solution>>
+    where
+        B: Bin + Clone + Send + Into<ResultStockPiece>,
+        B::Heuristic: Clone,
+        F: Fn(f64),
+    {
+        let top_k = top_k.max(1);
+        let cut_pieces: Vec<&CutPieceWithId> = self.cut_pieces.iter().collect();
+
+        let units: Vec<OptimizerUnit<B>> = OptimizerUnit::generate_initial_units_with_heuristics(
+            stock_pieces,
+            cut_pieces,
+            self.cut_width,
+            self.random_seed,
+            heuristics,
         )?;
 
         let population_size = units.len();

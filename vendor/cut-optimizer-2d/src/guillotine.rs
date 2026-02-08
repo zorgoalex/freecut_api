@@ -73,6 +73,60 @@ impl Distribution<RotateCutPieceHeuristic> for Standard {
     }
 }
 
+const SPLIT_HEURISTICS: [SplitHeuristic; 6] = [
+    SplitHeuristic::ShorterLeftoverAxis,
+    SplitHeuristic::LongerLeftoverAxis,
+    SplitHeuristic::MinimizeArea,
+    SplitHeuristic::MaximizeArea,
+    SplitHeuristic::ShorterAxis,
+    SplitHeuristic::LongerAxis,
+];
+
+const ROTATE_HEURISTICS: [RotateCutPieceHeuristic; 2] = [
+    RotateCutPieceHeuristic::PreferUpright,
+    RotateCutPieceHeuristic::PreferRotated,
+];
+
+fn heuristics_for_rect_choice(
+    choice: FreeRectChoiceHeuristic,
+) -> Vec<(FreeRectChoiceHeuristic, SplitHeuristic, RotateCutPieceHeuristic)> {
+    let mut out = Vec::with_capacity(SPLIT_HEURISTICS.len() * ROTATE_HEURISTICS.len());
+    for rotate in ROTATE_HEURISTICS {
+        for split in SPLIT_HEURISTICS {
+            out.push((choice, split, rotate));
+        }
+    }
+    out
+}
+
+pub(crate) fn heuristics_for_preset(
+    preset: GuillotineHeuristicPreset,
+) -> Vec<(FreeRectChoiceHeuristic, SplitHeuristic, RotateCutPieceHeuristic)> {
+    match preset {
+        GuillotineHeuristicPreset::BestAreaFit => {
+            heuristics_for_rect_choice(FreeRectChoiceHeuristic::BestAreaFit)
+        }
+        GuillotineHeuristicPreset::BestShortSideFit => {
+            heuristics_for_rect_choice(FreeRectChoiceHeuristic::BestShortSideFit)
+        }
+        GuillotineHeuristicPreset::BestLongSideFit => {
+            heuristics_for_rect_choice(FreeRectChoiceHeuristic::BestLongSideFit)
+        }
+        GuillotineHeuristicPreset::WorstAreaFit => {
+            heuristics_for_rect_choice(FreeRectChoiceHeuristic::WorstAreaFit)
+        }
+        GuillotineHeuristicPreset::WorstShortSideFit => {
+            heuristics_for_rect_choice(FreeRectChoiceHeuristic::WorstShortSideFit)
+        }
+        GuillotineHeuristicPreset::WorstLongSideFit => {
+            heuristics_for_rect_choice(FreeRectChoiceHeuristic::WorstLongSideFit)
+        }
+        GuillotineHeuristicPreset::SmallestY => {
+            heuristics_for_rect_choice(FreeRectChoiceHeuristic::SmallestY)
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct GuillotineBin {
     width: usize,
