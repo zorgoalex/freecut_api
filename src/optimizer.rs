@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -158,6 +158,89 @@ struct CandidateSelectionCounters {
     candidates_rejected_tie_bbox_area: u32,
     candidates_rejected_tie_perimeter: u32,
     candidates_rejected_equal: u32,
+}
+
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct CandidateSignature {
+    used_stock_count: u32,
+    total_waste_area_units: u128,
+    total_bbox_area_units: u128,
+    total_bbox_void_area_units: u128,
+    total_piece_perimeter_units: u128,
+}
+
+#[derive(Default, Clone)]
+struct CandidatePoolStats {
+    count: u32,
+    unique_signatures: HashSet<CandidateSignature>,
+    used_stock_min: u32,
+    used_stock_max: u32,
+    used_stock_sum: u64,
+    waste_min: u128,
+    waste_max: u128,
+    waste_sum: u128,
+    bbox_void_min: u128,
+    bbox_void_max: u128,
+    bbox_void_sum: u128,
+    bbox_area_min: u128,
+    bbox_area_max: u128,
+    bbox_area_sum: u128,
+    perimeter_min: u128,
+    perimeter_max: u128,
+    perimeter_sum: u128,
+}
+
+impl CandidatePoolStats {
+    fn observe(&mut self, candidate: &Candidate) {
+        let signature = CandidateSignature {
+            used_stock_count: candidate.used_stock_count,
+            total_waste_area_units: candidate.total_waste_area_units,
+            total_bbox_area_units: candidate.total_bbox_area_units,
+            total_bbox_void_area_units: candidate.total_bbox_void_area_units,
+            total_piece_perimeter_units: candidate.total_piece_perimeter_units,
+        };
+        self.unique_signatures.insert(signature);
+        let first = self.count == 0;
+        if first {
+            self.used_stock_min = candidate.used_stock_count;
+            self.used_stock_max = candidate.used_stock_count;
+            self.waste_min = candidate.total_waste_area_units;
+            self.waste_max = candidate.total_waste_area_units;
+            self.bbox_void_min = candidate.total_bbox_void_area_units;
+            self.bbox_void_max = candidate.total_bbox_void_area_units;
+            self.bbox_area_min = candidate.total_bbox_area_units;
+            self.bbox_area_max = candidate.total_bbox_area_units;
+            self.perimeter_min = candidate.total_piece_perimeter_units;
+            self.perimeter_max = candidate.total_piece_perimeter_units;
+        } else {
+            self.used_stock_min = self.used_stock_min.min(candidate.used_stock_count);
+            self.used_stock_max = self.used_stock_max.max(candidate.used_stock_count);
+            self.waste_min = self.waste_min.min(candidate.total_waste_area_units);
+            self.waste_max = self.waste_max.max(candidate.total_waste_area_units);
+            self.bbox_void_min = self.bbox_void_min.min(candidate.total_bbox_void_area_units);
+            self.bbox_void_max = self.bbox_void_max.max(candidate.total_bbox_void_area_units);
+            self.bbox_area_min = self.bbox_area_min.min(candidate.total_bbox_area_units);
+            self.bbox_area_max = self.bbox_area_max.max(candidate.total_bbox_area_units);
+            self.perimeter_min = self.perimeter_min.min(candidate.total_piece_perimeter_units);
+            self.perimeter_max = self.perimeter_max.max(candidate.total_piece_perimeter_units);
+        }
+        self.used_stock_sum = self
+            .used_stock_sum
+            .saturating_add(candidate.used_stock_count as u64);
+        self.waste_sum = self
+            .waste_sum
+            .saturating_add(candidate.total_waste_area_units);
+        self.bbox_void_sum = self
+            .bbox_void_sum
+            .saturating_add(candidate.total_bbox_void_area_units);
+        self.bbox_area_sum = self
+            .bbox_area_sum
+            .saturating_add(candidate.total_bbox_area_units);
+        self.perimeter_sum = self
+            .perimeter_sum
+            .saturating_add(candidate.total_piece_perimeter_units);
+        self.count = self.count.saturating_add(1);
+    }
 }
 
 enum CandidateCompare {
@@ -508,6 +591,7 @@ fn pick_best_candidate(
     set: cut_optimizer_2d::SolutionSet,
     objective: &Objective,
     counters: &mut CandidateSelectionCounters,
+    pool_stats: &mut CandidatePoolStats,
 ) -> Option<Candidate> {
     let mut best: Option<Candidate> = None;
     for solution in set.solutions {
@@ -519,6 +603,7 @@ fn pick_best_candidate(
         }
         let candidate = build_candidate(solution);
         counters.candidates_valid = counters.candidates_valid.saturating_add(1);
+        pool_stats.observe(&candidate);
         best = match best {
             None => Some(candidate),
             Some(current) => match compare_candidates(&candidate, &current, objective) {
@@ -572,6 +657,7 @@ async fn run_restarts_with_budget(
         top_k_requested: u32::try_from(ga_runtime.top_k).unwrap_or(u32::MAX),
         ..Default::default()
     };
+    let mut pool_stats = CandidatePoolStats::default();
     let mut timed_out = false;
     let mut budget_exhausted = false;
     let mut last_constraint: Option<OptimizeError> = None;
@@ -642,6 +728,7 @@ async fn run_restarts_with_budget(
                         solution_set,
                         &req.params.objective,
                         &mut selection_counters,
+                        &mut pool_stats,
                     ) else {
                         last_constraint = Some(OptimizeError::Constraint {
                             message: "no valid solution".to_string(),
@@ -709,6 +796,7 @@ async fn run_restarts_with_budget(
     if let Some(best) = best {
         let candidate_selection = Some(build_candidate_selection_telemetry(
             &selection_counters,
+            &pool_stats,
             &best,
         ));
         let restart_policy = restart_plan.map(|plan| RestartPolicyTelemetry {
@@ -788,6 +876,7 @@ async fn run_restarts_with_budget(
                             solution_set,
                             &req.params.objective,
                             &mut selection_counters,
+                            &mut pool_stats,
                         ) {
                             rescue_used = true;
                             rescue_budget_ms = Some(rescue_budget);
@@ -796,6 +885,7 @@ async fn run_restarts_with_budget(
                             }
                             let candidate_selection = Some(build_candidate_selection_telemetry(
                                 &selection_counters,
+                                &pool_stats,
                                 &candidate,
                             ));
                             return Ok(RunOutcome {
@@ -2113,8 +2203,11 @@ fn compare_candidates(
 
 fn build_candidate_selection_telemetry(
     counters: &CandidateSelectionCounters,
+    pool_stats: &CandidatePoolStats,
     winner: &Candidate,
 ) -> CandidateSelectionTelemetry {
+    let pool_count = pool_stats.count.max(1);
+    let used_stock_mean = pool_stats.used_stock_sum as f64 / pool_count as f64;
     CandidateSelectionTelemetry {
         source: "top_k_population".to_string(),
         top_k_requested: counters.top_k_requested.max(1),
@@ -2126,6 +2219,22 @@ fn build_candidate_selection_telemetry(
         candidates_rejected_tie_bbox_area: counters.candidates_rejected_tie_bbox_area,
         candidates_rejected_tie_perimeter: counters.candidates_rejected_tie_perimeter,
         candidates_rejected_equal: counters.candidates_rejected_equal,
+        top_k_unique_signatures: pool_stats.unique_signatures.len() as u32,
+        top_k_used_stock_count_min: pool_stats.used_stock_min,
+        top_k_used_stock_count_max: pool_stats.used_stock_max,
+        top_k_used_stock_count_mean: used_stock_mean,
+        top_k_waste_area_mm2_min: from_area_units(pool_stats.waste_min),
+        top_k_waste_area_mm2_max: from_area_units(pool_stats.waste_max),
+        top_k_waste_area_mm2_mean: mean_area_units(pool_stats.waste_sum, pool_count),
+        top_k_bbox_void_area_mm2_min: from_area_units(pool_stats.bbox_void_min),
+        top_k_bbox_void_area_mm2_max: from_area_units(pool_stats.bbox_void_max),
+        top_k_bbox_void_area_mm2_mean: mean_area_units(pool_stats.bbox_void_sum, pool_count),
+        top_k_bbox_area_mm2_min: from_area_units(pool_stats.bbox_area_min),
+        top_k_bbox_area_mm2_max: from_area_units(pool_stats.bbox_area_max),
+        top_k_bbox_area_mm2_mean: mean_area_units(pool_stats.bbox_area_sum, pool_count),
+        top_k_piece_perimeter_mm_min: from_linear_units_u128(pool_stats.perimeter_min),
+        top_k_piece_perimeter_mm_max: from_linear_units_u128(pool_stats.perimeter_max),
+        top_k_piece_perimeter_mm_mean: mean_linear_units(pool_stats.perimeter_sum, pool_count),
         winner_used_stock_count: winner.used_stock_count,
         winner_waste_area_mm2: from_area_units(winner.total_waste_area_units),
         winner_bbox_void_area_mm2: from_area_units(winner.total_bbox_void_area_units),
@@ -2640,6 +2749,20 @@ fn from_linear_units_u128(value: u128) -> f64 {
 
 fn from_area_units(value: u128) -> f64 {
     value as f64 / (SCALE * SCALE)
+}
+
+fn mean_linear_units(sum: u128, count: u32) -> f64 {
+    if count == 0 {
+        return 0.0;
+    }
+    (sum as f64 / count as f64) / SCALE
+}
+
+fn mean_area_units(sum: u128, count: u32) -> f64 {
+    if count == 0 {
+        return 0.0;
+    }
+    (sum as f64 / count as f64) / (SCALE * SCALE)
 }
 
 fn area(width: usize, length: usize) -> u128 {

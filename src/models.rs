@@ -323,6 +323,28 @@ pub struct CandidateSelectionTelemetry {
     pub candidates_rejected_tie_perimeter: u32,
     /// Rejected because score was exactly equal to current best.
     pub candidates_rejected_equal: u32,
+    /// Unique phenotype signatures among valid top-K candidates.
+    pub top_k_unique_signatures: u32,
+    /// Pool stats for used stock count among valid candidates.
+    pub top_k_used_stock_count_min: u32,
+    pub top_k_used_stock_count_max: u32,
+    pub top_k_used_stock_count_mean: f64,
+    /// Pool stats for waste area among valid candidates.
+    pub top_k_waste_area_mm2_min: f64,
+    pub top_k_waste_area_mm2_max: f64,
+    pub top_k_waste_area_mm2_mean: f64,
+    /// Pool stats for bbox void area among valid candidates.
+    pub top_k_bbox_void_area_mm2_min: f64,
+    pub top_k_bbox_void_area_mm2_max: f64,
+    pub top_k_bbox_void_area_mm2_mean: f64,
+    /// Pool stats for bbox area among valid candidates.
+    pub top_k_bbox_area_mm2_min: f64,
+    pub top_k_bbox_area_mm2_max: f64,
+    pub top_k_bbox_area_mm2_mean: f64,
+    /// Pool stats for total piece perimeter among valid candidates.
+    pub top_k_piece_perimeter_mm_min: f64,
+    pub top_k_piece_perimeter_mm_max: f64,
+    pub top_k_piece_perimeter_mm_mean: f64,
     /// Winner snapshot metrics.
     pub winner_used_stock_count: u32,
     pub winner_waste_area_mm2: f64,

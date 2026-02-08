@@ -242,6 +242,31 @@ async fn optimize_exposes_candidate_selection_telemetry() {
             >= 1,
         "top_k_requested must be >=1: {selection}"
     );
+    let unique = selection
+        .get("top_k_unique_signatures")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    assert!(unique >= 1, "expected at least one unique signature: {selection}");
+    let waste_min = selection
+        .get("top_k_waste_area_mm2_min")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let waste_max = selection
+        .get("top_k_waste_area_mm2_max")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let waste_mean = selection
+        .get("top_k_waste_area_mm2_mean")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    assert!(
+        waste_min <= waste_max,
+        "invalid waste range min/max: {selection}"
+    );
+    assert!(
+        (waste_min..=waste_max).contains(&waste_mean),
+        "waste mean should fall within min/max: {selection}"
+    );
 }
 
 #[tokio::test]
@@ -280,6 +305,36 @@ async fn optimize_auto_seed_changes_per_request() {
         first_seed, second_seed,
         "auto seed should change per request"
     );
+}
+
+#[tokio::test]
+#[ignore = "manual snapshot for comparing phenotype diversity across seeds"]
+async fn optimize_seed_diversity_snapshot() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    for seed in [1_u64, 2_u64] {
+        if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+            params.insert("seed".to_string(), Value::from(seed));
+        }
+        let body = serde_json::to_string(&json).unwrap();
+        let (status, resp) = post_json(&app, "/v1/optimize", &body).await;
+        assert_eq!(status, StatusCode::OK, "unexpected status/body: {resp}");
+        let selection = resp
+            .pointer("/summary/candidate_selection")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let unique = selection
+            .get("top_k_unique_signatures")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let waste_mean = selection
+            .get("top_k_waste_area_mm2_mean")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        println!(
+            "[seed_diversity] seed={seed} unique_signatures={unique} waste_mean_mm2={waste_mean:.3}"
+        );
+    }
 }
 
 #[tokio::test]
