@@ -138,6 +138,10 @@ pub struct PlacementBias {
     pub center_pull: Option<f64>,
     /// Penalty for expanding the occupied bounding box. Optional.
     pub bbox_weight: Option<f64>,
+    /// Penalty for creating thin leftover slivers in the free rectangle. Optional.
+    pub fragmentation_penalty: Option<f64>,
+    /// Deterministic jitter to break ties when placement scores are equal. Optional.
+    pub tie_break_jitter: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]

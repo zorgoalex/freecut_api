@@ -137,6 +137,7 @@ pub(crate) struct GuillotineBin {
     free_rects: SmallVec<[Rect; 8]>,
     price: usize,
     placement_bias: PlacementBias,
+    jitter_seed: u64,
 }
 
 impl Bin for GuillotineBin {
@@ -153,6 +154,7 @@ impl Bin for GuillotineBin {
         pattern_direction: PatternDirection,
         price: usize,
         placement_bias: PlacementBias,
+        jitter_seed: u64,
     ) -> Self {
         // We start with a single big free rectangle that spans the whole bin.
         let free_rect = Rect {
@@ -173,6 +175,7 @@ impl Bin for GuillotineBin {
             cut_pieces: Default::default(),
             price,
             placement_bias,
+            jitter_seed,
         }
     }
 
@@ -498,11 +501,14 @@ impl GuillotineBin {
         let mut best_rect = Rect::default();
         let mut best_score = std::isize::MAX;
         let mut best_bias_score = f64::INFINITY;
+        let mut best_jitter = u64::MAX;
         let mut best_fit = Fit::None;
         let mut free_index = None;
         let bias_active = self.placement_bias.edge_penalty > 0.0
             || self.placement_bias.center_pull > 0.0
-            || self.placement_bias.bbox_weight > 0.0;
+            || self.placement_bias.bbox_weight > 0.0
+            || self.placement_bias.fragmentation_penalty > 0.0;
+        let jitter_enabled = self.placement_bias.tie_break_jitter > 0.0;
 
         for (i, free_rect) in self.free_rects.iter().enumerate() {
             let fit = free_rect.fit_cut_piece(self.pattern_direction, cut_piece, prefer_rotated);
@@ -539,18 +545,39 @@ impl GuillotineBin {
                         length: cut_piece.length,
                     };
                     let candidate_bias = if bias_active {
-                        self.placement_bias_score(&candidate_rect)
+                        self.placement_bias_score(free_rect, &candidate_rect)
                     } else {
                         0.0
                     };
-                    if score < best_score
-                        || (score == best_score
-                            && bias_active
-                            && candidate_bias < best_bias_score)
-                    {
+                    let candidate_jitter = if jitter_enabled {
+                        self.placement_jitter_value(&candidate_rect)
+                    } else {
+                        0
+                    };
+                    let better = if score < best_score {
+                        true
+                    } else if score > best_score {
+                        false
+                    } else if bias_active {
+                        if candidate_bias < best_bias_score {
+                            true
+                        } else if candidate_bias > best_bias_score {
+                            false
+                        } else if jitter_enabled {
+                            candidate_jitter < best_jitter
+                        } else {
+                            false
+                        }
+                    } else if jitter_enabled {
+                        candidate_jitter < best_jitter
+                    } else {
+                        false
+                    };
+                    if better {
                         best_rect = candidate_rect;
                         best_score = score;
                         best_bias_score = candidate_bias;
+                        best_jitter = candidate_jitter;
                         best_fit = fit;
                         free_index = Some(i);
                     }
@@ -569,18 +596,39 @@ impl GuillotineBin {
                         length: cut_piece.width,
                     };
                     let candidate_bias = if bias_active {
-                        self.placement_bias_score(&candidate_rect)
+                        self.placement_bias_score(free_rect, &candidate_rect)
                     } else {
                         0.0
                     };
-                    if score < best_score
-                        || (score == best_score
-                            && bias_active
-                            && candidate_bias < best_bias_score)
-                    {
+                    let candidate_jitter = if jitter_enabled {
+                        self.placement_jitter_value(&candidate_rect)
+                    } else {
+                        0
+                    };
+                    let better = if score < best_score {
+                        true
+                    } else if score > best_score {
+                        false
+                    } else if bias_active {
+                        if candidate_bias < best_bias_score {
+                            true
+                        } else if candidate_bias > best_bias_score {
+                            false
+                        } else if jitter_enabled {
+                            candidate_jitter < best_jitter
+                        } else {
+                            false
+                        }
+                    } else if jitter_enabled {
+                        candidate_jitter < best_jitter
+                    } else {
+                        false
+                    };
+                    if better {
                         best_rect = candidate_rect;
                         best_score = score;
                         best_bias_score = candidate_bias;
+                        best_jitter = candidate_jitter;
                         best_fit = fit;
                         free_index = Some(i);
                     }
@@ -654,13 +702,45 @@ impl GuillotineBin {
         delta.saturating_mul(delta)
     }
 
-    fn placement_bias_score(&self, rect: &Rect) -> f64 {
+    fn placement_fragmentation_penalty(&self, free_rect: &Rect, rect: &Rect) -> u64 {
+        let leftover_w = free_rect.width.saturating_sub(rect.width);
+        let leftover_h = free_rect.length.saturating_sub(rect.length);
+        let mut min_leftover = usize::MAX;
+        if leftover_w > 0 {
+            min_leftover = min_leftover.min(leftover_w);
+        }
+        if leftover_h > 0 {
+            min_leftover = min_leftover.min(leftover_h);
+        }
+        if min_leftover == usize::MAX {
+            return 0;
+        }
+        let denom = min_leftover as u64 + 1;
+        1_000_000u64 / denom
+    }
+
+    fn placement_jitter_value(&self, rect: &Rect) -> u64 {
+        let mut z = self.jitter_seed
+            ^ ((rect.x as u64) << 32)
+            ^ ((rect.y as u64) << 16)
+            ^ ((rect.width as u64) << 8)
+            ^ (rect.length as u64);
+        z = z.wrapping_add(0x9e3779b97f4a7c15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+        z ^= z >> 31;
+        z % 1_000_000
+    }
+
+    fn placement_bias_score(&self, free_rect: &Rect, rect: &Rect) -> f64 {
         let bbox_area = self.placement_bbox_area(rect) as f64;
         let center_dist2 = self.placement_center_dist2(rect) as f64;
         let edge_penalty = self.placement_edge_penalty(rect) as f64;
+        let frag_penalty = self.placement_fragmentation_penalty(free_rect, rect) as f64;
         self.placement_bias.bbox_weight * bbox_area
             + self.placement_bias.center_pull * center_dist2
             + self.placement_bias.edge_penalty * edge_penalty
+            + self.placement_bias.fragmentation_penalty * frag_penalty
     }
 
     fn split_free_rect_by_heuristic(

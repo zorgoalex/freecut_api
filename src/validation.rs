@@ -147,6 +147,12 @@ pub fn validate_request(
         if let Some(weight) = bias.bbox_weight {
             check_weight("placement_bias.bbox_weight", weight);
         }
+        if let Some(weight) = bias.fragmentation_penalty {
+            check_weight("placement_bias.fragmentation_penalty", weight);
+        }
+        if let Some(weight) = bias.tie_break_jitter {
+            check_weight("placement_bias.tie_break_jitter", weight);
+        }
         if !invalid_fields.is_empty() {
             return Err(
                 ValidationError::new("placement_bias weights must be finite and >= 0")

@@ -119,6 +119,8 @@ Example file: `examples/optimize_request.json`
   - `placement_bias.edge_penalty`: Penalty for placements near sheet edges. Optional.
   - `placement_bias.center_pull`: Pull toward sheet center. Optional.
   - `placement_bias.bbox_weight`: Penalty for expanding the occupied bounding box. Optional.
+  - `placement_bias.fragmentation_penalty`: Penalty for creating thin leftover slivers in the free rectangle. Optional.
+  - `placement_bias.tie_break_jitter`: Deterministic jitter to break ties when placement scores are equal. Optional.
   - `fitness_weights`: Optional composite fitness weights for internal GA scoring. Omit to keep legacy waste-only scoring.
   - `fitness_weights.waste`: Weight for waste minimization (legacy fitness). Optional, defaults to 1.0.
   - `fitness_weights.void`: Weight for internal void reduction (bbox void area). Optional.

@@ -80,6 +80,7 @@ pub(crate) struct MaxRectsBin {
     free_rects: SmallVec<[Rect; 8]>,
     price: usize,
     placement_bias: PlacementBias,
+    jitter_seed: u64,
 }
 
 impl Bin for MaxRectsBin {
@@ -92,6 +93,7 @@ impl Bin for MaxRectsBin {
         pattern_direction: PatternDirection,
         price: usize,
         placement_bias: PlacementBias,
+        jitter_seed: u64,
     ) -> Self {
         // We start with a single big free rectangle that spans the whole bin.
         let free_rect = Rect {
@@ -112,6 +114,7 @@ impl Bin for MaxRectsBin {
             cut_pieces: Default::default(),
             price,
             placement_bias,
+            jitter_seed,
         }
     }
 
@@ -373,15 +376,52 @@ impl MaxRectsBin {
         delta.saturating_mul(delta)
     }
 
+    fn placement_fragmentation_penalty(
+        &self,
+        free_rect: &Rect,
+        width: usize,
+        length: usize,
+    ) -> u64 {
+        let leftover_w = free_rect.width.saturating_sub(width);
+        let leftover_h = free_rect.length.saturating_sub(length);
+        let mut min_leftover = usize::MAX;
+        if leftover_w > 0 {
+            min_leftover = min_leftover.min(leftover_w);
+        }
+        if leftover_h > 0 {
+            min_leftover = min_leftover.min(leftover_h);
+        }
+        if min_leftover == usize::MAX {
+            return 0;
+        }
+        let denom = min_leftover as u64 + 1;
+        1_000_000u64 / denom
+    }
+
+    fn placement_jitter_value(&self, x: usize, y: usize, width: usize, length: usize) -> u64 {
+        let mut z = self.jitter_seed
+            ^ ((x as u64) << 32)
+            ^ ((y as u64) << 16)
+            ^ ((width as u64) << 8)
+            ^ (length as u64);
+        z = z.wrapping_add(0x9e3779b97f4a7c15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+        z ^= z >> 31;
+        z % 1_000_000
+    }
+
     fn placement_bias_score(
         &self,
         bbox_area: u64,
         center_dist2: u64,
         edge_penalty: u64,
+        fragmentation_penalty: u64,
     ) -> f64 {
         self.placement_bias.bbox_weight * bbox_area as f64
             + self.placement_bias.center_pull * center_dist2 as f64
             + self.placement_bias.edge_penalty * edge_penalty as f64
+            + self.placement_bias.fragmentation_penalty * fragmentation_penalty as f64
     }
 
     fn placement_piece_contact(&self, x: usize, y: usize, width: usize, length: usize) -> usize {
@@ -404,7 +444,7 @@ impl MaxRectsBin {
         free_rect: &Rect,
         width: usize,
         length: usize,
-    ) -> (Rect, u64, usize, u64, f64) {
+    ) -> (Rect, u64, usize, u64, f64, u64) {
         let x0 = free_rect.x;
         let y0 = free_rect.y;
         let x1 = free_rect.x + free_rect.width - width;
@@ -415,13 +455,17 @@ impl MaxRectsBin {
         let mut seen: HashSet<(usize, usize)> = HashSet::new();
         let bias_active = self.placement_bias.edge_penalty > 0.0
             || self.placement_bias.center_pull > 0.0
-            || self.placement_bias.bbox_weight > 0.0;
+            || self.placement_bias.bbox_weight > 0.0
+            || self.placement_bias.fragmentation_penalty > 0.0;
+        let jitter_enabled = self.placement_bias.tie_break_jitter > 0.0;
+        let frag_penalty = self.placement_fragmentation_penalty(free_rect, width, length);
 
         let mut best_rect = Rect::default();
         let mut best_bbox = u64::MAX;
         let mut best_contact = 0_usize;
         let mut best_center = u64::MAX;
         let mut best_bias = f64::INFINITY;
+        let mut best_jitter = u64::MAX;
 
         for (x, y) in candidates {
             if !seen.insert((x, y)) {
@@ -431,7 +475,13 @@ impl MaxRectsBin {
             let contact = self.placement_piece_contact(x, y, width, length);
             let center_dist2 = self.placement_center_dist2(x, y, width, length);
             let edge_penalty = self.placement_edge_penalty(x, y, width, length);
-            let bias_score = self.placement_bias_score(bbox_area, center_dist2, edge_penalty);
+            let jitter_value = if jitter_enabled {
+                self.placement_jitter_value(x, y, width, length)
+            } else {
+                0
+            };
+            let bias_score =
+                self.placement_bias_score(bbox_area, center_dist2, edge_penalty, frag_penalty);
 
             let better = if bias_active {
                 if bias_score < best_bias {
@@ -442,8 +492,14 @@ impl MaxRectsBin {
                     true
                 } else if contact < best_contact {
                     false
+                } else if center_dist2 < best_center {
+                    true
+                } else if center_dist2 > best_center {
+                    false
+                } else if jitter_enabled {
+                    jitter_value < best_jitter
                 } else {
-                    center_dist2 < best_center
+                    false
                 }
             } else if bbox_area < best_bbox {
                 true
@@ -453,8 +509,14 @@ impl MaxRectsBin {
                 true
             } else if contact < best_contact {
                 false
+            } else if center_dist2 < best_center {
+                true
+            } else if center_dist2 > best_center {
+                false
+            } else if jitter_enabled {
+                jitter_value < best_jitter
             } else {
-                center_dist2 < best_center
+                false
             };
 
             if better {
@@ -468,10 +530,11 @@ impl MaxRectsBin {
                 best_contact = contact;
                 best_center = center_dist2;
                 best_bias = bias_score;
+                best_jitter = jitter_value;
             }
         }
 
-        (best_rect, best_bbox, best_contact, best_center, best_bias)
+        (best_rect, best_bbox, best_contact, best_center, best_bias, best_jitter)
     }
 
     fn tiebreaker_better(
@@ -480,14 +543,18 @@ impl MaxRectsBin {
         contact: usize,
         center_dist2: u64,
         bias_score: f64,
+        jitter_value: u64,
         best_bbox_area: u64,
         best_contact: usize,
         best_center_dist2: u64,
         best_bias_score: f64,
+        best_jitter_value: u64,
     ) -> bool {
         let bias_active = self.placement_bias.edge_penalty > 0.0
             || self.placement_bias.center_pull > 0.0
-            || self.placement_bias.bbox_weight > 0.0;
+            || self.placement_bias.bbox_weight > 0.0
+            || self.placement_bias.fragmentation_penalty > 0.0;
+        let jitter_enabled = self.placement_bias.tie_break_jitter > 0.0;
         if bias_active {
             if bias_score < best_bias_score {
                 return true;
@@ -508,7 +575,16 @@ impl MaxRectsBin {
         if contact < best_contact {
             return false;
         }
-        center_dist2 < best_center_dist2
+        if center_dist2 < best_center_dist2 {
+            return true;
+        }
+        if center_dist2 > best_center_dist2 {
+            return false;
+        }
+        if jitter_enabled {
+            return jitter_value < best_jitter_value;
+        }
+        false
     }
 
     fn find_placement_bottom_left(
@@ -567,6 +643,7 @@ impl MaxRectsBin {
         let mut best_contact = 0_usize;
         let mut best_center = u64::MAX;
         let mut best_bias = f64::INFINITY;
+        let mut best_jitter = u64::MAX;
         let mut best_fit = Fit::None;
 
         for free_rect in &self.free_rects {
@@ -578,7 +655,14 @@ impl MaxRectsBin {
                     (free_rect.length as isize - cut_piece.length as isize).abs() as usize;
                 let short_side_fit = cmp::min(leftover_horiz, leftover_vert);
                 let long_side_fit = cmp::max(leftover_horiz, leftover_vert);
-                let (candidate_rect, candidate_bbox, candidate_contact, candidate_center, candidate_bias) =
+                let (
+                    candidate_rect,
+                    candidate_bbox,
+                    candidate_contact,
+                    candidate_center,
+                    candidate_bias,
+                    candidate_jitter,
+                ) =
                     self.best_corner_for_free_rect(
                         free_rect,
                         cut_piece.width,
@@ -594,10 +678,12 @@ impl MaxRectsBin {
                             candidate_contact,
                             candidate_center,
                             candidate_bias,
+                            candidate_jitter,
                             best_bbox_area,
                             best_contact,
                             best_center,
                             best_bias,
+                            best_jitter,
                         ))
                 {
                     best_rect = candidate_rect;
@@ -607,6 +693,7 @@ impl MaxRectsBin {
                     best_contact = candidate_contact;
                     best_center = candidate_center;
                     best_bias = candidate_bias;
+                    best_jitter = candidate_jitter;
                     best_fit = fit;
                 }
             } else if fit.is_rotated() {
@@ -616,7 +703,14 @@ impl MaxRectsBin {
                     (free_rect.length as isize - cut_piece.width as isize).abs() as usize;
                 let short_side_fit = cmp::min(leftover_horiz, leftover_vert);
                 let long_side_fit = cmp::max(leftover_horiz, leftover_vert);
-                let (candidate_rect, candidate_bbox, candidate_contact, candidate_center, candidate_bias) =
+                let (
+                    candidate_rect,
+                    candidate_bbox,
+                    candidate_contact,
+                    candidate_center,
+                    candidate_bias,
+                    candidate_jitter,
+                ) =
                     self.best_corner_for_free_rect(
                         free_rect,
                         cut_piece.length,
@@ -632,10 +726,12 @@ impl MaxRectsBin {
                             candidate_contact,
                             candidate_center,
                             candidate_bias,
+                            candidate_jitter,
                             best_bbox_area,
                             best_contact,
                             best_center,
                             best_bias,
+                            best_jitter,
                         ))
                 {
                     best_rect = candidate_rect;
@@ -645,6 +741,7 @@ impl MaxRectsBin {
                     best_contact = candidate_contact;
                     best_center = candidate_center;
                     best_bias = candidate_bias;
+                    best_jitter = candidate_jitter;
                     best_fit = fit;
                 }
             }
@@ -669,6 +766,7 @@ impl MaxRectsBin {
         let mut best_contact = 0_usize;
         let mut best_center = u64::MAX;
         let mut best_bias = f64::INFINITY;
+        let mut best_jitter = u64::MAX;
         let mut best_fit = Fit::None;
 
         for free_rect in &self.free_rects {
@@ -680,7 +778,14 @@ impl MaxRectsBin {
                     (free_rect.length as isize - cut_piece.length as isize).abs() as usize;
                 let short_side_fit = cmp::min(leftover_horiz, leftover_vert);
                 let long_side_fit = cmp::max(leftover_horiz, leftover_vert);
-                let (candidate_rect, candidate_bbox, candidate_contact, candidate_center, candidate_bias) =
+                let (
+                    candidate_rect,
+                    candidate_bbox,
+                    candidate_contact,
+                    candidate_center,
+                    candidate_bias,
+                    candidate_jitter,
+                ) =
                     self.best_corner_for_free_rect(
                         free_rect,
                         cut_piece.width,
@@ -696,10 +801,12 @@ impl MaxRectsBin {
                             candidate_contact,
                             candidate_center,
                             candidate_bias,
+                            candidate_jitter,
                             best_bbox_area,
                             best_contact,
                             best_center,
                             best_bias,
+                            best_jitter,
                         ))
                 {
                     best_rect = candidate_rect;
@@ -709,6 +816,7 @@ impl MaxRectsBin {
                     best_contact = candidate_contact;
                     best_center = candidate_center;
                     best_bias = candidate_bias;
+                    best_jitter = candidate_jitter;
                     best_fit = fit;
                 }
             } else if fit.is_rotated() {
@@ -718,7 +826,14 @@ impl MaxRectsBin {
                     (free_rect.length as isize - cut_piece.width as isize).abs() as usize;
                 let short_side_fit = cmp::min(leftover_horiz, leftover_vert);
                 let long_side_fit = cmp::max(leftover_horiz, leftover_vert);
-                let (candidate_rect, candidate_bbox, candidate_contact, candidate_center, candidate_bias) =
+                let (
+                    candidate_rect,
+                    candidate_bbox,
+                    candidate_contact,
+                    candidate_center,
+                    candidate_bias,
+                    candidate_jitter,
+                ) =
                     self.best_corner_for_free_rect(
                         free_rect,
                         cut_piece.length,
@@ -734,10 +849,12 @@ impl MaxRectsBin {
                             candidate_contact,
                             candidate_center,
                             candidate_bias,
+                            candidate_jitter,
                             best_bbox_area,
                             best_contact,
                             best_center,
                             best_bias,
+                            best_jitter,
                         ))
                 {
                     best_rect = candidate_rect;
@@ -747,6 +864,7 @@ impl MaxRectsBin {
                     best_contact = candidate_contact;
                     best_center = candidate_center;
                     best_bias = candidate_bias;
+                    best_jitter = candidate_jitter;
                     best_fit = fit;
                 }
             }
@@ -771,6 +889,7 @@ impl MaxRectsBin {
         let mut best_contact = 0_usize;
         let mut best_center = u64::MAX;
         let mut best_bias = f64::INFINITY;
+        let mut best_jitter = u64::MAX;
         let mut best_fit = Fit::None;
 
         for free_rect in &self.free_rects {
@@ -789,7 +908,14 @@ impl MaxRectsBin {
                 let leftover_vert =
                     (free_rect.length as i64 - cut_piece.length as i64).abs() as u64;
                 let short_side_fit = cmp::min(leftover_horiz, leftover_vert);
-                let (candidate_rect, candidate_bbox, candidate_contact, candidate_center, candidate_bias) =
+                let (
+                    candidate_rect,
+                    candidate_bbox,
+                    candidate_contact,
+                    candidate_center,
+                    candidate_bias,
+                    candidate_jitter,
+                ) =
                     self.best_corner_for_free_rect(
                         free_rect,
                         cut_piece.width,
@@ -805,10 +931,12 @@ impl MaxRectsBin {
                             candidate_contact,
                             candidate_center,
                             candidate_bias,
+                            candidate_jitter,
                             best_bbox_area,
                             best_contact,
                             best_center,
                             best_bias,
+                            best_jitter,
                         ))
                 {
                     best_rect = candidate_rect;
@@ -818,6 +946,7 @@ impl MaxRectsBin {
                     best_contact = candidate_contact;
                     best_center = candidate_center;
                     best_bias = candidate_bias;
+                    best_jitter = candidate_jitter;
                     best_fit = fit;
                 }
             } else if fit.is_rotated() {
@@ -825,7 +954,14 @@ impl MaxRectsBin {
                     (free_rect.width as i64 - cut_piece.length as i64).abs() as u64;
                 let leftover_vert = (free_rect.length as i64 - cut_piece.width as i64).abs() as u64;
                 let short_side_fit = cmp::min(leftover_horiz, leftover_vert);
-                let (candidate_rect, candidate_bbox, candidate_contact, candidate_center, candidate_bias) =
+                let (
+                    candidate_rect,
+                    candidate_bbox,
+                    candidate_contact,
+                    candidate_center,
+                    candidate_bias,
+                    candidate_jitter,
+                ) =
                     self.best_corner_for_free_rect(
                         free_rect,
                         cut_piece.length,
@@ -841,10 +977,12 @@ impl MaxRectsBin {
                             candidate_contact,
                             candidate_center,
                             candidate_bias,
+                            candidate_jitter,
                             best_bbox_area,
                             best_contact,
                             best_center,
                             best_bias,
+                            best_jitter,
                         ))
                 {
                     best_rect = candidate_rect;
@@ -854,6 +992,7 @@ impl MaxRectsBin {
                     best_contact = candidate_contact;
                     best_center = candidate_center;
                     best_bias = candidate_bias;
+                    best_jitter = candidate_jitter;
                     best_fit = fit;
                 }
             }
@@ -877,12 +1016,20 @@ impl MaxRectsBin {
         let mut best_contact = 0_usize;
         let mut best_center = u64::MAX;
         let mut best_bias = f64::INFINITY;
+        let mut best_jitter = u64::MAX;
         let mut best_fit = Fit::None;
 
         for free_rect in &self.free_rects {
             let fit = free_rect.fit_cut_piece(self.pattern_direction, cut_piece, prefer_rotated);
             if fit.is_upright() {
-                let (candidate_rect, candidate_bbox, candidate_contact, candidate_center, candidate_bias) =
+                let (
+                    candidate_rect,
+                    candidate_bbox,
+                    candidate_contact,
+                    candidate_center,
+                    candidate_bias,
+                    candidate_jitter,
+                ) =
                     self.best_corner_for_free_rect(
                         free_rect,
                         cut_piece.width,
@@ -901,10 +1048,12 @@ impl MaxRectsBin {
                             candidate_contact,
                             candidate_center,
                             candidate_bias,
+                            candidate_jitter,
                             best_bbox_area,
                             best_contact,
                             best_center,
                             best_bias,
+                            best_jitter,
                         ))
                     || best_fit.is_none()
                 {
@@ -914,10 +1063,18 @@ impl MaxRectsBin {
                     best_contact = candidate_contact;
                     best_center = candidate_center;
                     best_bias = candidate_bias;
+                    best_jitter = candidate_jitter;
                     best_fit = fit;
                 }
             } else if fit.is_rotated() {
-                let (candidate_rect, candidate_bbox, candidate_contact, candidate_center, candidate_bias) =
+                let (
+                    candidate_rect,
+                    candidate_bbox,
+                    candidate_contact,
+                    candidate_center,
+                    candidate_bias,
+                    candidate_jitter,
+                ) =
                     self.best_corner_for_free_rect(
                         free_rect,
                         cut_piece.length,
@@ -936,10 +1093,12 @@ impl MaxRectsBin {
                             candidate_contact,
                             candidate_center,
                             candidate_bias,
+                            candidate_jitter,
                             best_bbox_area,
                             best_contact,
                             best_center,
                             best_bias,
+                            best_jitter,
                         ))
                     || best_fit.is_none()
                 {
@@ -949,6 +1108,7 @@ impl MaxRectsBin {
                     best_contact = candidate_contact;
                     best_center = candidate_center;
                     best_bias = candidate_bias;
+                    best_jitter = candidate_jitter;
                     best_fit = fit;
                 }
             }

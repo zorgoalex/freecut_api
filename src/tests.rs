@@ -474,12 +474,14 @@ struct BiasProfile {
     bias: Option<Value>,
 }
 
-fn fmt_bias_label(edge: f64, center: f64, bbox: f64) -> String {
+fn fmt_bias_label(edge: f64, center: f64, bbox: f64, frag: f64, jitter: f64) -> String {
     format!(
-        "e{}_c{}_b{}",
+        "e{}_c{}_b{}_f{}_j{}",
         fmt_weight(edge),
         fmt_weight(center),
-        fmt_weight(bbox)
+        fmt_weight(bbox),
+        fmt_weight(frag),
+        fmt_weight(jitter)
     )
 }
 
@@ -641,34 +643,52 @@ async fn run_placement_bias_sweep(app: &Router, out_dir: &Path, layout_mode: &st
 
     for edge in [0.1_f64, 0.25, 0.5] {
         profiles.push(BiasProfile {
-            label: fmt_bias_label(edge, 0.0, 0.0),
+            label: fmt_bias_label(edge, 0.0, 0.0, 0.0, 0.0),
             bias: Some(serde_json::json!({ "edge_penalty": edge })),
         });
     }
     for center in [0.1_f64, 0.25, 0.5] {
         profiles.push(BiasProfile {
-            label: fmt_bias_label(0.0, center, 0.0),
+            label: fmt_bias_label(0.0, center, 0.0, 0.0, 0.0),
             bias: Some(serde_json::json!({ "center_pull": center })),
         });
     }
     for bbox in [0.05_f64, 0.1, 0.2] {
         profiles.push(BiasProfile {
-            label: fmt_bias_label(0.0, 0.0, bbox),
+            label: fmt_bias_label(0.0, 0.0, bbox, 0.0, 0.0),
             bias: Some(serde_json::json!({ "bbox_weight": bbox })),
         });
     }
-    for (edge, center, bbox) in [
-        (0.25_f64, 0.25, 0.0),
-        (0.25, 0.0, 0.1),
-        (0.0, 0.25, 0.1),
-        (0.25, 0.25, 0.1),
+    for frag in [0.1_f64, 0.25, 0.5] {
+        profiles.push(BiasProfile {
+            label: fmt_bias_label(0.0, 0.0, 0.0, frag, 0.0),
+            bias: Some(serde_json::json!({ "fragmentation_penalty": frag })),
+        });
+    }
+    for jitter in [0.01_f64, 0.05, 0.1] {
+        profiles.push(BiasProfile {
+            label: fmt_bias_label(0.0, 0.0, 0.0, 0.0, jitter),
+            bias: Some(serde_json::json!({ "tie_break_jitter": jitter })),
+        });
+    }
+    for (edge, center, bbox, frag, jitter) in [
+        (0.25_f64, 0.25, 0.0, 0.0, 0.0),
+        (0.25, 0.0, 0.1, 0.0, 0.0),
+        (0.0, 0.25, 0.1, 0.0, 0.0),
+        (0.25, 0.25, 0.1, 0.0, 0.0),
+        (0.25, 0.0, 0.0, 0.25, 0.0),
+        (0.25, 0.25, 0.0, 0.25, 0.0),
+        (0.25, 0.0, 0.1, 0.25, 0.0),
+        (0.25, 0.0, 0.0, 0.0, 0.05),
     ] {
         profiles.push(BiasProfile {
-            label: fmt_bias_label(edge, center, bbox),
+            label: fmt_bias_label(edge, center, bbox, frag, jitter),
             bias: Some(serde_json::json!({
                 "edge_penalty": edge,
                 "center_pull": center,
-                "bbox_weight": bbox
+                "bbox_weight": bbox,
+                "fragmentation_penalty": frag,
+                "tie_break_jitter": jitter
             })),
         });
     }
@@ -1287,7 +1307,9 @@ async fn optimize_accepts_placement_bias() {
             serde_json::json!({
                 "edge_penalty": 0.25,
                 "center_pull": 0.1,
-                "bbox_weight": 0.05
+                "bbox_weight": 0.05,
+                "fragmentation_penalty": 0.1,
+                "tie_break_jitter": 0.01
             }),
         );
     }
@@ -1307,7 +1329,9 @@ async fn optimize_invalid_placement_bias_returns_422() {
             serde_json::json!({
                 "edge_penalty": -0.1,
                 "center_pull": 0.1,
-                "bbox_weight": 0.05
+                "bbox_weight": 0.05,
+                "fragmentation_penalty": -0.1,
+                "tie_break_jitter": -0.1
             }),
         );
     }

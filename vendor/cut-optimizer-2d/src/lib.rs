@@ -386,6 +386,7 @@ trait Bin {
         pattern_direction: PatternDirection,
         price: usize,
         placement_bias: PlacementBias,
+        jitter_seed: u64,
     ) -> Self;
 
     /// Computes the fitness of this `Bin` on a scale of 0.0 to 1.0, with 1.0 being the most fit.
@@ -445,6 +446,7 @@ where
     blade_width: usize,
     fitness_weights: FitnessWeights,
     placement_bias: PlacementBias,
+    jitter_seed: u64,
 }
 
 impl<'a, B> Clone for OptimizerUnit<'a, B>
@@ -460,6 +462,7 @@ where
             blade_width: self.blade_width,
             fitness_weights: self.fitness_weights,
             placement_bias: self.placement_bias,
+            jitter_seed: self.jitter_seed,
         }
     }
 }
@@ -474,6 +477,7 @@ where
         blade_width: usize,
         fitness_weights: FitnessWeights,
         placement_bias: PlacementBias,
+        jitter_seed: u64,
         rng: &mut R,
     ) -> Result<OptimizerUnit<'a, B>>
     where
@@ -487,6 +491,7 @@ where
             blade_width,
             fitness_weights,
             placement_bias,
+            jitter_seed,
         };
 
         for cut_piece in cut_pieces {
@@ -504,6 +509,7 @@ where
         blade_width: usize,
         fitness_weights: FitnessWeights,
         placement_bias: PlacementBias,
+        jitter_seed: u64,
         heuristic: &B::Heuristic,
         rng: &mut R,
     ) -> Result<OptimizerUnit<'a, B>>
@@ -518,6 +524,7 @@ where
             blade_width,
             fitness_weights,
             placement_bias,
+            jitter_seed,
         };
 
         for cut_piece in cut_pieces {
@@ -605,6 +612,7 @@ where
                 blade_width,
                 fitness_weights,
                 placement_bias,
+                random_seed,
                 heuristic,
                 &mut rng,
             )?);
@@ -619,6 +627,7 @@ where
                     blade_width,
                     fitness_weights,
                     placement_bias,
+                    random_seed,
                     heuristic,
                     &mut rng,
                 )?);
@@ -635,6 +644,7 @@ where
                     blade_width,
                     fitness_weights,
                     placement_bias,
+                    random_seed,
                     heuristic,
                     &mut rng,
                 )?);
@@ -696,6 +706,7 @@ where
                     stock_piece.pattern_direction,
                     stock_piece.price,
                     self.placement_bias,
+                    self.jitter_seed ^ (self.bins.len() as u64),
                 );
                 if !bin.insert_cut_piece_random_heuristic(cut_piece, rng) {
                     return false;
@@ -739,6 +750,7 @@ where
             blade_width: self.blade_width,
             fitness_weights: self.fitness_weights,
             placement_bias: self.placement_bias,
+            jitter_seed: self.jitter_seed,
         };
 
         let mut unused_cut_pieces = self.unused_cut_pieces.clone();
@@ -978,6 +990,10 @@ pub struct PlacementBias {
     pub center_pull: f64,
     /// Penalty for expanding the occupied bounding box. Higher favors compactness.
     pub bbox_weight: f64,
+    /// Penalty for creating thin leftover slivers in the free rectangle.
+    pub fragmentation_penalty: f64,
+    /// Deterministic jitter to break ties when placement scores are equal.
+    pub tie_break_jitter: f64,
 }
 
 impl Default for PlacementBias {
@@ -986,6 +1002,8 @@ impl Default for PlacementBias {
             edge_penalty: 0.0,
             center_pull: 0.0,
             bbox_weight: 0.0,
+            fragmentation_penalty: 0.0,
+            tie_break_jitter: 0.0,
         }
     }
 }

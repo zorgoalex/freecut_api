@@ -615,6 +615,8 @@ fn resolve_placement_bias(bias: Option<&crate::models::PlacementBias>) -> Engine
             edge_penalty: bias.edge_penalty.unwrap_or(0.0),
             center_pull: bias.center_pull.unwrap_or(0.0),
             bbox_weight: bias.bbox_weight.unwrap_or(0.0),
+            fragmentation_penalty: bias.fragmentation_penalty.unwrap_or(0.0),
+            tie_break_jitter: bias.tie_break_jitter.unwrap_or(0.0),
         },
     }
 }
