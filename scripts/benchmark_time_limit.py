@@ -4,6 +4,7 @@ Benchmark script to find time_limit boundaries.
 Tests how many items can be processed within default time limits.
 """
 
+import argparse
 import json
 import requests
 import sys
@@ -11,7 +12,7 @@ import time
 
 BASE_URL = "http://127.0.0.1:8088"
 
-def generate_request(num_item_types, qty_per_type=1, time_limit_ms=None):
+def generate_request(num_item_types, qty_per_type=1, time_limit_ms=None, seed=None):
     """Generate request with specified number of item types."""
     items = []
     for i in range(num_item_types):
@@ -33,9 +34,10 @@ def generate_request(num_item_types, qty_per_type=1, time_limit_ms=None):
         "trim_mm": {"left": 10.0, "right": 10.0, "top": 10.0, "bottom": 10.0},
         "restarts": 3,
         "objective": "min_waste",
-        "seed": 12345,
         "layout_mode": "guillotine"
     }
+    if seed is not None:
+        params["seed"] = seed
     if time_limit_ms:
         params["time_limit_ms"] = time_limit_ms
 
@@ -68,9 +70,22 @@ def test_request(request_data):
         return False, elapsed, 0, str(e)
 
 def main():
+    parser = argparse.ArgumentParser(description="Freecut time_limit benchmark")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional params.seed for deterministic runs. Omit to use server-generated seed.",
+    )
+    args = parser.parse_args()
+
     print("=" * 70)
     print("Freecut Time Limit Benchmark")
     print("=" * 70)
+    if args.seed is None:
+        print("Seed: server-generated (params.seed omitted)")
+    else:
+        print(f"Seed: {args.seed}")
 
     # Check service
     try:
@@ -89,7 +104,7 @@ def main():
 
     # Test increasing item counts with default time_limit
     for num_types in [10, 50, 100, 200, 300, 500, 700, 1000, 1500, 2000, 3000, 4000, 5000]:
-        req = generate_request(num_types, qty_per_type=1)
+        req = generate_request(num_types, qty_per_type=1, seed=args.seed)
         total_instances = num_types
 
         success, time_ms, status, error = test_request(req)
@@ -109,7 +124,7 @@ def main():
     print("-" * 70)
 
     for num_types in [1000, 2000, 3000, 4000, 5000]:
-        req = generate_request(num_types, qty_per_type=1, time_limit_ms=10000)
+        req = generate_request(num_types, qty_per_type=1, time_limit_ms=10000, seed=args.seed)
 
         success, time_ms, status, error = test_request(req)
 
@@ -124,7 +139,7 @@ def main():
     print("-" * 70)
 
     for num_types, qty in [(100, 10), (100, 20), (100, 50), (50, 100)]:
-        req = generate_request(num_types, qty_per_type=qty)
+        req = generate_request(num_types, qty_per_type=qty, seed=args.seed)
         total = num_types * qty
 
         success, time_ms, status, error = test_request(req)
