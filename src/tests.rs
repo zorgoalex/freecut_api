@@ -445,36 +445,77 @@ async fn optimize_save_svg_for_heuristics_multisheet_varied() {
 #[ignore = "manual sweep for fitness weights on multisheet varied"]
 async fn optimize_fitness_weights_sweep_multisheet_varied() {
     let app = app_for_test();
-    let weight_profiles: [(&str, Value); 9] = [
-        ("default", serde_json::json!({})),
-        ("void_0_5", serde_json::json!({ "void": 0.5 })),
-        ("compact_0_5", serde_json::json!({ "compactness": 0.5 })),
-        ("perim_0_5", serde_json::json!({ "perimeter": 0.5 })),
-        (
-            "geom_balanced",
-            serde_json::json!({ "void": 0.25, "compactness": 0.5, "perimeter": 0.25 }),
-        ),
-        (
-            "low_waste_geom",
-            serde_json::json!({ "waste": 0.25, "void": 0.5, "compactness": 0.25 }),
-        ),
-        (
-            "void_heavy",
-            serde_json::json!({ "waste": 0.25, "void": 0.75 }),
-        ),
-        (
-            "compact_heavy",
-            serde_json::json!({ "waste": 0.25, "compactness": 0.75 }),
-        ),
-        (
-            "perim_heavy",
-            serde_json::json!({ "waste": 0.25, "perimeter": 0.75 }),
-        ),
-    ];
-    let out_dir = Path::new("ai_docs/tmp/fitness_weight_sweep");
+    let out_dir = Path::new("ai_docs/tmp/fitness_weight_sweep2");
     std::fs::create_dir_all(out_dir).unwrap();
+    let summary_path = out_dir.join("summary.csv");
+    let mut summary = std::fs::File::create(&summary_path).unwrap();
+    use std::io::Write;
+    writeln!(
+        summary,
+        "profile,seed,unique,waste_mean_mm2,winner_void_mm2,winner_bbox_area_mm2,winner_perim_mm"
+    )
+    .unwrap();
 
-    for (label, weights) in weight_profiles {
+    let mut profiles: Vec<(String, Value)> = Vec::new();
+    profiles.push(("default".to_string(), serde_json::json!({})));
+
+    let waste_levels = [1.0_f64, 0.5, 0.25, 0.1, 0.0];
+    for waste in waste_levels {
+        let other = (1.0 - waste).max(0.0);
+        if other > 0.0 {
+            profiles.push((
+                format!("w{}_v{}", fmt_weight(waste), fmt_weight(other)),
+                serde_json::json!({ "waste": waste, "void": other }),
+            ));
+            profiles.push((
+                format!("w{}_c{}", fmt_weight(waste), fmt_weight(other)),
+                serde_json::json!({ "waste": waste, "compactness": other }),
+            ));
+            profiles.push((
+                format!("w{}_p{}", fmt_weight(waste), fmt_weight(other)),
+                serde_json::json!({ "waste": waste, "perimeter": other }),
+            ));
+        }
+    }
+
+    for waste in [0.5_f64, 0.25, 0.1, 0.0] {
+        let other = (1.0 - waste).max(0.0);
+        if other > 0.0 {
+            let half = other / 2.0;
+            profiles.push((
+                format!(
+                    "w{}_v{}_c{}",
+                    fmt_weight(waste),
+                    fmt_weight(half),
+                    fmt_weight(half)
+                ),
+                serde_json::json!({ "waste": waste, "void": half, "compactness": half }),
+            ));
+            profiles.push((
+                format!(
+                    "w{}_v{}_p{}",
+                    fmt_weight(waste),
+                    fmt_weight(half),
+                    fmt_weight(half)
+                ),
+                serde_json::json!({ "waste": waste, "void": half, "perimeter": half }),
+            ));
+            profiles.push((
+                format!(
+                    "w{}_c{}_p{}",
+                    fmt_weight(waste),
+                    fmt_weight(half),
+                    fmt_weight(half)
+                ),
+                serde_json::json!({ "waste": waste, "compactness": half, "perimeter": half }),
+            ));
+        }
+    }
+
+    profiles.sort_by(|a, b| a.0.cmp(&b.0));
+    profiles.dedup_by(|a, b| a.0 == b.0);
+
+    for (label, weights) in profiles {
         for seed in [1_u64, 2_u64] {
             let mut json: Value = serde_json::from_str(MULTISHEET_VARIED_4SHEETS_REQUEST).unwrap();
             if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
@@ -509,13 +550,22 @@ async fn optimize_fitness_weights_sweep_multisheet_varied() {
                 .get("winner_bbox_void_area_mm2")
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0);
+            let winner_bbox = selection
+                .get("winner_bbox_area_mm2")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
             let winner_perim = selection
                 .get("winner_piece_perimeter_mm")
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0);
             println!(
-                "[fitness_sweep] profile={label} seed={seed} unique={unique} waste_mean_mm2={waste_mean:.3} winner_void_mm2={winner_void:.3} winner_perim_mm={winner_perim:.3}"
+                "[fitness_sweep] profile={label} seed={seed} unique={unique} waste_mean_mm2={waste_mean:.3} winner_void_mm2={winner_void:.3} winner_bbox_mm2={winner_bbox:.3} winner_perim_mm={winner_perim:.3}"
             );
+            writeln!(
+                summary,
+                "{label},{seed},{unique},{waste_mean:.3},{winner_void:.3},{winner_bbox:.3},{winner_perim:.3}"
+            )
+            .unwrap();
 
             let svg = resp
                 .pointer("/artifacts/svg")
@@ -531,6 +581,10 @@ async fn optimize_fitness_weights_sweep_multisheet_varied() {
             println!("[svg] {} bytes -> {}", svg.len(), path.display());
         }
     }
+}
+
+fn fmt_weight(value: f64) -> String {
+    format!("{value:.2}").replace('.', "_")
 }
 
 #[tokio::test]
