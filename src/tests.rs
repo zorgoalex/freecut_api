@@ -4,6 +4,7 @@ use axum::http::{Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
 use serde_json::Value;
+use std::path::Path;
 use tower::ServiceExt;
 
 const VALID_REQUEST: &str = include_str!("../tests/fixtures/optimize_valid.json");
@@ -382,6 +383,48 @@ async fn optimize_seed_diversity_snapshot_multisheet_varied() {
         println!(
             "[seed_diversity_multisheet_varied] seed={seed} unique_signatures={unique} waste_mean_mm2={waste_mean:.3}"
         );
+    }
+}
+
+#[tokio::test]
+#[ignore = "manual svg snapshot for comparing heuristics on multisheet varied"]
+async fn optimize_save_svg_for_heuristics_multisheet_varied() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(MULTISHEET_VARIED_4SHEETS_REQUEST).unwrap();
+    let heuristics = ["best_short_side", "best_long_side", "smallest_y"];
+    let out_dir = Path::new("/tmp/freecut_svg_variants");
+    std::fs::create_dir_all(out_dir).unwrap();
+
+    for heuristic in heuristics {
+        if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+            params.insert("seed".to_string(), Value::from(1_u64));
+            params.insert("time_limit_ms".to_string(), Value::from(20000));
+            params.insert("restarts".to_string(), Value::from(1));
+            params.insert(
+                "ga_override".to_string(),
+                serde_json::json!({
+                    "epochs": 30
+                }),
+            );
+            params.insert("layout_mode".to_string(), Value::from("guillotine"));
+            params.insert("placement_heuristic".to_string(), Value::from(heuristic));
+            params.insert("include_svg".to_string(), Value::Bool(true));
+        }
+        let body = serde_json::to_string(&json).unwrap();
+        let (status, resp) = post_json(&app, "/v1/optimize", &body).await;
+        assert_eq!(status, StatusCode::OK, "body: {resp}");
+        let svg = resp
+            .pointer("/artifacts/svg")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        assert!(
+            svg.starts_with("<svg") && svg.ends_with("</svg>"),
+            "expected svg artifact, body: {resp}"
+        );
+        let filename = format!("multisheet_varied_guillotine_{heuristic}.svg");
+        let path = out_dir.join(filename);
+        std::fs::write(&path, svg).unwrap();
+        println!("[svg] {} bytes -> {}", svg.len(), path.display());
     }
 }
 
