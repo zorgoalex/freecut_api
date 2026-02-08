@@ -457,8 +457,30 @@ async fn optimize_fitness_weights_sweep_multisheet_varied_nested() {
     run_fitness_weight_sweep(&app, out_dir, "nested").await;
 }
 
+#[tokio::test]
+#[ignore = "manual sweep for placement bias on multisheet varied (nested)"]
+async fn optimize_placement_bias_sweep_multisheet_varied_nested() {
+    let app = app_for_test();
+    let out_dir = Path::new("ai_docs/tmp/placement_bias_sweep_nested");
+    run_placement_bias_sweep(&app, out_dir, "nested").await;
+}
+
 fn fmt_weight(value: f64) -> String {
     format!("{value:.2}").replace('.', "_")
+}
+
+struct BiasProfile {
+    label: String,
+    bias: Option<Value>,
+}
+
+fn fmt_bias_label(edge: f64, center: f64, bbox: f64) -> String {
+    format!(
+        "e{}_c{}_b{}",
+        fmt_weight(edge),
+        fmt_weight(center),
+        fmt_weight(bbox)
+    )
 }
 
 async fn run_fitness_weight_sweep(app: &Router, out_dir: &Path, layout_mode: &str) {
@@ -593,6 +615,138 @@ async fn run_fitness_weight_sweep(app: &Router, out_dir: &Path, layout_mode: &st
                 "expected svg artifact, body: {resp}"
             );
             let filename = format!("multisheet_varied_{label}_seed{seed}.svg");
+            let path = out_dir.join(filename);
+            std::fs::write(&path, svg).unwrap();
+            println!("[svg] {} bytes -> {}", svg.len(), path.display());
+        }
+    }
+}
+
+async fn run_placement_bias_sweep(app: &Router, out_dir: &Path, layout_mode: &str) {
+    std::fs::create_dir_all(out_dir).unwrap();
+    let summary_path = out_dir.join("summary.csv");
+    let mut summary = std::fs::File::create(&summary_path).unwrap();
+    use std::io::Write;
+    writeln!(
+        summary,
+        "profile,seed,layout_mode,unique,waste_mean_mm2,winner_void_mm2,winner_bbox_area_mm2,winner_perim_mm"
+    )
+    .unwrap();
+
+    let mut profiles: Vec<BiasProfile> = Vec::new();
+    profiles.push(BiasProfile {
+        label: "none".to_string(),
+        bias: None,
+    });
+
+    for edge in [0.1_f64, 0.25, 0.5] {
+        profiles.push(BiasProfile {
+            label: fmt_bias_label(edge, 0.0, 0.0),
+            bias: Some(serde_json::json!({ "edge_penalty": edge })),
+        });
+    }
+    for center in [0.1_f64, 0.25, 0.5] {
+        profiles.push(BiasProfile {
+            label: fmt_bias_label(0.0, center, 0.0),
+            bias: Some(serde_json::json!({ "center_pull": center })),
+        });
+    }
+    for bbox in [0.05_f64, 0.1, 0.2] {
+        profiles.push(BiasProfile {
+            label: fmt_bias_label(0.0, 0.0, bbox),
+            bias: Some(serde_json::json!({ "bbox_weight": bbox })),
+        });
+    }
+    for (edge, center, bbox) in [
+        (0.25_f64, 0.25, 0.0),
+        (0.25, 0.0, 0.1),
+        (0.0, 0.25, 0.1),
+        (0.25, 0.25, 0.1),
+    ] {
+        profiles.push(BiasProfile {
+            label: fmt_bias_label(edge, center, bbox),
+            bias: Some(serde_json::json!({
+                "edge_penalty": edge,
+                "center_pull": center,
+                "bbox_weight": bbox
+            })),
+        });
+    }
+
+    profiles.sort_by(|a, b| a.label.cmp(&b.label));
+    profiles.dedup_by(|a, b| a.label == b.label);
+
+    for profile in profiles {
+        for seed in [1_u64] {
+            let mut json: Value = serde_json::from_str(MULTISHEET_VARIED_4SHEETS_REQUEST).unwrap();
+            if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+                params.insert("seed".to_string(), Value::from(seed));
+                params.insert("time_limit_ms".to_string(), Value::from(20000));
+                params.insert("restarts".to_string(), Value::from(1));
+                params.insert("include_svg".to_string(), Value::Bool(true));
+                params.insert("layout_mode".to_string(), Value::from(layout_mode));
+                params.insert(
+                    "ga_override".to_string(),
+                    serde_json::json!({
+                        "epochs": 30
+                    }),
+                );
+                match &profile.bias {
+                    Some(bias) => {
+                        params.insert("placement_bias".to_string(), bias.clone());
+                    }
+                    None => {
+                        params.remove("placement_bias");
+                    }
+                }
+            }
+            let body = serde_json::to_string(&json).unwrap();
+            let (status, resp) = post_json(app, "/v1/optimize", &body).await;
+            assert_eq!(status, StatusCode::OK, "unexpected status/body: {resp}");
+            let selection = resp
+                .pointer("/summary/candidate_selection")
+                .cloned()
+                .unwrap_or(Value::Null);
+            let unique = selection
+                .get("top_k_unique_signatures")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let waste_mean = selection
+                .get("top_k_waste_area_mm2_mean")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let winner_void = selection
+                .get("winner_bbox_void_area_mm2")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let winner_bbox = selection
+                .get("winner_bbox_area_mm2")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let winner_perim = selection
+                .get("winner_piece_perimeter_mm")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            println!(
+                "[bias_sweep] mode={layout_mode} profile={} seed={seed} unique={unique} waste_mean_mm2={waste_mean:.3} winner_void_mm2={winner_void:.3} winner_bbox_mm2={winner_bbox:.3} winner_perim_mm={winner_perim:.3}",
+                profile.label
+            );
+            writeln!(
+                summary,
+                "{},{seed},{layout_mode},{unique},{waste_mean:.3},{winner_void:.3},{winner_bbox:.3},{winner_perim:.3}",
+                profile.label
+            )
+            .unwrap();
+
+            let svg = resp
+                .pointer("/artifacts/svg")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            assert!(
+                svg.starts_with("<svg") && svg.ends_with("</svg>"),
+                "expected svg artifact, body: {resp}"
+            );
+            let filename = format!("multisheet_varied_bias_{}_seed{seed}.svg", profile.label);
             let path = out_dir.join(filename);
             std::fs::write(&path, svg).unwrap();
             println!("[svg] {} bytes -> {}", svg.len(), path.display());
@@ -1119,6 +1273,47 @@ async fn optimize_accepts_placement_heuristic_for_nested() {
     let body = serde_json::to_string(&json).unwrap();
     let (status, json) = post_json(&app, "/v1/optimize", &body).await;
     assert_eq!(status, StatusCode::OK, "body: {json}");
+}
+
+#[tokio::test]
+async fn optimize_accepts_placement_bias() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("include_svg".to_string(), Value::Bool(false));
+        params.insert("layout_mode".to_string(), Value::from("nested"));
+        params.insert(
+            "placement_bias".to_string(),
+            serde_json::json!({
+                "edge_penalty": 0.25,
+                "center_pull": 0.1,
+                "bbox_weight": 0.05
+            }),
+        );
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+}
+
+#[tokio::test]
+async fn optimize_invalid_placement_bias_returns_422() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("include_svg".to_string(), Value::Bool(false));
+        params.insert(
+            "placement_bias".to_string(),
+            serde_json::json!({
+                "edge_penalty": -0.1,
+                "center_pull": 0.1,
+                "bbox_weight": 0.05
+            }),
+        );
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {json}");
 }
 
 #[tokio::test]

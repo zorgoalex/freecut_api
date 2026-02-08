@@ -115,6 +115,10 @@ Example file: `examples/optimize_request.json`
     - For `layout_mode="nested"`: `"best_area"`, `"best_short_side"`, `"best_long_side"`,
       `"bottom_left"`, `"contact_point"`.
     - Portfolio mode will rotate heuristics across candidates when this value is omitted.
+  - `placement_bias`: Optional placement bias weights to reduce edge-hugging in layout.
+  - `placement_bias.edge_penalty`: Penalty for placements near sheet edges. Optional.
+  - `placement_bias.center_pull`: Pull toward sheet center. Optional.
+  - `placement_bias.bbox_weight`: Penalty for expanding the occupied bounding box. Optional.
   - `fitness_weights`: Optional composite fitness weights for internal GA scoring. Omit to keep legacy waste-only scoring.
   - `fitness_weights.waste`: Weight for waste minimization (legacy fitness). Optional, defaults to 1.0.
   - `fitness_weights.void`: Weight for internal void reduction (bbox void area). Optional.

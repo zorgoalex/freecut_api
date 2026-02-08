@@ -131,6 +131,32 @@ pub fn validate_request(
         }
     }
 
+    if let Some(bias) = &req.params.placement_bias {
+        let mut invalid_fields: Vec<&'static str> = Vec::new();
+        let mut check_weight = |field: &'static str, value: f64| {
+            if !value.is_finite() || value < 0.0 {
+                invalid_fields.push(field);
+            }
+        };
+        if let Some(weight) = bias.edge_penalty {
+            check_weight("placement_bias.edge_penalty", weight);
+        }
+        if let Some(weight) = bias.center_pull {
+            check_weight("placement_bias.center_pull", weight);
+        }
+        if let Some(weight) = bias.bbox_weight {
+            check_weight("placement_bias.bbox_weight", weight);
+        }
+        if !invalid_fields.is_empty() {
+            return Err(
+                ValidationError::new("placement_bias weights must be finite and >= 0")
+                    .with_details(serde_json::json!({
+                        "invalid_fields": invalid_fields
+                    })),
+            );
+        }
+    }
+
     if let Some(weights) = &req.params.fitness_weights {
         let mut invalid_fields: Vec<&'static str> = Vec::new();
         let mut check_weight = |field: &'static str, value: f64| {

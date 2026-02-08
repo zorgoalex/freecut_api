@@ -136,6 +136,7 @@ pub(crate) struct GuillotineBin {
     cut_pieces: SmallVec<[UsedCutPiece; 8]>,
     free_rects: SmallVec<[Rect; 8]>,
     price: usize,
+    placement_bias: PlacementBias,
 }
 
 impl Bin for GuillotineBin {
@@ -151,6 +152,7 @@ impl Bin for GuillotineBin {
         blade_width: usize,
         pattern_direction: PatternDirection,
         price: usize,
+        placement_bias: PlacementBias,
     ) -> Self {
         // We start with a single big free rectangle that spans the whole bin.
         let free_rect = Rect {
@@ -170,6 +172,7 @@ impl Bin for GuillotineBin {
             pattern_direction,
             cut_pieces: Default::default(),
             price,
+            placement_bias,
         }
     }
 
@@ -494,8 +497,12 @@ impl GuillotineBin {
     ) -> Option<(UsedCutPiece, usize)> {
         let mut best_rect = Rect::default();
         let mut best_score = std::isize::MAX;
+        let mut best_bias_score = f64::INFINITY;
         let mut best_fit = Fit::None;
         let mut free_index = None;
+        let bias_active = self.placement_bias.edge_penalty > 0.0
+            || self.placement_bias.center_pull > 0.0
+            || self.placement_bias.bbox_weight > 0.0;
 
         for (i, free_rect) in self.free_rects.iter().enumerate() {
             let fit = free_rect.fit_cut_piece(self.pattern_direction, cut_piece, prefer_rotated);
@@ -525,12 +532,25 @@ impl GuillotineBin {
                         free_rect,
                         rect_choice,
                     );
-                    if score < best_score {
-                        best_rect.x = free_rect.x;
-                        best_rect.y = free_rect.y;
-                        best_rect.width = cut_piece.width;
-                        best_rect.length = cut_piece.length;
+                    let candidate_rect = Rect {
+                        x: free_rect.x,
+                        y: free_rect.y,
+                        width: cut_piece.width,
+                        length: cut_piece.length,
+                    };
+                    let candidate_bias = if bias_active {
+                        self.placement_bias_score(&candidate_rect)
+                    } else {
+                        0.0
+                    };
+                    if score < best_score
+                        || (score == best_score
+                            && bias_active
+                            && candidate_bias < best_bias_score)
+                    {
+                        best_rect = candidate_rect;
                         best_score = score;
+                        best_bias_score = candidate_bias;
                         best_fit = fit;
                         free_index = Some(i);
                     }
@@ -542,12 +562,25 @@ impl GuillotineBin {
                         free_rect,
                         rect_choice,
                     );
-                    if score < best_score {
-                        best_rect.x = free_rect.x;
-                        best_rect.y = free_rect.y;
-                        best_rect.width = cut_piece.length;
-                        best_rect.length = cut_piece.width;
+                    let candidate_rect = Rect {
+                        x: free_rect.x,
+                        y: free_rect.y,
+                        width: cut_piece.length,
+                        length: cut_piece.width,
+                    };
+                    let candidate_bias = if bias_active {
+                        self.placement_bias_score(&candidate_rect)
+                    } else {
+                        0.0
+                    };
+                    if score < best_score
+                        || (score == best_score
+                            && bias_active
+                            && candidate_bias < best_bias_score)
+                    {
+                        best_rect = candidate_rect;
                         best_score = score;
+                        best_bias_score = candidate_bias;
                         best_fit = fit;
                         free_index = Some(i);
                     }
@@ -577,6 +610,57 @@ impl GuillotineBin {
         } else {
             None
         }
+    }
+
+    fn placement_bbox_area(&self, rect: &Rect) -> u64 {
+        let mut min_x = rect.x;
+        let mut min_y = rect.y;
+        let mut max_x = rect.x.saturating_add(rect.width);
+        let mut max_y = rect.y.saturating_add(rect.length);
+
+        for cut_piece in &self.cut_pieces {
+            let placed = &cut_piece.rect;
+            min_x = min_x.min(placed.x);
+            min_y = min_y.min(placed.y);
+            max_x = max_x.max(placed.x.saturating_add(placed.width));
+            max_y = max_y.max(placed.y.saturating_add(placed.length));
+        }
+
+        let bbox_w = max_x.saturating_sub(min_x) as u64;
+        let bbox_h = max_y.saturating_sub(min_y) as u64;
+        bbox_w.saturating_mul(bbox_h)
+    }
+
+    fn placement_center_dist2(&self, rect: &Rect) -> u64 {
+        let center_x = rect.x as i128 * 2 + rect.width as i128;
+        let center_y = rect.y as i128 * 2 + rect.length as i128;
+        let target_x = self.width as i128;
+        let target_y = self.length as i128;
+        let dx = center_x - target_x;
+        let dy = center_y - target_y;
+        (dx * dx + dy * dy) as u64
+    }
+
+    fn placement_edge_penalty(&self, rect: &Rect) -> u64 {
+        let right = self.width.saturating_sub(rect.x.saturating_add(rect.width));
+        let bottom = self.length.saturating_sub(rect.y.saturating_add(rect.length));
+        let min_edge = rect
+            .x
+            .min(rect.y)
+            .min(right)
+            .min(bottom);
+        let max_edge = (self.width.min(self.length) / 2).max(1);
+        let delta = max_edge.saturating_sub(min_edge) as u64;
+        delta.saturating_mul(delta)
+    }
+
+    fn placement_bias_score(&self, rect: &Rect) -> f64 {
+        let bbox_area = self.placement_bbox_area(rect) as f64;
+        let center_dist2 = self.placement_center_dist2(rect) as f64;
+        let edge_penalty = self.placement_edge_penalty(rect) as f64;
+        self.placement_bias.bbox_weight * bbox_area
+            + self.placement_bias.center_pull * center_dist2
+            + self.placement_bias.edge_penalty * edge_penalty
     }
 
     fn split_free_rect_by_heuristic(

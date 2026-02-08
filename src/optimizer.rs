@@ -7,7 +7,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use cut_optimizer_2d::{
     CutPiece, FitnessWeights as EngineFitnessWeights, Optimizer,
-    PatternDirection as CutPatternDirection, StockPiece,
+    PatternDirection as CutPatternDirection, PlacementBias as EnginePlacementBias, StockPiece,
 };
 
 use crate::config::AppConfig;
@@ -608,6 +608,17 @@ fn resolve_fitness_weights(weights: Option<&FitnessWeights>) -> EngineFitnessWei
     }
 }
 
+fn resolve_placement_bias(bias: Option<&crate::models::PlacementBias>) -> EnginePlacementBias {
+    match bias {
+        None => EnginePlacementBias::default(),
+        Some(bias) => EnginePlacementBias {
+            edge_penalty: bias.edge_penalty.unwrap_or(0.0),
+            center_pull: bias.center_pull.unwrap_or(0.0),
+            bbox_weight: bias.bbox_weight.unwrap_or(0.0),
+        },
+    }
+}
+
 fn pick_best_candidate(
     set: cut_optimizer_2d::SolutionSet,
     objective: &Objective,
@@ -677,6 +688,7 @@ async fn run_restarts_with_budget(
     let guillotine_preset = placement_heuristic.and_then(to_guillotine_preset);
     let nested_preset = placement_heuristic.and_then(to_nested_preset);
     let fitness_weights = resolve_fitness_weights(req.params.fitness_weights.as_ref());
+    let placement_bias = resolve_placement_bias(req.params.placement_bias.as_ref());
     let mut best: Option<Candidate> = None;
     let mut selection_counters = CandidateSelectionCounters {
         top_k_requested: u32::try_from(ga_runtime.top_k).unwrap_or(u32::MAX),
@@ -724,6 +736,7 @@ async fn run_restarts_with_budget(
         let restart_idx = i;
         let ga_runtime = ga_runtime;
         let fitness_weights = fitness_weights;
+        let placement_bias = placement_bias;
 
         let mut handle = tokio::task::spawn_blocking(move || {
             let diversified_stock = diversify_stock_order(&stock_templates, seed, restart_idx);
@@ -733,6 +746,7 @@ async fn run_restarts_with_budget(
                 .set_random_seed(seed)
                 .set_cut_width(cut_width)
                 .set_fitness_weights(fitness_weights)
+                .set_placement_bias(placement_bias)
                 .set_ga_epochs(ga_runtime.epochs)
                 .set_ga_breed_factor(ga_runtime.breed_factor)
                 .set_ga_survival_factor(ga_runtime.survival_factor)
@@ -884,6 +898,7 @@ async fn run_restarts_with_budget(
             let restart_idx = planned_restarts;
             let ga_runtime = ga_runtime;
             let fitness_weights = fitness_weights;
+            let placement_bias = placement_bias;
             let mut rescue_handle = tokio::task::spawn_blocking(move || {
                 let diversified_stock =
                     diversify_stock_order(&stock_templates, rescue_seed, restart_idx);
@@ -893,6 +908,7 @@ async fn run_restarts_with_budget(
                     .set_random_seed(rescue_seed)
                     .set_cut_width(cut_width)
                     .set_fitness_weights(fitness_weights)
+                    .set_placement_bias(placement_bias)
                     .set_ga_epochs(ga_runtime.epochs)
                     .set_ga_breed_factor(ga_runtime.breed_factor)
                     .set_ga_survival_factor(ga_runtime.survival_factor)

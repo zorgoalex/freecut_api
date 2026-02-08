@@ -28,6 +28,8 @@ pub struct Params {
     pub layout_mode: Option<LayoutMode>,
     /// Optional placement heuristic preset. Defaults to engine preset mix.
     pub placement_heuristic: Option<PlacementHeuristic>,
+    /// Optional placement bias weights (edge/center/bbox).
+    pub placement_bias: Option<PlacementBias>,
     /// Optional weights for composite fitness in the optimizer.
     pub fitness_weights: Option<FitnessWeights>,
     /// Service-level profile for restart budgeting in `/v1/optimize`. Optional, defaults to `balanced`.
@@ -126,6 +128,16 @@ pub struct FitnessWeights {
     pub compactness: Option<f64>,
     /// Weight for perimeter compactness (4*sqrt(area) / perimeter). Optional.
     pub perimeter: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
+pub struct PlacementBias {
+    /// Penalty for placements near sheet edges. Optional.
+    pub edge_penalty: Option<f64>,
+    /// Pull toward the sheet center. Optional.
+    pub center_pull: Option<f64>,
+    /// Penalty for expanding the occupied bounding box. Optional.
+    pub bbox_weight: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]

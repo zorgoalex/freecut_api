@@ -385,6 +385,7 @@ trait Bin {
         blade_width: usize,
         pattern_direction: PatternDirection,
         price: usize,
+        placement_bias: PlacementBias,
     ) -> Self;
 
     /// Computes the fitness of this `Bin` on a scale of 0.0 to 1.0, with 1.0 being the most fit.
@@ -443,6 +444,7 @@ where
 
     blade_width: usize,
     fitness_weights: FitnessWeights,
+    placement_bias: PlacementBias,
 }
 
 impl<'a, B> Clone for OptimizerUnit<'a, B>
@@ -457,6 +459,7 @@ where
             unused_cut_pieces: self.unused_cut_pieces.clone(),
             blade_width: self.blade_width,
             fitness_weights: self.fitness_weights,
+            placement_bias: self.placement_bias,
         }
     }
 }
@@ -470,6 +473,7 @@ where
         cut_pieces: &[&CutPieceWithId],
         blade_width: usize,
         fitness_weights: FitnessWeights,
+        placement_bias: PlacementBias,
         rng: &mut R,
     ) -> Result<OptimizerUnit<'a, B>>
     where
@@ -482,6 +486,7 @@ where
             unused_cut_pieces: Default::default(),
             blade_width,
             fitness_weights,
+            placement_bias,
         };
 
         for cut_piece in cut_pieces {
@@ -498,6 +503,7 @@ where
         cut_pieces: &[&CutPieceWithId],
         blade_width: usize,
         fitness_weights: FitnessWeights,
+        placement_bias: PlacementBias,
         heuristic: &B::Heuristic,
         rng: &mut R,
     ) -> Result<OptimizerUnit<'a, B>>
@@ -511,6 +517,7 @@ where
             unused_cut_pieces: Default::default(),
             blade_width,
             fitness_weights,
+            placement_bias,
         };
 
         for cut_piece in cut_pieces {
@@ -527,6 +534,7 @@ where
         cut_pieces: Vec<&CutPieceWithId>,
         blade_width: usize,
         fitness_weights: FitnessWeights,
+        placement_bias: PlacementBias,
         random_seed: u64,
     ) -> Result<Vec<OptimizerUnit<'a, B>>>
     where
@@ -538,6 +546,7 @@ where
             cut_pieces,
             blade_width,
             fitness_weights,
+            placement_bias,
             random_seed,
             &heuristics,
         )
@@ -548,6 +557,7 @@ where
         mut cut_pieces: Vec<&CutPieceWithId>,
         blade_width: usize,
         fitness_weights: FitnessWeights,
+        placement_bias: PlacementBias,
         random_seed: u64,
         heuristics: &[B::Heuristic],
     ) -> Result<Vec<OptimizerUnit<'a, B>>>
@@ -594,6 +604,7 @@ where
                 &cut_pieces,
                 blade_width,
                 fitness_weights,
+                placement_bias,
                 heuristic,
                 &mut rng,
             )?);
@@ -607,6 +618,7 @@ where
                     &cut_pieces,
                     blade_width,
                     fitness_weights,
+                    placement_bias,
                     heuristic,
                     &mut rng,
                 )?);
@@ -622,6 +634,7 @@ where
                     &cut_pieces,
                     blade_width,
                     fitness_weights,
+                    placement_bias,
                     heuristic,
                     &mut rng,
                 )?);
@@ -682,6 +695,7 @@ where
                     self.blade_width,
                     stock_piece.pattern_direction,
                     stock_piece.price,
+                    self.placement_bias,
                 );
                 if !bin.insert_cut_piece_random_heuristic(cut_piece, rng) {
                     return false;
@@ -724,6 +738,7 @@ where
             unused_cut_pieces: Default::default(),
             blade_width: self.blade_width,
             fitness_weights: self.fitness_weights,
+            placement_bias: self.placement_bias,
         };
 
         let mut unused_cut_pieces = self.unused_cut_pieces.clone();
@@ -954,6 +969,27 @@ impl Default for FitnessWeights {
     }
 }
 
+/// Placement bias weights for choosing locations within free rectangles.
+#[derive(Clone, Copy, Debug)]
+pub struct PlacementBias {
+    /// Penalty for placements near sheet edges. Higher discourages edge-hugging.
+    pub edge_penalty: f64,
+    /// Pull toward the sheet center. Higher favors central placements.
+    pub center_pull: f64,
+    /// Penalty for expanding the occupied bounding box. Higher favors compactness.
+    pub bbox_weight: f64,
+}
+
+impl Default for PlacementBias {
+    fn default() -> Self {
+        Self {
+            edge_penalty: 0.0,
+            center_pull: 0.0,
+            bbox_weight: 0.0,
+        }
+    }
+}
+
 #[inline]
 fn apply_fitness_weights(
     base: f64,
@@ -1051,6 +1087,7 @@ pub struct Optimizer {
     ga_breed_factor: f64,
     ga_survival_factor: f64,
     fitness_weights: FitnessWeights,
+    placement_bias: PlacementBias,
 }
 
 impl Default for Optimizer {
@@ -1065,6 +1102,7 @@ impl Default for Optimizer {
             ga_breed_factor: 0.5,
             ga_survival_factor: 0.6,
             fitness_weights: FitnessWeights::default(),
+            placement_bias: PlacementBias::default(),
         }
     }
 }
@@ -1168,6 +1206,12 @@ impl Optimizer {
     /// Set composite fitness weights for the optimizer.
     pub fn set_fitness_weights(&mut self, weights: FitnessWeights) -> &mut Self {
         self.fitness_weights = weights;
+        self
+    }
+
+    /// Set placement bias weights for the optimizer.
+    pub fn set_placement_bias(&mut self, bias: PlacementBias) -> &mut Self {
+        self.placement_bias = bias;
         self
     }
 
@@ -1523,6 +1567,7 @@ impl Optimizer {
             cut_pieces,
             self.cut_width,
             self.fitness_weights,
+            self.placement_bias,
             self.random_seed,
         )?;
 
@@ -1601,6 +1646,7 @@ impl Optimizer {
             cut_pieces,
             self.cut_width,
             self.fitness_weights,
+            self.placement_bias,
             self.random_seed,
             heuristics,
         )?;
