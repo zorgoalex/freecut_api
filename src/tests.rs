@@ -392,7 +392,7 @@ async fn optimize_save_svg_for_heuristics_multisheet_varied() {
     let app = app_for_test();
     let mut json: Value = serde_json::from_str(MULTISHEET_VARIED_4SHEETS_REQUEST).unwrap();
     let heuristics = ["best_short_side", "best_long_side", "smallest_y"];
-    let out_dir = Path::new("/tmp/freecut_svg_variants");
+    let out_dir = Path::new("ai_docs/tmp/freecut_svg_variants");
     std::fs::create_dir_all(out_dir).unwrap();
 
     for heuristic in heuristics {
