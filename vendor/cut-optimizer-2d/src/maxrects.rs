@@ -9,6 +9,7 @@ use smallvec::{smallvec, SmallVec};
 
 use std::borrow::Borrow;
 use std::cmp;
+use std::collections::HashSet;
 
 /// Heuristics for deciding which of the free rectangles to place the demand piece in.
 #[derive(Copy, Clone)]
@@ -331,6 +332,130 @@ impl MaxRectsBin {
         }
     }
 
+    fn placement_bbox_area(&self, x: usize, y: usize, width: usize, length: usize) -> u64 {
+        let mut min_x = x;
+        let mut min_y = y;
+        let mut max_x = x.saturating_add(width);
+        let mut max_y = y.saturating_add(length);
+
+        for cut_piece in &self.cut_pieces {
+            let rect = &cut_piece.rect;
+            min_x = min_x.min(rect.x);
+            min_y = min_y.min(rect.y);
+            max_x = max_x.max(rect.x.saturating_add(rect.width));
+            max_y = max_y.max(rect.y.saturating_add(rect.length));
+        }
+
+        let bbox_w = max_x.saturating_sub(min_x) as u64;
+        let bbox_h = max_y.saturating_sub(min_y) as u64;
+        bbox_w.saturating_mul(bbox_h)
+    }
+
+    fn placement_center_dist2(&self, x: usize, y: usize, width: usize, length: usize) -> u64 {
+        let center_x = x as i128 * 2 + width as i128;
+        let center_y = y as i128 * 2 + length as i128;
+        let target_x = self.width as i128;
+        let target_y = self.length as i128;
+        let dx = center_x - target_x;
+        let dy = center_y - target_y;
+        (dx * dx + dy * dy) as u64
+    }
+
+    fn placement_piece_contact(&self, x: usize, y: usize, width: usize, length: usize) -> usize {
+        let mut score = 0;
+        for cut_piece in &self.cut_pieces {
+            let rect = &cut_piece.rect;
+            if rect.x == x + width || rect.x + rect.width == x {
+                score += common_interval_length(rect.y, rect.y + rect.length, y, y + length);
+            }
+
+            if rect.y == y + length || rect.y + rect.length == y {
+                score += common_interval_length(rect.x, rect.x + rect.width, x, x + width);
+            }
+        }
+        score
+    }
+
+    fn best_corner_for_free_rect(
+        &self,
+        free_rect: &Rect,
+        width: usize,
+        length: usize,
+    ) -> (Rect, u64, usize, u64) {
+        let x0 = free_rect.x;
+        let y0 = free_rect.y;
+        let x1 = free_rect.x + free_rect.width - width;
+        let y1 = free_rect.y + free_rect.length - length;
+        let xc = free_rect.x + (free_rect.width - width) / 2;
+        let yc = free_rect.y + (free_rect.length - length) / 2;
+        let candidates = [(x0, y0), (x0, y1), (x1, y0), (x1, y1), (xc, yc)];
+        let mut seen: HashSet<(usize, usize)> = HashSet::new();
+
+        let mut best_rect = Rect::default();
+        let mut best_bbox = u64::MAX;
+        let mut best_contact = 0_usize;
+        let mut best_center = u64::MAX;
+
+        for (x, y) in candidates {
+            if !seen.insert((x, y)) {
+                continue;
+            }
+            let bbox_area = self.placement_bbox_area(x, y, width, length);
+            let contact = self.placement_piece_contact(x, y, width, length);
+            let center_dist2 = self.placement_center_dist2(x, y, width, length);
+
+            let better = if bbox_area < best_bbox {
+                true
+            } else if bbox_area > best_bbox {
+                false
+            } else if contact > best_contact {
+                true
+            } else if contact < best_contact {
+                false
+            } else {
+                center_dist2 < best_center
+            };
+
+            if better {
+                best_rect = Rect {
+                    x,
+                    y,
+                    width,
+                    length,
+                };
+                best_bbox = bbox_area;
+                best_contact = contact;
+                best_center = center_dist2;
+            }
+        }
+
+        (best_rect, best_bbox, best_contact, best_center)
+    }
+
+    fn tiebreaker_better(
+        &self,
+        bbox_area: u64,
+        contact: usize,
+        center_dist2: u64,
+        best_bbox_area: u64,
+        best_contact: usize,
+        best_center_dist2: u64,
+    ) -> bool {
+        if bbox_area < best_bbox_area {
+            return true;
+        }
+        if bbox_area > best_bbox_area {
+            return false;
+        }
+        if contact > best_contact {
+            return true;
+        }
+        if contact < best_contact {
+            return false;
+        }
+        center_dist2 < best_center_dist2
+    }
+
     fn find_placement_bottom_left(
         &self,
         cut_piece: &CutPieceWithId,
@@ -383,6 +508,9 @@ impl MaxRectsBin {
         let mut best_rect = Rect::default();
         let mut best_short_side_fit = std::usize::MAX;
         let mut best_long_side_fit = std::usize::MAX;
+        let mut best_bbox_area = u64::MAX;
+        let mut best_contact = 0_usize;
+        let mut best_center = u64::MAX;
         let mut best_fit = Fit::None;
 
         for free_rect in &self.free_rects {
@@ -394,16 +522,32 @@ impl MaxRectsBin {
                     (free_rect.length as isize - cut_piece.length as isize).abs() as usize;
                 let short_side_fit = cmp::min(leftover_horiz, leftover_vert);
                 let long_side_fit = cmp::max(leftover_horiz, leftover_vert);
+                let (candidate_rect, candidate_bbox, candidate_contact, candidate_center) =
+                    self.best_corner_for_free_rect(
+                        free_rect,
+                        cut_piece.width,
+                        cut_piece.length,
+                    );
 
                 if short_side_fit < best_short_side_fit
                     || (short_side_fit == best_short_side_fit && long_side_fit < best_long_side_fit)
+                    || (short_side_fit == best_short_side_fit
+                        && long_side_fit == best_long_side_fit
+                        && self.tiebreaker_better(
+                            candidate_bbox,
+                            candidate_contact,
+                            candidate_center,
+                            best_bbox_area,
+                            best_contact,
+                            best_center,
+                        ))
                 {
-                    best_rect.x = free_rect.x;
-                    best_rect.y = free_rect.y;
-                    best_rect.width = cut_piece.width;
-                    best_rect.length = cut_piece.length;
+                    best_rect = candidate_rect;
                     best_short_side_fit = short_side_fit;
                     best_long_side_fit = long_side_fit;
+                    best_bbox_area = candidate_bbox;
+                    best_contact = candidate_contact;
+                    best_center = candidate_center;
                     best_fit = fit;
                 }
             } else if fit.is_rotated() {
@@ -413,16 +557,32 @@ impl MaxRectsBin {
                     (free_rect.length as isize - cut_piece.width as isize).abs() as usize;
                 let short_side_fit = cmp::min(leftover_horiz, leftover_vert);
                 let long_side_fit = cmp::max(leftover_horiz, leftover_vert);
+                let (candidate_rect, candidate_bbox, candidate_contact, candidate_center) =
+                    self.best_corner_for_free_rect(
+                        free_rect,
+                        cut_piece.length,
+                        cut_piece.width,
+                    );
 
                 if short_side_fit < best_short_side_fit
                     || (short_side_fit == best_short_side_fit && long_side_fit < best_long_side_fit)
+                    || (short_side_fit == best_short_side_fit
+                        && long_side_fit == best_long_side_fit
+                        && self.tiebreaker_better(
+                            candidate_bbox,
+                            candidate_contact,
+                            candidate_center,
+                            best_bbox_area,
+                            best_contact,
+                            best_center,
+                        ))
                 {
-                    best_rect.x = free_rect.x;
-                    best_rect.y = free_rect.y;
-                    best_rect.width = cut_piece.length;
-                    best_rect.length = cut_piece.width;
+                    best_rect = candidate_rect;
                     best_short_side_fit = short_side_fit;
                     best_long_side_fit = long_side_fit;
+                    best_bbox_area = candidate_bbox;
+                    best_contact = candidate_contact;
+                    best_center = candidate_center;
                     best_fit = fit;
                 }
             }
@@ -443,6 +603,9 @@ impl MaxRectsBin {
         let mut best_rect = Rect::default();
         let mut best_short_side_fit = std::usize::MAX;
         let mut best_long_side_fit = std::usize::MAX;
+        let mut best_bbox_area = u64::MAX;
+        let mut best_contact = 0_usize;
+        let mut best_center = u64::MAX;
         let mut best_fit = Fit::None;
 
         for free_rect in &self.free_rects {
@@ -454,16 +617,32 @@ impl MaxRectsBin {
                     (free_rect.length as isize - cut_piece.length as isize).abs() as usize;
                 let short_side_fit = cmp::min(leftover_horiz, leftover_vert);
                 let long_side_fit = cmp::max(leftover_horiz, leftover_vert);
+                let (candidate_rect, candidate_bbox, candidate_contact, candidate_center) =
+                    self.best_corner_for_free_rect(
+                        free_rect,
+                        cut_piece.width,
+                        cut_piece.length,
+                    );
 
                 if long_side_fit < best_long_side_fit
                     || (long_side_fit == best_long_side_fit && short_side_fit < best_short_side_fit)
+                    || (long_side_fit == best_long_side_fit
+                        && short_side_fit == best_short_side_fit
+                        && self.tiebreaker_better(
+                            candidate_bbox,
+                            candidate_contact,
+                            candidate_center,
+                            best_bbox_area,
+                            best_contact,
+                            best_center,
+                        ))
                 {
-                    best_rect.x = free_rect.x;
-                    best_rect.y = free_rect.y;
-                    best_rect.width = cut_piece.width;
-                    best_rect.length = cut_piece.length;
+                    best_rect = candidate_rect;
                     best_short_side_fit = short_side_fit;
                     best_long_side_fit = long_side_fit;
+                    best_bbox_area = candidate_bbox;
+                    best_contact = candidate_contact;
+                    best_center = candidate_center;
                     best_fit = fit;
                 }
             } else if fit.is_rotated() {
@@ -473,16 +652,32 @@ impl MaxRectsBin {
                     (free_rect.length as isize - cut_piece.width as isize).abs() as usize;
                 let short_side_fit = cmp::min(leftover_horiz, leftover_vert);
                 let long_side_fit = cmp::max(leftover_horiz, leftover_vert);
+                let (candidate_rect, candidate_bbox, candidate_contact, candidate_center) =
+                    self.best_corner_for_free_rect(
+                        free_rect,
+                        cut_piece.length,
+                        cut_piece.width,
+                    );
 
                 if long_side_fit < best_long_side_fit
                     || (long_side_fit == best_long_side_fit && short_side_fit < best_short_side_fit)
+                    || (long_side_fit == best_long_side_fit
+                        && short_side_fit == best_short_side_fit
+                        && self.tiebreaker_better(
+                            candidate_bbox,
+                            candidate_contact,
+                            candidate_center,
+                            best_bbox_area,
+                            best_contact,
+                            best_center,
+                        ))
                 {
-                    best_rect.x = free_rect.x;
-                    best_rect.y = free_rect.y;
-                    best_rect.width = cut_piece.length;
-                    best_rect.length = cut_piece.width;
+                    best_rect = candidate_rect;
                     best_short_side_fit = short_side_fit;
                     best_long_side_fit = long_side_fit;
+                    best_bbox_area = candidate_bbox;
+                    best_contact = candidate_contact;
+                    best_center = candidate_center;
                     best_fit = fit;
                 }
             }
@@ -503,6 +698,9 @@ impl MaxRectsBin {
         let mut best_rect = Rect::default();
         let mut best_area_fit = std::u64::MAX;
         let mut best_short_side_fit = std::u64::MAX;
+        let mut best_bbox_area = u64::MAX;
+        let mut best_contact = 0_usize;
+        let mut best_center = u64::MAX;
         let mut best_fit = Fit::None;
 
         for free_rect in &self.free_rects {
@@ -521,16 +719,32 @@ impl MaxRectsBin {
                 let leftover_vert =
                     (free_rect.length as i64 - cut_piece.length as i64).abs() as u64;
                 let short_side_fit = cmp::min(leftover_horiz, leftover_vert);
+                let (candidate_rect, candidate_bbox, candidate_contact, candidate_center) =
+                    self.best_corner_for_free_rect(
+                        free_rect,
+                        cut_piece.width,
+                        cut_piece.length,
+                    );
 
                 if area_fit < best_area_fit
                     || (area_fit == best_area_fit && short_side_fit < best_short_side_fit)
+                    || (area_fit == best_area_fit
+                        && short_side_fit == best_short_side_fit
+                        && self.tiebreaker_better(
+                            candidate_bbox,
+                            candidate_contact,
+                            candidate_center,
+                            best_bbox_area,
+                            best_contact,
+                            best_center,
+                        ))
                 {
-                    best_rect.x = free_rect.x;
-                    best_rect.y = free_rect.y;
-                    best_rect.width = cut_piece.width;
-                    best_rect.length = cut_piece.length;
+                    best_rect = candidate_rect;
                     best_area_fit = area_fit;
                     best_short_side_fit = short_side_fit;
+                    best_bbox_area = candidate_bbox;
+                    best_contact = candidate_contact;
+                    best_center = candidate_center;
                     best_fit = fit;
                 }
             } else if fit.is_rotated() {
@@ -538,16 +752,32 @@ impl MaxRectsBin {
                     (free_rect.width as i64 - cut_piece.length as i64).abs() as u64;
                 let leftover_vert = (free_rect.length as i64 - cut_piece.width as i64).abs() as u64;
                 let short_side_fit = cmp::min(leftover_horiz, leftover_vert);
+                let (candidate_rect, candidate_bbox, candidate_contact, candidate_center) =
+                    self.best_corner_for_free_rect(
+                        free_rect,
+                        cut_piece.length,
+                        cut_piece.width,
+                    );
 
                 if area_fit < best_area_fit
                     || (area_fit == best_area_fit && short_side_fit < best_short_side_fit)
+                    || (area_fit == best_area_fit
+                        && short_side_fit == best_short_side_fit
+                        && self.tiebreaker_better(
+                            candidate_bbox,
+                            candidate_contact,
+                            candidate_center,
+                            best_bbox_area,
+                            best_contact,
+                            best_center,
+                        ))
                 {
-                    best_rect.x = free_rect.x;
-                    best_rect.y = free_rect.y;
-                    best_rect.width = cut_piece.length;
-                    best_rect.length = cut_piece.width;
+                    best_rect = candidate_rect;
                     best_area_fit = area_fit;
                     best_short_side_fit = short_side_fit;
+                    best_bbox_area = candidate_bbox;
+                    best_contact = candidate_contact;
+                    best_center = candidate_center;
                     best_fit = fit;
                 }
             }
@@ -567,38 +797,75 @@ impl MaxRectsBin {
     ) -> Option<(Rect, bool)> {
         let mut best_rect = Rect::default();
         let mut best_contact_score = 0;
+        let mut best_bbox_area = u64::MAX;
+        let mut best_contact = 0_usize;
+        let mut best_center = u64::MAX;
         let mut best_fit = Fit::None;
 
         for free_rect in &self.free_rects {
             let fit = free_rect.fit_cut_piece(self.pattern_direction, cut_piece, prefer_rotated);
             if fit.is_upright() {
+                let (candidate_rect, candidate_bbox, candidate_contact, candidate_center) =
+                    self.best_corner_for_free_rect(
+                        free_rect,
+                        cut_piece.width,
+                        cut_piece.length,
+                    );
                 let score = self.contact_point_score(
-                    free_rect.x,
-                    free_rect.y,
+                    candidate_rect.x,
+                    candidate_rect.y,
                     cut_piece.width,
                     cut_piece.length,
                 );
-                if score > best_contact_score || best_fit.is_none() {
-                    best_rect.x = free_rect.x;
-                    best_rect.y = free_rect.y;
-                    best_rect.width = cut_piece.width;
-                    best_rect.length = cut_piece.length;
+                if score > best_contact_score
+                    || (score == best_contact_score
+                        && self.tiebreaker_better(
+                            candidate_bbox,
+                            candidate_contact,
+                            candidate_center,
+                            best_bbox_area,
+                            best_contact,
+                            best_center,
+                        ))
+                    || best_fit.is_none()
+                {
+                    best_rect = candidate_rect;
                     best_contact_score = score;
+                    best_bbox_area = candidate_bbox;
+                    best_contact = candidate_contact;
+                    best_center = candidate_center;
                     best_fit = fit;
                 }
             } else if fit.is_rotated() {
+                let (candidate_rect, candidate_bbox, candidate_contact, candidate_center) =
+                    self.best_corner_for_free_rect(
+                        free_rect,
+                        cut_piece.length,
+                        cut_piece.width,
+                    );
                 let score = self.contact_point_score(
-                    free_rect.x,
-                    free_rect.y,
+                    candidate_rect.x,
+                    candidate_rect.y,
                     cut_piece.length,
                     cut_piece.width,
                 );
-                if score > best_contact_score || best_fit.is_none() {
-                    best_rect.x = free_rect.x;
-                    best_rect.y = free_rect.y;
-                    best_rect.width = cut_piece.length;
-                    best_rect.length = cut_piece.width;
+                if score > best_contact_score
+                    || (score == best_contact_score
+                        && self.tiebreaker_better(
+                            candidate_bbox,
+                            candidate_contact,
+                            candidate_center,
+                            best_bbox_area,
+                            best_contact,
+                            best_center,
+                        ))
+                    || best_fit.is_none()
+                {
+                    best_rect = candidate_rect;
                     best_contact_score = score;
+                    best_bbox_area = candidate_bbox;
+                    best_contact = candidate_contact;
+                    best_center = candidate_center;
                     best_fit = fit;
                 }
             }
@@ -613,13 +880,15 @@ impl MaxRectsBin {
 
     fn contact_point_score(&self, x: usize, y: usize, width: usize, length: usize) -> usize {
         let mut score = 0;
+        const EDGE_CONTACT_WEIGHT_NUM: usize = 1;
+        const EDGE_CONTACT_WEIGHT_DEN: usize = 4;
 
         if x == 0 || x + width == self.width {
-            score += length;
+            score += (length.saturating_mul(EDGE_CONTACT_WEIGHT_NUM)) / EDGE_CONTACT_WEIGHT_DEN;
         }
 
         if y == 0 || y + length == self.length {
-            score += width;
+            score += (width.saturating_mul(EDGE_CONTACT_WEIGHT_NUM)) / EDGE_CONTACT_WEIGHT_DEN;
         }
 
         for cut_piece in &self.cut_pieces {
