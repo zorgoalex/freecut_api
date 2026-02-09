@@ -331,6 +331,10 @@ python3 scripts/greedy_optimize.py -i request.json [-t 60]
   - Impact: wrong `stock_id` in response and incorrect `qty_limit` behavior (false `unplaced_items` with `reason="qty_limit"`).
   - Business context: this fix is required primarily for business correctness (material identity, stock accounting, order semantics), even when geometric placement itself looks valid.
   - Required change: use a stable per-stock key (or preserve source stock identity through optimization mapping), not only size tuple.
+- Stabilize timeout-rescue regression tests and document production tuning:
+  - Tests `optimize_multisheet_restarts_4_*` can intermittently fail with `408 TIMEOUT` under parallel `cargo test` due to CPU contention.
+  - Mitigations: serialize CPU-heavy optimize tests (global semaphore/lock) or run CI with `RUST_TEST_THREADS=1`.
+  - Production: set `MAX_CONCURRENT_OPTIMIZE` to match real CPU quota to prefer `429 OVERLOADED` over avoidable `408 TIMEOUT`.
 
 ## License
 This project is licensed under the **MIT License**. See `LICENSE`.
