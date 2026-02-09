@@ -1142,14 +1142,16 @@ def main():
 
                 # Add to list and sort
                 top_candidates.append(candidate_data)
-                # Sort: perimeter first, then void_compactness
-                # comp=1 is NOT always best - low perimeter is more important
+                # Sort: "visual quality" first (exposure/penetration), perimeter/void as tie-break.
                 top_candidates.sort(key=lambda c: (
                     c['internal_void'],               # 1. No internal holes (critical)
-                    c['occupied_perimeter'],          # 2. PERIMETER: lower = more compact (PRIMARY)
-                    c['void_compactness'],            # 3. Void compactness: lower = better shape
-                    c['corridor_components'],         # 4. Fewer void regions (tiebreaker)
-                    c['waste_percent'],               # 5. Waste only as tiebreaker
+                    c['exposure_penalty'],            # 2. Penalize exposed edges far from sheet edge
+                    c['penetration_weighted'],        # 3. Penalize deep corridor penetration
+                    c['corridor_void'],               # 4. Void corridors inside bbox
+                    c['occupied_perimeter'],          # 5. Compactness of occupied region
+                    c['corridor_components'],         # 6. Fewer void regions (tiebreaker)
+                    c['edge_breaks'],                 # 7. Prefer more edge-filled profiles
+                    c['waste_percent'],               # 8. Waste only as last tiebreaker
                 ))
                 
                 # Trim the list if it's too long

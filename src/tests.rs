@@ -90,16 +90,20 @@ fn strip_svg_artifact(mut resp: Value) -> Value {
     resp
 }
 
-fn write_svg_and_json(out_dir: &Path, base_name: &str, svg: &str, resp: &Value) {
-    let svg_path = out_dir.join(format!("{base_name}.svg"));
-    std::fs::write(&svg_path, svg).unwrap();
-    println!("[svg] {} bytes -> {}", svg.len(), svg_path.display());
-
+fn write_json_artifact(out_dir: &Path, base_name: &str, resp: &Value) {
     let resp_no_svg = strip_svg_artifact(resp.clone());
     let json_path = out_dir.join(format!("{base_name}.json"));
     let json = serde_json::to_string_pretty(&resp_no_svg).unwrap();
     std::fs::write(&json_path, &json).unwrap();
     println!("[json] {} bytes -> {}", json.len(), json_path.display());
+}
+
+fn write_svg_and_json(out_dir: &Path, base_name: &str, svg: &str, resp: &Value) {
+    let svg_path = out_dir.join(format!("{base_name}.svg"));
+    std::fs::write(&svg_path, svg).unwrap();
+    println!("[svg] {} bytes -> {}", svg.len(), svg_path.display());
+
+    write_json_artifact(out_dir, base_name, resp);
 }
 
 fn strip_time(mut value: Value) -> Value {
@@ -860,10 +864,8 @@ async fn optimize_placement_heuristic_seed_sweep_multisheet_varied() {
                     );
                     match heur_value {
                         Some(heuristic) => {
-                            params.insert(
-                                "placement_heuristic".to_string(),
-                                Value::from(*heuristic),
-                            );
+                            params
+                                .insert("placement_heuristic".to_string(), Value::from(*heuristic));
                         }
                         None => {
                             params.remove("placement_heuristic");
@@ -924,7 +926,10 @@ async fn optimize_placement_heuristic_seed_sweep_multisheet_varied() {
 async fn optimize_cross_fixture_profile_sweep() {
     let app = app_for_test();
     let seeds: Vec<u64> = (1..=3).collect();
-    let fixtures: [(&str, &str); 2] = [("valid", VALID_REQUEST), ("oversized", MULTISHEET_OVERSIZED_REQUEST)];
+    let fixtures: [(&str, &str); 2] = [
+        ("valid", VALID_REQUEST),
+        ("oversized", MULTISHEET_OVERSIZED_REQUEST),
+    ];
 
     let profiles: Vec<(&str, &str, Option<&str>, Option<Value>)> = vec![
         ("guillotine_default", "guillotine", None, None),
@@ -975,10 +980,8 @@ async fn optimize_cross_fixture_profile_sweep() {
                     );
                     match heuristic {
                         Some(heuristic) => {
-                            params.insert(
-                                "placement_heuristic".to_string(),
-                                Value::from(*heuristic),
-                            );
+                            params
+                                .insert("placement_heuristic".to_string(), Value::from(*heuristic));
                         }
                         None => {
                             params.remove("placement_heuristic");
@@ -1103,6 +1106,122 @@ async fn optimize_placement_bias_sweep_multisheet_varied_nested() {
     let app = app_for_test();
     let out_dir = Path::new("ai_docs/tmp/placement_bias_sweep_nested");
     run_placement_bias_sweep(&app, out_dir, "nested").await;
+}
+
+fn parse_weight_token(token: &str) -> Option<f64> {
+    token.replace('_', ".").parse().ok()
+}
+
+fn parse_bias_label(label: &str) -> Option<(f64, f64, f64, f64, f64)> {
+    if !label.starts_with('e') {
+        return None;
+    }
+    let c_pos = label.find("_c")?;
+    let b_pos = label.find("_b")?;
+    let f_pos = label.find("_f")?;
+    let j_pos = label.find("_j");
+
+    let edge = parse_weight_token(&label[1..c_pos])?;
+    let center = parse_weight_token(&label[c_pos + 2..b_pos])?;
+    let bbox = parse_weight_token(&label[b_pos + 2..f_pos])?;
+
+    let (frag_str, jitter_str) = match j_pos {
+        Some(j_pos) => (&label[f_pos + 2..j_pos], &label[j_pos + 2..]),
+        None => (&label[f_pos + 2..], "0_00"),
+    };
+    let frag = parse_weight_token(frag_str)?;
+    let jitter = parse_weight_token(jitter_str)?;
+
+    Some((edge, center, bbox, frag, jitter))
+}
+
+fn parse_seed_and_bias_from_svg_stem(stem: &str) -> Option<(u64, Option<Value>)> {
+    let marker = "multisheet_varied_bias_";
+    let start = stem.find(marker)? + marker.len();
+    let seed_pos = stem.rfind("_seed")?;
+    if seed_pos <= start {
+        return None;
+    }
+
+    let label = &stem[start..seed_pos];
+    let seed: u64 = stem[seed_pos + "_seed".len()..].parse().ok()?;
+    let (edge, center, bbox, frag, jitter) = parse_bias_label(label)?;
+    let all_zero = edge == 0.0 && center == 0.0 && bbox == 0.0 && frag == 0.0 && jitter == 0.0;
+    if all_zero {
+        return Some((seed, None));
+    }
+    Some((
+        seed,
+        Some(serde_json::json!({
+            "edge_penalty": edge,
+            "center_pull": center,
+            "bbox_weight": bbox,
+            "fragmentation_penalty": frag,
+            "tie_break_jitter": jitter,
+        })),
+    ))
+}
+
+#[tokio::test]
+#[ignore = "manual: generate json artifacts next to curated scoring svgs"]
+async fn optimize_generate_json_for_scoring_svgs() {
+    let app = app_for_test();
+    let out_dir = Path::new("ai_docs/tmp/placement_bias_sweep_nested_for_scoring");
+    std::fs::create_dir_all(out_dir).unwrap();
+
+    let mut stems: Vec<String> = std::fs::read_dir(out_dir)
+        .unwrap()
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            if path.extension()?.to_str()? != "svg" {
+                return None;
+            }
+            path.file_stem()?.to_str().map(|s| s.to_string())
+        })
+        .collect();
+    stems.sort();
+    stems.dedup();
+
+    for stem in stems {
+        let json_path = out_dir.join(format!("{stem}.json"));
+        if json_path.exists() {
+            println!("[skip] {}", json_path.display());
+            continue;
+        }
+
+        let Some((seed, bias)) = parse_seed_and_bias_from_svg_stem(&stem) else {
+            println!("[skip] unrecognized stem: {stem}");
+            continue;
+        };
+
+        let mut json: Value = serde_json::from_str(MULTISHEET_VARIED_4SHEETS_REQUEST).unwrap();
+        if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+            params.insert("seed".to_string(), Value::from(seed));
+            params.insert("time_limit_ms".to_string(), Value::from(20000));
+            params.insert("restarts".to_string(), Value::from(1));
+            params.insert("include_svg".to_string(), Value::Bool(false));
+            params.insert("layout_mode".to_string(), Value::from("nested"));
+            params.insert(
+                "ga_override".to_string(),
+                serde_json::json!({
+                    "epochs": 30
+                }),
+            );
+            match bias {
+                Some(bias) => {
+                    params.insert("placement_bias".to_string(), bias);
+                }
+                None => {
+                    params.remove("placement_bias");
+                }
+            }
+        }
+
+        let body = serde_json::to_string(&json).unwrap();
+        let (status, resp) = post_json(&app, "/v1/optimize", &body).await;
+        assert_eq!(status, StatusCode::OK, "unexpected status/body: {resp}");
+        write_json_artifact(out_dir, &stem, &resp);
+    }
 }
 
 fn fmt_weight(value: f64) -> String {

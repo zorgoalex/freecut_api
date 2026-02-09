@@ -46,21 +46,21 @@ def compute_quality_metrics(
     solutions = body.get("solutions", [])
     (
         internal_void,
-        _internal_components,
-        _exposure_penalty,
+        internal_components,
+        exposure_penalty,
         corridor_void,
         corridor_components,
-        _row_gap,
-        _col_gap,
-        _corridor_weighted,
-        _max_penetration,
-        _penetration_volume,
-        _penetration_weighted,
+        row_gap,
+        col_gap,
+        corridor_weighted,
+        max_penetration,
+        penetration_volume,
+        penetration_weighted,
         occupied_perimeter,
         void_compactness,
-        _edge_continuity,
-        _edge_breaks,
-        _corners_filled,
+        edge_continuity,
+        edge_breaks,
+        corners_filled,
     ) = calculate_internal_void_metrics(
         solutions=solutions,
         grid_mm=grid_mm,
@@ -76,19 +76,34 @@ def compute_quality_metrics(
     placeable_ratio = compute_placeable_ratio(body)
     hard_ok = (placeable_ratio == 1.0) and (float(internal_void) == 0.0)
     sort_key = (
-        float(internal_void),
+        0 if hard_ok else 1,
+        float(exposure_penalty),
+        float(penetration_weighted),
+        float(corridor_void),
         float(occupied_perimeter),
-        float(void_compactness),
         int(corridor_components),
+        int(edge_breaks),
+        float(internal_void),
         float(waste),
     )
     return {
         "placeable_ratio": placeable_ratio,
         "internal_void": float(internal_void),
+        "internal_components": int(internal_components),
+        "exposure_penalty": float(exposure_penalty),
         "occupied_perimeter": float(occupied_perimeter),
         "void_compactness": float(void_compactness),
         "corridor_components": int(corridor_components),
         "corridor_void": float(corridor_void),
+        "corridor_weighted": float(corridor_weighted),
+        "row_gap": float(row_gap),
+        "col_gap": float(col_gap),
+        "max_penetration": float(max_penetration),
+        "penetration_volume": float(penetration_volume),
+        "penetration_weighted": float(penetration_weighted),
+        "edge_continuity": float(edge_continuity),
+        "edge_breaks": int(edge_breaks),
+        "corners_filled": int(corners_filled),
         "waste_percent": float(waste),
         "hard_ok": hard_ok,
         "sort_key": sort_key,
@@ -286,10 +301,13 @@ def run_mode(
 
     manifest_items = []
     for rank, item in enumerate(selected, start=1):
+        exp_m = int(round(float(item.get("exposure_penalty", 0.0)) / 1e6))
+        pen_g = int(round(float(item.get("penetration_weighted", 0.0)) / 1e9))
         svg_name = (
             f"rank_{rank:02d}_seed_{item.get('used_seed', item.get('seed'))}"
-            f"_waste_{item.get('waste_percent', 0.0):.2f}"
-            f"_vcomp_{item.get('void_compactness', 0.0):.3f}.svg"
+            f"_expM_{exp_m}"
+            f"_penG_{pen_g}"
+            f"_waste_{item.get('waste_percent', 0.0):.2f}.svg"
         )
         svg_path = out_dir / svg_name
         with open(svg_path, "w", encoding="utf-8") as f:
@@ -305,9 +323,12 @@ def run_mode(
             "hard_ok": item.get("hard_ok"),
             "placeable_ratio": item.get("placeable_ratio"),
             "internal_void": item.get("internal_void"),
+            "exposure_penalty": item.get("exposure_penalty"),
+            "penetration_weighted": item.get("penetration_weighted"),
             "occupied_perimeter": item.get("occupied_perimeter"),
             "void_compactness": item.get("void_compactness"),
             "corridor_components": item.get("corridor_components"),
+            "edge_breaks": item.get("edge_breaks"),
             "waste_percent": item.get("waste_percent"),
             "sort_key": item.get("sort_key"),
             "svg_path": str(svg_path),
