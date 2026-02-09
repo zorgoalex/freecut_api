@@ -83,6 +83,25 @@ async fn get_text(app: &Router, uri: &str) -> (StatusCode, String) {
     (status, text)
 }
 
+fn strip_svg_artifact(mut resp: Value) -> Value {
+    if let Some(artifacts) = resp.get_mut("artifacts").and_then(Value::as_object_mut) {
+        artifacts.remove("svg");
+    }
+    resp
+}
+
+fn write_svg_and_json(out_dir: &Path, base_name: &str, svg: &str, resp: &Value) {
+    let svg_path = out_dir.join(format!("{base_name}.svg"));
+    std::fs::write(&svg_path, svg).unwrap();
+    println!("[svg] {} bytes -> {}", svg.len(), svg_path.display());
+
+    let resp_no_svg = strip_svg_artifact(resp.clone());
+    let json_path = out_dir.join(format!("{base_name}.json"));
+    let json = serde_json::to_string_pretty(&resp_no_svg).unwrap();
+    std::fs::write(&json_path, &json).unwrap();
+    println!("[json] {} bytes -> {}", json.len(), json_path.display());
+}
+
 fn strip_time(mut value: Value) -> Value {
     if let Some(summary) = value.get_mut("summary") {
         if let Some(obj) = summary.as_object_mut() {
@@ -1057,10 +1076,8 @@ async fn optimize_save_svg_for_heuristics_multisheet_varied() {
             svg.starts_with("<svg") && svg.ends_with("</svg>"),
             "expected svg artifact, body: {resp}"
         );
-        let filename = format!("multisheet_varied_guillotine_{heuristic}.svg");
-        let path = out_dir.join(filename);
-        std::fs::write(&path, svg).unwrap();
-        println!("[svg] {} bytes -> {}", svg.len(), path.display());
+        let base_name = format!("multisheet_varied_guillotine_{heuristic}");
+        write_svg_and_json(out_dir, &base_name, svg, &resp);
     }
 }
 
@@ -1239,10 +1256,8 @@ async fn run_fitness_weight_sweep(app: &Router, out_dir: &Path, layout_mode: &st
                 svg.starts_with("<svg") && svg.ends_with("</svg>"),
                 "expected svg artifact, body: {resp}"
             );
-            let filename = format!("multisheet_varied_{label}_seed{seed}.svg");
-            let path = out_dir.join(filename);
-            std::fs::write(&path, svg).unwrap();
-            println!("[svg] {} bytes -> {}", svg.len(), path.display());
+            let base_name = format!("multisheet_varied_{label}_seed{seed}");
+            write_svg_and_json(out_dir, &base_name, svg, &resp);
         }
     }
 }
@@ -1389,10 +1404,8 @@ async fn run_placement_bias_sweep(app: &Router, out_dir: &Path, layout_mode: &st
                 svg.starts_with("<svg") && svg.ends_with("</svg>"),
                 "expected svg artifact, body: {resp}"
             );
-            let filename = format!("multisheet_varied_bias_{}_seed{seed}.svg", profile.label);
-            let path = out_dir.join(filename);
-            std::fs::write(&path, svg).unwrap();
-            println!("[svg] {} bytes -> {}", svg.len(), path.display());
+            let base_name = format!("multisheet_varied_bias_{}_seed{seed}", profile.label);
+            write_svg_and_json(out_dir, &base_name, svg, &resp);
         }
     }
 }
