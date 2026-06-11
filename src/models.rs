@@ -323,6 +323,10 @@ pub struct CandidateSelectionTelemetry {
     pub candidates_rejected_tie_perimeter: u32,
     /// Rejected by tie-break on minimum per-sheet utilisation (unbalanced layout).
     pub candidates_rejected_tie_min_util: u32,
+    /// Rejected by tie-break on max edge gap (corner waste / staircase pattern).
+    pub candidates_rejected_tie_max_edge_gap: u32,
+    /// Rejected by tie-break on per-sheet utilisation spread (lumpy layout).
+    pub candidates_rejected_tie_util_spread: u32,
     /// Rejected because score was exactly equal to current best.
     pub candidates_rejected_equal: u32,
     /// Winner snapshot metrics.
@@ -333,6 +337,10 @@ pub struct CandidateSelectionTelemetry {
     pub winner_piece_perimeter_mm: f64,
     /// Winner's minimum per-sheet utilisation (%). Higher = more balanced layout.
     pub winner_min_sheet_util_pct: f64,
+    /// Winner's maximum edge gap across all sheets (mm). Lower = tighter edges.
+    pub winner_max_edge_gap_mm: f64,
+    /// Winner's per-sheet utilisation standard deviation (%). Lower = more even.
+    pub winner_sheet_util_spread_pct: f64,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

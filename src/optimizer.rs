@@ -128,6 +128,14 @@ struct Candidate {
     /// Minimum per-sheet utilisation in basis-points (0..10000 = 0..100%).
     /// Higher is better — penalises layouts where one sheet is much looser than the rest.
     min_sheet_util_bps: u64,
+    /// Maximum edge gap across all sheets, in vendor units. Lower is better —
+    /// penalises layouts where pieces hug one corner and leave a big strip
+    /// along an opposite edge (the "staircase" / "corner waste" pattern).
+    max_edge_gap_units: u64,
+    /// Sum of squared per-sheet utilisation deviations from the mean, in bps^2.
+    /// Proxy for stddev; lower means sheets are more evenly packed.
+    /// We store the un-scaled sum-squared-diff to keep tie-breaks integer-clean.
+    sheet_util_sum_sq_diff_bps2: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -161,6 +169,8 @@ struct CandidateSelectionCounters {
     candidates_rejected_tie_bbox_area: u32,
     candidates_rejected_tie_perimeter: u32,
     candidates_rejected_tie_min_util: u32,
+    candidates_rejected_tie_max_edge_gap: u32,
+    candidates_rejected_tie_util_spread: u32,
     candidates_rejected_equal: u32,
 }
 
@@ -171,6 +181,8 @@ enum CandidateCompare {
     WorseByTieBboxArea,
     WorseByTiePerimeter,
     WorseByTieMinUtil,
+    WorseByTieMaxEdgeGap,
+    WorseByTieUtilSpread,
     Equal,
 }
 
@@ -555,6 +567,16 @@ fn pick_best_candidate(
                         counters.candidates_rejected_tie_min_util.saturating_add(1);
                     Some(current)
                 }
+                CandidateCompare::WorseByTieMaxEdgeGap => {
+                    counters.candidates_rejected_tie_max_edge_gap =
+                        counters.candidates_rejected_tie_max_edge_gap.saturating_add(1);
+                    Some(current)
+                }
+                CandidateCompare::WorseByTieUtilSpread => {
+                    counters.candidates_rejected_tie_util_spread =
+                        counters.candidates_rejected_tie_util_spread.saturating_add(1);
+                    Some(current)
+                }
                 CandidateCompare::Equal => {
                     counters.candidates_rejected_equal =
                         counters.candidates_rejected_equal.saturating_add(1);
@@ -679,6 +701,8 @@ async fn run_restarts_with_budget(
                                 | CandidateCompare::WorseByTieBboxArea
                                 | CandidateCompare::WorseByTiePerimeter
                                 | CandidateCompare::WorseByTieMinUtil
+                                | CandidateCompare::WorseByTieMaxEdgeGap
+                                | CandidateCompare::WorseByTieUtilSpread
                                 | CandidateCompare::Equal => {
                                     no_improve_streak = no_improve_streak.saturating_add(1);
                                     Some(current)
@@ -2032,6 +2056,10 @@ fn build_candidate(solution: cut_optimizer_2d::Solution) -> Candidate {
     let mut total_piece_perimeter: u128 = 0;
     // Track per-sheet utilisation so we can penalise unbalanced layouts.
     let mut min_sheet_util_bps: u64 = u64::MAX;
+    // Track max edge gap (vendor units) across all sheets — visual "staircase" / corner waste.
+    let mut max_edge_gap_units: u64 = 0;
+    // Collect per-sheet utilisation in bps to compute stddev-like spread metric.
+    let mut sheet_utils_bps: Vec<u64> = Vec::with_capacity(solution.stock_pieces.len());
 
     for stock in &solution.stock_pieces {
         let stock_area = area(stock.width, stock.length);
@@ -2061,6 +2089,17 @@ fn build_candidate(solution: cut_optimizer_2d::Solution) -> Candidate {
             if stock_area > 0 {
                 let util_bps = (used_area.saturating_mul(10_000) / stock_area) as u64;
                 min_sheet_util_bps = min_sheet_util_bps.min(util_bps);
+                sheet_utils_bps.push(util_bps);
+            }
+            // Max edge gap = max distance from piece bbox to any of the 4 sheet edges.
+            // Lower means pieces fill the sheet more evenly in all directions.
+            let gap_left = min_x as u64;
+            let gap_right = (stock.width as u64).saturating_sub(max_x as u64);
+            let gap_top = min_y as u64;
+            let gap_bottom = (stock.length as u64).saturating_sub(max_y as u64);
+            let sheet_edge_gap = gap_left.max(gap_right).max(gap_top).max(gap_bottom);
+            if sheet_edge_gap > max_edge_gap_units {
+                max_edge_gap_units = sheet_edge_gap;
             }
         }
         total_waste_area = total_waste_area.saturating_add(stock_area.saturating_sub(used_area));
@@ -2070,6 +2109,20 @@ fn build_candidate(solution: cut_optimizer_2d::Solution) -> Candidate {
         min_sheet_util_bps = 0;
     }
 
+    // Spread metric: sum of squared deviations of per-sheet util from the mean.
+    // Integer-clean (no sqrt) and monotonically related to stddev, so it's a
+    // valid tie-breaker: higher = more lumpy layout.
+    let n = sheet_utils_bps.len() as u64;
+    let sum: u64 = sheet_utils_bps.iter().copied().sum();
+    let mean = if n > 0 { sum / n } else { 0 };
+    let sum_sq_diff: u64 = sheet_utils_bps
+        .iter()
+        .map(|&x| {
+            let diff = if x > mean { x - mean } else { mean - x };
+            diff.saturating_mul(diff)
+        })
+        .sum();
+
     Candidate {
         used_stock_count: solution.stock_pieces.len() as u32,
         total_waste_area_units: total_waste_area,
@@ -2077,6 +2130,8 @@ fn build_candidate(solution: cut_optimizer_2d::Solution) -> Candidate {
         total_bbox_void_area_units: total_bbox_void_area,
         total_piece_perimeter_units: total_piece_perimeter,
         min_sheet_util_bps,
+        max_edge_gap_units,
+        sheet_util_sum_sq_diff_bps2: sum_sq_diff,
         solution,
     }
 }
@@ -2122,7 +2177,25 @@ fn compare_candidates(
         }
         return CandidateCompare::WorseByTieMinUtil;
     }
-    // 2. Prefer denser occupied bounding region to reduce internal voids.
+    // 2. Prefer smaller max edge gap — penalises "staircase" / corner-waste
+    //    patterns where pieces hug one corner and leave a big strip along an
+    //    opposite edge.
+    if candidate.max_edge_gap_units != best.max_edge_gap_units {
+        if candidate.max_edge_gap_units < best.max_edge_gap_units {
+            return CandidateCompare::Better;
+        }
+        return CandidateCompare::WorseByTieMaxEdgeGap;
+    }
+    // 3. Prefer smaller per-sheet utilisation spread — catches layouts where
+    //    the worst sheet is OK but the others are uneven (e.g. 90/95/95/95 vs
+    //    90/91/92/93 — both have min=90, but the second is more even).
+    if candidate.sheet_util_sum_sq_diff_bps2 != best.sheet_util_sum_sq_diff_bps2 {
+        if candidate.sheet_util_sum_sq_diff_bps2 < best.sheet_util_sum_sq_diff_bps2 {
+            return CandidateCompare::Better;
+        }
+        return CandidateCompare::WorseByTieUtilSpread;
+    }
+    // 4. Prefer denser occupied bounding region to reduce internal voids.
     if candidate.total_bbox_void_area_units != best.total_bbox_void_area_units {
         if candidate.total_bbox_void_area_units < best.total_bbox_void_area_units {
             return CandidateCompare::Better;
@@ -2159,6 +2232,8 @@ fn build_candidate_selection_telemetry(
         candidates_rejected_tie_bbox_area: counters.candidates_rejected_tie_bbox_area,
         candidates_rejected_tie_perimeter: counters.candidates_rejected_tie_perimeter,
         candidates_rejected_tie_min_util: counters.candidates_rejected_tie_min_util,
+        candidates_rejected_tie_max_edge_gap: counters.candidates_rejected_tie_max_edge_gap,
+        candidates_rejected_tie_util_spread: counters.candidates_rejected_tie_util_spread,
         candidates_rejected_equal: counters.candidates_rejected_equal,
         winner_used_stock_count: winner.used_stock_count,
         winner_waste_area_mm2: from_area_units(winner.total_waste_area_units),
@@ -2166,6 +2241,15 @@ fn build_candidate_selection_telemetry(
         winner_bbox_area_mm2: from_area_units(winner.total_bbox_area_units),
         winner_piece_perimeter_mm: from_linear_units_u128(winner.total_piece_perimeter_units),
         winner_min_sheet_util_pct: winner.min_sheet_util_bps as f64 / 100.0,
+        winner_max_edge_gap_mm: winner.max_edge_gap_units as f64 / SCALE,
+        // Display stddev in % units; the stored metric is n*variance (bps^2),
+        // so stddev_pct = sqrt(metric / n) / 100.  We compute a safe integer
+        // approximation for the telemetry only — the tie-break itself uses the
+        // raw sum-squared-diff which is monotonically related to stddev.
+        winner_sheet_util_spread_pct: {
+            let n = winner.used_stock_count.max(1) as f64;
+            (winner.sheet_util_sum_sq_diff_bps2 as f64 / n).sqrt() / 100.0
+        },
     }
 }
 
