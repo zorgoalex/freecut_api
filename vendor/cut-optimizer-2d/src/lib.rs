@@ -842,6 +842,24 @@ pub struct Solution {
     price: usize,
 }
 
+impl Solution {
+    /// Build a `Solution` from explicit components.  Mostly used by callers
+    /// that want to inject a hand-crafted (or heuristic) solution into the
+    /// candidate pool, e.g. to seed the GA population with a known-good
+    /// First-Fit-Decreasing layout.
+    pub fn from_components(
+        fitness: f64,
+        stock_pieces: Vec<ResultStockPiece>,
+        price: usize,
+    ) -> Self {
+        Self {
+            fitness,
+            stock_pieces,
+            price,
+        }
+    }
+}
+
 /// Result set with multiple ranked solution candidates.
 #[cfg_attr(feature = "serialize", derive(Deserialize, Serialize))]
 #[cfg_attr(feature = "serialize", serde(rename_all = "camelCase"))]
@@ -1048,6 +1066,81 @@ impl Optimizer {
         F: Fn(f64),
     {
         self.optimize_top_k::<MaxRectsBin, F>(top_k, progress_callback)
+    }
+
+    /// Build a First-Fit-Decreasing heuristic solution for guillotine
+    /// mode (no GA evolution).  Sorts cut pieces by area (largest first)
+    /// and places each in the first available free rectangle using the
+    /// first available heuristic.  Returns a Vec<Solution> with the
+    /// resulting layout (or empty if pieces don't fit).
+    pub fn build_guillotine_heuristic(&self) -> Vec<Solution> {
+        let heuristics = GuillotineBin::possible_heuristics();
+        let Some(heuristic) = heuristics.into_iter().next() else {
+            return vec![];
+        };
+        // Sort cut pieces by area, largest first.
+        let mut cuts: Vec<&CutPieceWithId> = self.cut_pieces.iter().collect();
+        cuts.sort_by_key(|c| {
+            std::cmp::Reverse((c.width as u64).saturating_mul(c.length as u64))
+        });
+        let mut rng = rand::rngs::StdRng::seed_from_u64(self.random_seed);
+        let Ok(mut unit) = OptimizerUnit::<GuillotineBin>::with_heuristic(
+            &self.stock_pieces,
+            &cuts,
+            self.cut_width,
+            &heuristic,
+            &mut rng,
+        ) else {
+            return vec![];
+        };
+        for cut in &cuts {
+            unit.first_fit_with_heuristic(cut, &heuristic, &mut rng);
+        }
+        if unit.bins.is_empty() {
+            return vec![];
+        }
+        let mut result_sheets: Vec<ResultStockPiece> =
+            unit.bins.drain(..).map(Into::into).collect();
+        result_sheets.sort_by_key(|p| std::cmp::Reverse((p.width, p.length)));
+        let fitness = unit.fitness();
+        let price = result_sheets.iter().map(|s| s.price).sum();
+        vec![Solution::from_components(fitness, result_sheets, price)]
+    }
+
+    /// Build a First-Fit-Decreasing heuristic solution for nested mode
+    /// (no GA evolution).  Same shape as `build_guillotine_heuristic`
+    /// but uses `MaxRectsBin` heuristics.
+    pub fn build_nested_heuristic(&self) -> Vec<Solution> {
+        let heuristics = MaxRectsBin::possible_heuristics();
+        let Some(heuristic) = heuristics.into_iter().next() else {
+            return vec![];
+        };
+        let mut cuts: Vec<&CutPieceWithId> = self.cut_pieces.iter().collect();
+        cuts.sort_by_key(|c| {
+            std::cmp::Reverse((c.width as u64).saturating_mul(c.length as u64))
+        });
+        let mut rng = rand::rngs::StdRng::seed_from_u64(self.random_seed);
+        let Ok(mut unit) = OptimizerUnit::<MaxRectsBin>::with_heuristic(
+            &self.stock_pieces,
+            &cuts,
+            self.cut_width,
+            &heuristic,
+            &mut rng,
+        ) else {
+            return vec![];
+        };
+        for cut in &cuts {
+            unit.first_fit_with_heuristic(cut, &heuristic, &mut rng);
+        }
+        if unit.bins.is_empty() {
+            return vec![];
+        }
+        let mut result_sheets: Vec<ResultStockPiece> =
+            unit.bins.drain(..).map(Into::into).collect();
+        result_sheets.sort_by_key(|p| std::cmp::Reverse((p.width, p.length)));
+        let fitness = unit.fitness();
+        let price = result_sheets.iter().map(|s| s.price).sum();
+        vec![Solution::from_components(fitness, result_sheets, price)]
     }
 
     fn optimize<B, F>(&self, progress_callback: F) -> Result<Solution>

@@ -860,12 +860,29 @@ async fn run_restarts_with_budget(
                 .set_ga_survival_factor(ga_runtime.survival_factor)
                 .add_stock_pieces(diversified_stock.into_iter())
                 .add_cut_pieces(diversified_cut.into_iter());
-            match mode {
+            let ga_set = match mode {
                 LayoutMode::Nested => optimizer.optimize_nested_top_k(ga_runtime.top_k, |_| {}),
                 LayoutMode::Guillotine => {
                     optimizer.optimize_guillotine_top_k(ga_runtime.top_k, |_| {})
                 }
+            };
+            // V4 heuristic seeding: also run a pure First-Fit-Decreasing
+            // heuristic and prepend it to the candidate pool.  The
+            // service-level compare_candidates tie-breakers will then pick
+            // the best between the GA-evolved solutions and the
+            // hand-crafted heuristic.
+            let mut combined = cut_optimizer_2d::SolutionSet { solutions: vec![] };
+            if let Ok(set) = ga_set {
+                let mut heuristic_solutions = match mode {
+                    LayoutMode::Nested => optimizer.build_nested_heuristic(),
+                    LayoutMode::Guillotine => optimizer.build_guillotine_heuristic(),
+                };
+                combined.solutions.append(&mut heuristic_solutions);
+                combined.solutions.extend(set.solutions);
+            } else {
+                combined = cut_optimizer_2d::SolutionSet { solutions: vec![] };
             }
+            Ok(combined)
         });
 
         let run = tokio::time::timeout(Duration::from_millis(this_slice_ms), &mut handle).await;
