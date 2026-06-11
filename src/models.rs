@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema, Clone)]
 pub struct OptimizeRequest {
     pub units: Units,
     pub params: Params,
@@ -9,14 +9,14 @@ pub struct OptimizeRequest {
     pub items: Vec<Item>,
 }
 
-#[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum Units {
     #[serde(rename = "mm")]
     Mm,
 }
 
-#[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
 pub struct Params {
     pub kerf_mm: f64,
     pub spacing_mm: f64,
@@ -40,6 +40,26 @@ pub struct Params {
     pub beam: Option<BeamParams>,
     /// Optional ALNS/LNS settings (used by `/v1/optimize/alns`).
     pub alns: Option<AlnsParams>,
+    /// Fault-aware retry strategy. Optional, defaults to `smart` for the
+    /// main `/v1/optimize` endpoint.  When set to `disabled`, the service
+    /// returns the result of a single GA run with no recovery attempts.
+    pub retry_strategy: Option<RetryStrategy>,
+    /// Maximum number of attempts (including the initial one) when
+    /// `retry_strategy = smart`.  Optional, defaults to 3.  Values below 1
+    /// are clamped to 1 (no retry).
+    pub max_retry_attempts: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RetryStrategy {
+    /// Single attempt, no retry.  Equivalent to the pre-V3 default.
+    Disabled,
+    /// Detect the failure mode of the first attempt and pick a recovery
+    /// strategy: another seed for stochastic failures, a layout-mode swap
+    /// for sheets-overflow or very-lumpy cases.  Picks the best of up to
+    /// `max_retry_attempts` runs.
+    Smart,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
@@ -84,7 +104,7 @@ pub struct AlnsParams {
     pub reaction_factor: Option<f64>,
 }
 
-#[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum Objective {
     MinWaste,
@@ -134,7 +154,7 @@ pub struct Trim {
     pub bottom: f64,
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema, Clone)]
 pub struct StockItem {
     pub id: String,
     pub width_mm: f64,
@@ -143,7 +163,7 @@ pub struct StockItem {
     pub qty: Option<u32>,
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema, Clone)]
 pub struct Item {
     pub id: String,
     pub width_mm: f64,
@@ -223,6 +243,25 @@ pub struct Summary {
     pub alns: Option<AlnsTelemetry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub candidate_selection: Option<CandidateSelectionTelemetry>,
+    /// Fault-aware retry telemetry.  Populated only when
+    /// `params.retry_strategy = smart` and at least one recovery attempt
+    /// was made.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry: Option<RetryTelemetry>,
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone)]
+pub struct RetryTelemetry {
+    /// Total number of optimization attempts actually executed (>= 1).
+    pub attempts: u32,
+    /// Number of recovery attempts after the initial one (i.e. retries).
+    pub retries: u32,
+    /// Strategies used for each attempt beyond the first, in order.
+    /// Empty when no retry was needed.
+    pub strategies: Vec<String>,
+    /// Description of the failure mode detected on the first attempt, if
+    /// any.  Drives which strategy is picked for the first retry.
+    pub initial_failure: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone)]

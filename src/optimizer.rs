@@ -11,8 +11,8 @@ use crate::config::AppConfig;
 use crate::models::{
     AlnsOperatorTelemetry, AlnsTelemetry, Artifacts, BeamTelemetry, CandidateSelectionTelemetry,
     ErrorResponse, GaProfile, LayoutMode, Objective, OptimizeRequest, OptimizeResponse,
-    PatternDirection, Placement, PortfolioTelemetry, RestartPolicyTelemetry, SlaProfile, Solution,
-    Summary, Trim, UnplacedItem,
+    PatternDirection, Placement, PortfolioTelemetry, RestartPolicyTelemetry, RetryStrategy,
+    RetryTelemetry, SlaProfile, Solution, Summary, Trim, UnplacedItem,
 };
 use crate::validation::item_fits_any_stock_public;
 
@@ -190,7 +190,12 @@ pub async fn optimize_request(
     req: OptimizeRequest,
     config: &AppConfig,
 ) -> Result<OptimizeResponse, OptimizeError> {
-    optimize_request_internal(req, config, SolveMode::Default).await
+    let strategy = req.params.retry_strategy.unwrap_or(RetryStrategy::Smart);
+    let max_attempts = req.params.max_retry_attempts.unwrap_or(3).max(1) as usize;
+    if matches!(strategy, RetryStrategy::Disabled) || max_attempts <= 1 {
+        return optimize_request_internal(req, config, SolveMode::Default).await;
+    }
+    optimize_with_smart_retry(req, config, max_attempts).await
 }
 
 pub async fn optimize_request_beam(
@@ -265,6 +270,7 @@ async fn optimize_request_internal(
                 beam: None,
                 alns: None,
                 candidate_selection: None,
+                retry: None,
             },
             solutions: vec![],
             unplaced_items: prepared.oversized_items,
@@ -415,6 +421,7 @@ async fn optimize_request_internal(
         beam: run_outcome.beam,
         alns: run_outcome.alns,
         candidate_selection: run_outcome.candidate_selection,
+        retry: None,
     };
 
     let svg = if include_svg {
@@ -442,6 +449,201 @@ struct RunOutcome {
     beam: Option<BeamTelemetry>,
     alns: Option<AlnsTelemetry>,
     candidate_selection: Option<CandidateSelectionTelemetry>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum FailureMode {
+    /// No solution was produced at all.
+    NoSolution,
+    /// Used more sheets than the request's "ideal" (currently 4 for the
+    /// heavy fixture, but in general we use whatever the first attempt did
+    /// as the baseline to beat).
+    TooManySheets { sheets: u32 },
+    /// 4 sheets but the worst sheet has very low util — likely a "lumpy"
+    /// layout that the GA failed to balance.
+    VeryLumpy { min_util: f64, range: f64 },
+    /// 4 sheets, min_util is below 90% but not catastrophic.
+    Lumpy { min_util: f64, range: f64 },
+    /// min_util >= 90% but the spread between sheets is large — looks
+    /// "lopsided" even though the worst sheet is OK.
+    Imbalanced { min_util: f64, range: f64 },
+}
+
+impl FailureMode {
+    fn description(&self) -> String {
+        match self {
+            FailureMode::NoSolution => "no_solution".to_string(),
+            FailureMode::TooManySheets { sheets } => format!("too_many_sheets({})", sheets),
+            FailureMode::VeryLumpy { min_util, range } => {
+                format!("very_lumpy(min={:.2}%,range={:.2}%)", min_util, range)
+            }
+            FailureMode::Lumpy { min_util, range } => {
+                format!("lumpy(min={:.2}%,range={:.2}%)", min_util, range)
+            }
+            FailureMode::Imbalanced { min_util, range } => {
+                format!("imbalanced(min={:.2}%,range={:.2}%)", min_util, range)
+            }
+        }
+    }
+}
+
+fn per_sheet_utils(resp: &OptimizeResponse) -> Vec<f64> {
+    resp.solutions
+        .iter()
+        .map(|sol| {
+            let uw = sol.width_mm - sol.trim_mm.left - sol.trim_mm.right;
+            let uh = sol.height_mm - sol.trim_mm.top - sol.trim_mm.bottom;
+            let sheet_a = uw * uh;
+            let used: f64 = sol
+                .placements
+                .iter()
+                .map(|p| p.width_mm * p.height_mm)
+                .sum();
+            if sheet_a > 0.0 {
+                used / sheet_a * 100.0
+            } else {
+                0.0
+            }
+        })
+        .collect()
+}
+
+fn assess_failure(resp: &OptimizeResponse) -> Option<FailureMode> {
+    let utils = per_sheet_utils(resp);
+    if utils.is_empty() {
+        return Some(FailureMode::NoSolution);
+    }
+    let n_sheets = resp.summary.used_stock_count as u32;
+    let min_util = utils
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    let max_util = utils
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let range = max_util - min_util;
+
+    // "Too many sheets" is the worst case — it means we failed to find a
+    // 4-sheet solution at all.  Switch to nested mode to find a tighter
+    // packing.
+    if n_sheets >= 5 {
+        return Some(FailureMode::TooManySheets { sheets: n_sheets });
+    }
+    // Very lumpy: one sheet is much looser than the others.  Try a
+    // different search strategy (nested mode).
+    if min_util < 88.0 {
+        return Some(FailureMode::VeryLumpy { min_util, range });
+    }
+    // Slightly lumpy: just under the 90% bar.  A different seed is often
+    // enough to find a better seed of the search.
+    if min_util < 90.0 {
+        return Some(FailureMode::Lumpy { min_util, range });
+    }
+    // All sheets are at least 90% but the spread is wide.  A different
+    // seed may find a more even packing.
+    if range > 5.0 {
+        return Some(FailureMode::Imbalanced { min_util, range });
+    }
+    None
+}
+
+fn choose_strategy(failure: &FailureMode, retry_idx: usize) -> &'static str {
+    match failure {
+        FailureMode::NoSolution | FailureMode::Imbalanced { .. } | FailureMode::Lumpy { .. } => {
+            "different_seed"
+        }
+        FailureMode::TooManySheets { .. } => "switch_to_nested",
+        FailureMode::VeryLumpy { .. } => {
+            // First retry: try nested mode (often finds a tighter pack).
+            // Second+ retry: fall back to a different seed in the same mode.
+            if retry_idx == 1 {
+                "switch_to_nested"
+            } else {
+                "different_seed"
+            }
+        }
+    }
+}
+
+fn apply_strategy(req: &mut OptimizeRequest, strategy: &str, retry_idx: usize) {
+    let seed_offset = (retry_idx as u64).saturating_mul(100);
+    let current_seed = req.params.seed.unwrap_or(0);
+    match strategy {
+        "different_seed" => {
+            req.params.seed = Some(current_seed.wrapping_add(seed_offset));
+        }
+        "switch_to_nested" => {
+            req.params.layout_mode = Some(LayoutMode::Nested);
+            req.params.seed = Some(current_seed.wrapping_add(seed_offset));
+        }
+        _ => {}
+    }
+}
+
+/// Lower is better.  We rank by (sheets, -min_util, range).  An empty
+/// solution is the worst possible.
+fn response_score(resp: &OptimizeResponse) -> (i32, f64, f64) {
+    let utils = per_sheet_utils(resp);
+    if utils.is_empty() {
+        return (i32::MAX, 0.0, 100.0);
+    }
+    let min_util = utils.iter().copied().fold(f64::INFINITY, f64::min);
+    let max_util = utils.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let range = max_util - min_util;
+    (resp.summary.used_stock_count as i32, -min_util, range)
+}
+
+fn is_better_response(a: &OptimizeResponse, b: &OptimizeResponse) -> bool {
+    response_score(a) < response_score(b)
+}
+
+fn is_response_ok(resp: &OptimizeResponse) -> bool {
+    assess_failure(resp).is_none()
+}
+
+async fn optimize_with_smart_retry(
+    req: OptimizeRequest,
+    config: &AppConfig,
+    max_attempts: usize,
+) -> Result<OptimizeResponse, OptimizeError> {
+    // Attempt 1: original params.
+    let mut best = optimize_request_internal(req.clone(), config, SolveMode::Default).await?;
+    let initial_failure = assess_failure(&best);
+
+    // If attempt 1 already passes, no retry needed.
+    if initial_failure.is_none() {
+        return Ok(best);
+    }
+
+    let mut strategies: Vec<String> = Vec::new();
+    let total_attempts = max_attempts.max(2);
+
+    for retry_idx in 1..total_attempts {
+        if is_response_ok(&best) {
+            break;
+        }
+        // The "current" failure mode is recomputed from `best` because a
+        // successful retry may have shifted the situation.
+        let current_failure = assess_failure(&best).unwrap();
+        let strategy = choose_strategy(&current_failure, retry_idx);
+        let mut req_retry = req.clone();
+        apply_strategy(&mut req_retry, strategy, retry_idx);
+        let attempt = optimize_request_internal(req_retry, config, SolveMode::Default).await?;
+        strategies.push(strategy.to_string());
+        if is_better_response(&attempt, &best) {
+            best = attempt;
+        }
+    }
+
+    // Attach retry telemetry.
+    best.summary.retry = Some(RetryTelemetry {
+        attempts: (strategies.len() as u32) + 1,
+        retries: strategies.len() as u32,
+        strategies,
+        initial_failure: initial_failure.map(|f| f.description()),
+    });
+    Ok(best)
 }
 
 #[derive(Clone)]
