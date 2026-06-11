@@ -125,6 +125,9 @@ struct Candidate {
     total_bbox_area_units: u128,
     total_bbox_void_area_units: u128,
     total_piece_perimeter_units: u128,
+    /// Minimum per-sheet utilisation in basis-points (0..10000 = 0..100%).
+    /// Higher is better — penalises layouts where one sheet is much looser than the rest.
+    min_sheet_util_bps: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -157,6 +160,7 @@ struct CandidateSelectionCounters {
     candidates_rejected_tie_bbox_void: u32,
     candidates_rejected_tie_bbox_area: u32,
     candidates_rejected_tie_perimeter: u32,
+    candidates_rejected_tie_min_util: u32,
     candidates_rejected_equal: u32,
 }
 
@@ -166,6 +170,7 @@ enum CandidateCompare {
     WorseByTieBboxVoid,
     WorseByTieBboxArea,
     WorseByTiePerimeter,
+    WorseByTieMinUtil,
     Equal,
 }
 
@@ -226,7 +231,7 @@ async fn optimize_request_internal(
     if prepared.cut_pieces.is_empty() {
         let time_ms = start.elapsed().as_millis() as u64;
         let svg = if include_svg {
-            Some(build_svg(&[], &prepared.oversized_items, &prepared.trim))
+            Some(build_svg(&[], &prepared.oversized_items, &prepared.trim, 0.0))
         } else {
             None
         };
@@ -401,7 +406,8 @@ async fn optimize_request_internal(
     };
 
     let svg = if include_svg {
-        Some(build_svg(&solutions, &unplaced_items, &prepared.trim))
+        let gap_mm = req.params.kerf_mm + req.params.spacing_mm;
+        Some(build_svg(&solutions, &unplaced_items, &prepared.trim, gap_mm))
     } else {
         None
     };
@@ -544,6 +550,11 @@ fn pick_best_candidate(
                         counters.candidates_rejected_tie_perimeter.saturating_add(1);
                     Some(current)
                 }
+                CandidateCompare::WorseByTieMinUtil => {
+                    counters.candidates_rejected_tie_min_util =
+                        counters.candidates_rejected_tie_min_util.saturating_add(1);
+                    Some(current)
+                }
                 CandidateCompare::Equal => {
                     counters.candidates_rejected_equal =
                         counters.candidates_rejected_equal.saturating_add(1);
@@ -667,6 +678,7 @@ async fn run_restarts_with_budget(
                                 | CandidateCompare::WorseByTieBboxVoid
                                 | CandidateCompare::WorseByTieBboxArea
                                 | CandidateCompare::WorseByTiePerimeter
+                                | CandidateCompare::WorseByTieMinUtil
                                 | CandidateCompare::Equal => {
                                     no_improve_streak = no_improve_streak.saturating_add(1);
                                     Some(current)
@@ -2018,6 +2030,8 @@ fn build_candidate(solution: cut_optimizer_2d::Solution) -> Candidate {
     let mut total_bbox_area: u128 = 0;
     let mut total_bbox_void_area: u128 = 0;
     let mut total_piece_perimeter: u128 = 0;
+    // Track per-sheet utilisation so we can penalise unbalanced layouts.
+    let mut min_sheet_util_bps: u64 = u64::MAX;
 
     for stock in &solution.stock_pieces {
         let stock_area = area(stock.width, stock.length);
@@ -2043,8 +2057,17 @@ fn build_candidate(solution: cut_optimizer_2d::Solution) -> Candidate {
             total_bbox_area = total_bbox_area.saturating_add(bbox_area);
             total_bbox_void_area =
                 total_bbox_void_area.saturating_add(bbox_area.saturating_sub(used_area));
+            // Per-sheet utilisation in basis-points (0..10000).
+            if stock_area > 0 {
+                let util_bps = (used_area.saturating_mul(10_000) / stock_area) as u64;
+                min_sheet_util_bps = min_sheet_util_bps.min(util_bps);
+            }
         }
         total_waste_area = total_waste_area.saturating_add(stock_area.saturating_sub(used_area));
+    }
+    // If no sheets had pieces, treat utilisation as 0.
+    if min_sheet_util_bps == u64::MAX {
+        min_sheet_util_bps = 0;
     }
 
     Candidate {
@@ -2053,6 +2076,7 @@ fn build_candidate(solution: cut_optimizer_2d::Solution) -> Candidate {
         total_bbox_area_units: total_bbox_area,
         total_bbox_void_area_units: total_bbox_void_area,
         total_piece_perimeter_units: total_piece_perimeter,
+        min_sheet_util_bps,
         solution,
     }
 }
@@ -2088,8 +2112,17 @@ fn compare_candidates(
         return CandidateCompare::WorseByPrimaryObjective;
     }
 
-    // Tie-break for same primary objective: prefer denser occupied bounding region
-    // to reduce recurring fragmented void patterns and ragged occupancy contours.
+    // Tie-break for same primary objective:
+    // 1. Prefer balanced per-sheet utilisation (higher min = more even packing).
+    //    This avoids layouts where one sheet is very loose (86-88%) while others are
+    //    near-perfect (94-97%).  All sheets should be packed densely.
+    if candidate.min_sheet_util_bps != best.min_sheet_util_bps {
+        if candidate.min_sheet_util_bps > best.min_sheet_util_bps {
+            return CandidateCompare::Better;
+        }
+        return CandidateCompare::WorseByTieMinUtil;
+    }
+    // 2. Prefer denser occupied bounding region to reduce internal voids.
     if candidate.total_bbox_void_area_units != best.total_bbox_void_area_units {
         if candidate.total_bbox_void_area_units < best.total_bbox_void_area_units {
             return CandidateCompare::Better;
@@ -2125,12 +2158,14 @@ fn build_candidate_selection_telemetry(
         candidates_rejected_tie_bbox_void: counters.candidates_rejected_tie_bbox_void,
         candidates_rejected_tie_bbox_area: counters.candidates_rejected_tie_bbox_area,
         candidates_rejected_tie_perimeter: counters.candidates_rejected_tie_perimeter,
+        candidates_rejected_tie_min_util: counters.candidates_rejected_tie_min_util,
         candidates_rejected_equal: counters.candidates_rejected_equal,
         winner_used_stock_count: winner.used_stock_count,
         winner_waste_area_mm2: from_area_units(winner.total_waste_area_units),
         winner_bbox_void_area_mm2: from_area_units(winner.total_bbox_void_area_units),
         winner_bbox_area_mm2: from_area_units(winner.total_bbox_area_units),
         winner_piece_perimeter_mm: from_linear_units_u128(winner.total_piece_perimeter_units),
+        winner_min_sheet_util_pct: winner.min_sheet_util_bps as f64 / 100.0,
     }
 }
 
@@ -2416,7 +2451,7 @@ fn build_placement(
     })
 }
 
-fn build_svg(solutions: &[Solution], unplaced_items: &[UnplacedItem], trim: &Trim) -> String {
+fn build_svg(solutions: &[Solution], unplaced_items: &[UnplacedItem], trim: &Trim, kerf_gap_mm: f64) -> String {
     const SHEET_GAP: f64 = 50.0; // Gap between sheets in SVG
     const UNPLACED_SECTION_GAP: f64 = 80.0; // Gap before unplaced items section
     const UNPLACED_ITEM_GAP: f64 = 30.0; // Gap between unplaced items
@@ -2505,6 +2540,76 @@ fn build_svg(solutions: &[Solution], unplaced_items: &[UnplacedItem], trim: &Tri
             sheet_idx + 1,
             escape_xml(&solution.stock_id)
         ));
+
+        // Draw kerf-fill lines between adjacent pieces to collapse visual corridors
+        if kerf_gap_mm > 0.0 {
+            let tolerance = 1.5;
+            let n = solution.placements.len();
+            for i in 0..n {
+                let a = &solution.placements[i];
+                for j in (i + 1)..n {
+                    let b = &solution.placements[j];
+                    // Horizontal adjacency (left-right)
+                    let h_gap = b.x_mm - (a.x_mm + a.width_mm);
+                    if h_gap > kerf_gap_mm - tolerance && h_gap < kerf_gap_mm + tolerance {
+                        let y_top = a.y_mm.max(b.y_mm);
+                        let y_bot = (a.y_mm + a.height_mm).min(b.y_mm + b.height_mm);
+                        if y_bot > y_top {
+                            svg.push_str(&format!(
+                                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#7ab0d4\"/>",
+                                fmt_mm(a.x_mm + a.width_mm),
+                                fmt_mm(y_top + y_offset),
+                                fmt_mm(h_gap),
+                                fmt_mm(y_bot - y_top)
+                            ));
+                        }
+                    }
+                    let h_gap_rev = a.x_mm - (b.x_mm + b.width_mm);
+                    if h_gap_rev > kerf_gap_mm - tolerance && h_gap_rev < kerf_gap_mm + tolerance {
+                        let y_top = a.y_mm.max(b.y_mm);
+                        let y_bot = (a.y_mm + a.height_mm).min(b.y_mm + b.height_mm);
+                        if y_bot > y_top {
+                            svg.push_str(&format!(
+                                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#7ab0d4\"/>",
+                                fmt_mm(b.x_mm + b.width_mm),
+                                fmt_mm(y_top + y_offset),
+                                fmt_mm(h_gap_rev),
+                                fmt_mm(y_bot - y_top)
+                            ));
+                        }
+                    }
+                    // Vertical adjacency (top-bottom)
+                    let v_gap = b.y_mm - (a.y_mm + a.height_mm);
+                    if v_gap > kerf_gap_mm - tolerance && v_gap < kerf_gap_mm + tolerance {
+                        let x_left = a.x_mm.max(b.x_mm);
+                        let x_right = (a.x_mm + a.width_mm).min(b.x_mm + b.width_mm);
+                        if x_right > x_left {
+                            svg.push_str(&format!(
+                                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#7ab0d4\"/>",
+                                fmt_mm(x_left),
+                                fmt_mm(a.y_mm + a.height_mm + y_offset),
+                                fmt_mm(x_right - x_left),
+                                fmt_mm(v_gap)
+                            ));
+                        }
+                    }
+                    let v_gap_rev = a.y_mm - (b.y_mm + b.height_mm);
+                    if v_gap_rev > kerf_gap_mm - tolerance && v_gap_rev < kerf_gap_mm + tolerance {
+                        let x_left = a.x_mm.max(b.x_mm);
+                        let x_right = (a.x_mm + a.width_mm).min(b.x_mm + b.width_mm);
+                        if x_right > x_left {
+                            svg.push_str(&format!(
+                                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#7ab0d4\"/>",
+                                fmt_mm(x_left),
+                                fmt_mm(b.y_mm + b.height_mm + y_offset),
+                                fmt_mm(x_right - x_left),
+                                fmt_mm(v_gap_rev)
+                            ));
+                        }
+                    }
+                }
+            }
+        }
 
         for placement in &solution.placements {
             let px = placement.x_mm;

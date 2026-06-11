@@ -321,6 +321,8 @@ pub struct CandidateSelectionTelemetry {
     pub candidates_rejected_tie_bbox_area: u32,
     /// Rejected by tie-break on total perimeter.
     pub candidates_rejected_tie_perimeter: u32,
+    /// Rejected by tie-break on minimum per-sheet utilisation (unbalanced layout).
+    pub candidates_rejected_tie_min_util: u32,
     /// Rejected because score was exactly equal to current best.
     pub candidates_rejected_equal: u32,
     /// Winner snapshot metrics.
@@ -329,6 +331,8 @@ pub struct CandidateSelectionTelemetry {
     pub winner_bbox_void_area_mm2: f64,
     pub winner_bbox_area_mm2: f64,
     pub winner_piece_perimeter_mm: f64,
+    /// Winner's minimum per-sheet utilisation (%). Higher = more balanced layout.
+    pub winner_min_sheet_util_pct: f64,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

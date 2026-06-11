@@ -97,8 +97,9 @@ impl Bin for MaxRectsBin {
             acc + width * length
         });
 
+        // Fragmentation penalty (0.5 = best balance for hard_ok + sheet count)
         (used_area / (self.width as f64 * self.length as f64))
-            .powf(2.0 + self.free_rects.len() as f64 * 0.01)
+            .powf(2.0 + self.free_rects.len() as f64 * 0.2)
     }
 
     fn price(&self) -> usize {

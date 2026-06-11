@@ -131,7 +131,8 @@ impl Bin for GuillotineBin {
                 .iter()
                 .fold(0, |acc, fr| acc + fr.width as u64 * fr.length as u64) as f64;
 
-        (used_area / (used_area + free_area) as f64).powf(2.0 + self.free_rects.len() as f64 * 0.01)
+        // Fragmentation penalty (0.5 = best balance)
+        (used_area / (used_area + free_area) as f64).powf(2.0 + self.free_rects.len() as f64 * 0.2)
     }
 
     fn price(&self) -> usize {
