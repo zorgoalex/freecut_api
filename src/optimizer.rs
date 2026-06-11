@@ -743,6 +743,14 @@ async fn run_restarts_with_budget(
     }
 
     if let Some(best) = best {
+        // Post-compaction (V2): slide each piece as far left+up as it can go
+        // and re-centre each sheet's bounding box.  Rebuild the Candidate so
+        // the winner_* telemetry reflects the compacted layout.
+        let kerf_gap_mm = req.params.kerf_mm + req.params.spacing_mm;
+        let kerf_gap_units = ((kerf_gap_mm) * SCALE).round() as usize;
+        let mut solution = best.solution;
+        compact_solution(&mut solution, kerf_gap_units);
+        let best = build_candidate(solution);
         let candidate_selection = Some(build_candidate_selection_telemetry(
             &selection_counters,
             &best,
@@ -2047,6 +2055,164 @@ fn map_optimizer_error(err: cut_optimizer_2d::Error, prepared: &PreparedInput) -
             }
         }
     }
+}
+
+/// Slide each cut piece on every sheet as far left and as far up as it can
+/// go while keeping the kerf gap from every other piece, then translate each
+/// sheet's bounding box to balance the four edge gaps.
+///
+/// Mutates the solution in place.  Returns the total number of pieces that
+/// were moved (a proxy for "how much the layout improved").
+///
+/// Two passes:
+/// 1. **Per-piece compaction** — for each piece, compute the leftmost x and
+///    topmost y it can occupy without colliding with any neighbour (using the
+///    kerf+spacing gap).  Iterate until fixed point so a single move can
+///    unlock further moves for other pieces.
+/// 2. **Bbox centering** — once pieces are tight against each other, shift the
+///    whole sheet's bounding box so the largest of the four edge gaps is
+///    minimised.  If the bbox already fills the sheet, this is a no-op.
+///
+/// This does NOT change which pieces are placed, only their (x, y).  After
+/// compaction `build_candidate` should be re-run to refresh the metrics.
+fn compact_solution(solution: &mut cut_optimizer_2d::Solution, kerf_gap_units: usize) -> u32 {
+    let mut total_moved: u32 = 0;
+
+    for stock in solution.stock_pieces.iter_mut() {
+        if stock.cut_pieces.is_empty() {
+            continue;
+        }
+        let n = stock.cut_pieces.len();
+
+        // Pass 1: per-piece compaction (slide each piece as far left+up as
+        // possible while keeping kerf_gap from every other piece).  Loop
+        // until a full pass produces no moves — order matters: sliding one
+        // piece left can unlock further moves for pieces above/below it.
+        //
+        // For each piece we compute its leftmost valid x as MAX(0, all
+        // "right_edge + kerf" of pieces that are currently to the left of
+        // it in y-overlap).  We use MAX — not MIN — because each such value
+        // is a LOWER bound on where the piece can sit, and the tightest
+        // (largest) lower bound wins.  Using MIN here would let a piece
+        // slide past a neighbour that was itself just slid into place, which
+        // produces overlap.
+        loop {
+            let mut moved_this_pass = false;
+            for i in 0..n {
+                let cur_x = stock.cut_pieces[i].x;
+                let cur_y = stock.cut_pieces[i].y;
+                let cur_w = stock.cut_pieces[i].width;
+                let cur_h = stock.cut_pieces[i].length;
+
+                let mut min_x_lower_bound: usize = 0;
+                let mut min_y_lower_bound: usize = 0;
+
+                for j in 0..n {
+                    if i == j {
+                        continue;
+                    }
+                    // Read other's CURRENT position (may have been moved
+                    // earlier in this same pass).
+                    let other_x = stock.cut_pieces[j].x;
+                    let other_y = stock.cut_pieces[j].y;
+                    let other_w = stock.cut_pieces[j].width;
+                    let other_h = stock.cut_pieces[j].length;
+
+                    // y-axis overlap: if our y-range intersects the other's
+                    // y-range, sliding in x is constrained by the other.
+                    let y_overlap = cur_y < other_y.saturating_add(other_h)
+                        && cur_y.saturating_add(cur_h) > other_y;
+                    if y_overlap {
+                        let right_edge = other_x
+                            .saturating_add(other_w)
+                            .saturating_add(kerf_gap_units);
+                        if right_edge <= cur_x {
+                            // other is to the left of us with at least kerf;
+                            // right_edge is a LOWER bound on where we can be.
+                            if right_edge > min_x_lower_bound {
+                                min_x_lower_bound = right_edge;
+                            }
+                        }
+                    }
+
+                    // x-axis overlap: symmetric constraint for vertical slide.
+                    let x_overlap = cur_x < other_x.saturating_add(other_w)
+                        && cur_x.saturating_add(cur_w) > other_x;
+                    if x_overlap {
+                        let top_edge = other_y
+                            .saturating_add(other_h)
+                            .saturating_add(kerf_gap_units);
+                        if top_edge <= cur_y {
+                            if top_edge > min_y_lower_bound {
+                                min_y_lower_bound = top_edge;
+                            }
+                        }
+                    }
+                }
+
+                let new_x = min_x_lower_bound; // already clamped to >= 0
+                let new_y = min_y_lower_bound;
+                // Only ever move LEFT or UP, never right/down.
+                if new_x < cur_x || new_y < cur_y {
+                    stock.cut_pieces[i].x = new_x;
+                    stock.cut_pieces[i].y = new_y;
+                    total_moved = total_moved.saturating_add(1);
+                    moved_this_pass = true;
+                }
+            }
+            if !moved_this_pass {
+                break;
+            }
+        }
+
+        // Pass 2: bbox centering — shift the whole sheet's pieces so the
+        // largest of the four edge gaps is minimised.
+        let mut min_x: usize = usize::MAX;
+        let mut min_y: usize = usize::MAX;
+        let mut max_x: usize = 0;
+        let mut max_y: usize = 0;
+        for p in stock.cut_pieces.iter() {
+            if p.x < min_x {
+                min_x = p.x;
+            }
+            if p.y < min_y {
+                min_y = p.y;
+            }
+            let rx = p.x.saturating_add(p.width);
+            let ry = p.y.saturating_add(p.length);
+            if rx > max_x {
+                max_x = rx;
+            }
+            if ry > max_y {
+                max_y = ry;
+            }
+        }
+        if min_x == usize::MAX {
+            continue;
+        }
+        let bbox_w = max_x.saturating_sub(min_x);
+        let bbox_h = max_y.saturating_sub(min_y);
+        // slack = how much free space the bbox has within the sheet
+        let slack_x = (stock.width as i64) - (bbox_w as i64);
+        let slack_y = (stock.length as i64) - (bbox_h as i64);
+        // If slack is non-negative, shift so the bbox is centered.
+        // If slack is negative, the bbox is larger than the sheet (shouldn't
+        // happen for valid solutions); just clamp at 0.
+        let shift_x: i64 = if slack_x >= 0 { slack_x / 2 } else { -(min_x as i64) };
+        let shift_y: i64 = if slack_y >= 0 { slack_y / 2 } else { -(min_y as i64) };
+        if shift_x != 0 || shift_y != 0 {
+            for p in stock.cut_pieces.iter_mut() {
+                let new_x = (p.x as i64).saturating_sub(min_x as i64).saturating_add(shift_x);
+                let new_y = (p.y as i64).saturating_sub(min_y as i64).saturating_add(shift_y);
+                p.x = new_x.max(0) as usize;
+                p.y = new_y.max(0) as usize;
+                // We don't count centering moves in `total_moved` (those are
+                // free and don't reflect finding a better packing).
+            }
+        }
+    }
+
+    total_moved
 }
 
 fn build_candidate(solution: cut_optimizer_2d::Solution) -> Candidate {
