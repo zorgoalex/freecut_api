@@ -550,17 +550,27 @@ fn assess_failure(resp: &OptimizeResponse) -> Option<FailureMode> {
 
 fn choose_strategy(failure: &FailureMode, retry_idx: usize) -> &'static str {
     match failure {
-        FailureMode::NoSolution | FailureMode::Imbalanced { .. } | FailureMode::Lumpy { .. } => {
-            "different_seed"
+        FailureMode::NoSolution => "different_seed",
+        FailureMode::Imbalanced { .. } | FailureMode::Lumpy { .. } => {
+            // Lumpy / imbalanced layouts are a SEARCH problem - the GA
+            // just didn't explore the right region.  Doubling the
+            // restart count gives the GA more diverse starting points
+            // per attempt, which is empirically the most effective lever
+            // for these cases.  Different seed is the second retry
+            // (replaces the random seed entirely, complementary to more
+            // restarts at the same seed).
+            match retry_idx {
+                1 => "more_restarts",
+                _ => "different_seed",
+            }
         }
         FailureMode::TooManySheets { .. } => "switch_to_nested",
         FailureMode::VeryLumpy { .. } => {
             // First retry: try nested mode (often finds a tighter pack).
-            // Second+ retry: fall back to a different seed in the same mode.
-            if retry_idx == 1 {
-                "switch_to_nested"
-            } else {
-                "different_seed"
+            // Second+ retry: more restarts in the same mode.
+            match retry_idx {
+                1 => "switch_to_nested",
+                _ => "more_restarts",
             }
         }
     }
@@ -575,6 +585,16 @@ fn apply_strategy(req: &mut OptimizeRequest, strategy: &str, retry_idx: usize) {
         }
         "switch_to_nested" => {
             req.params.layout_mode = Some(LayoutMode::Nested);
+            req.params.seed = Some(current_seed.wrapping_add(seed_offset));
+        }
+        "more_restarts" => {
+            // V5: double the restart count (capped at 20) to give the GA
+            // a wider search space.  The slice_ms = time_limit_ms /
+            // restarts shrinks accordingly, but the diversity gain
+            // usually outweighs the per-restart time loss.
+            let current_restarts = req.params.restarts.unwrap_or(5);
+            let new_restarts = current_restarts.saturating_mul(2).min(20);
+            req.params.restarts = Some(new_restarts);
             req.params.seed = Some(current_seed.wrapping_add(seed_offset));
         }
         _ => {}
