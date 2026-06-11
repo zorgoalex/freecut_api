@@ -2541,8 +2541,10 @@ fn build_svg(solutions: &[Solution], unplaced_items: &[UnplacedItem], trim: &Tri
             escape_xml(&solution.stock_id)
         ));
 
-        // Draw kerf-fill lines between adjacent pieces to collapse visual corridors
+        // Draw kerf-fill lines between adjacent pieces to look like thin cut lines
         if kerf_gap_mm > 0.0 {
+            const KERF_FILL: &str = "#8B0000";
+            const KERF_STROKE: &str = "#3a0000";
             let tolerance = 1.5;
             let n = solution.placements.len();
             for i in 0..n {
@@ -2556,11 +2558,13 @@ fn build_svg(solutions: &[Solution], unplaced_items: &[UnplacedItem], trim: &Tri
                         let y_bot = (a.y_mm + a.height_mm).min(b.y_mm + b.height_mm);
                         if y_bot > y_top {
                             svg.push_str(&format!(
-                                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#7ab0d4\"/>",
+                                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\" stroke=\"{}\" stroke-width=\"0.3\"/>",
                                 fmt_mm(a.x_mm + a.width_mm),
                                 fmt_mm(y_top + y_offset),
                                 fmt_mm(h_gap),
-                                fmt_mm(y_bot - y_top)
+                                fmt_mm(y_bot - y_top),
+                                KERF_FILL,
+                                KERF_STROKE
                             ));
                         }
                     }
@@ -2570,11 +2574,13 @@ fn build_svg(solutions: &[Solution], unplaced_items: &[UnplacedItem], trim: &Tri
                         let y_bot = (a.y_mm + a.height_mm).min(b.y_mm + b.height_mm);
                         if y_bot > y_top {
                             svg.push_str(&format!(
-                                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#7ab0d4\"/>",
+                                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\" stroke=\"{}\" stroke-width=\"0.3\"/>",
                                 fmt_mm(b.x_mm + b.width_mm),
                                 fmt_mm(y_top + y_offset),
                                 fmt_mm(h_gap_rev),
-                                fmt_mm(y_bot - y_top)
+                                fmt_mm(y_bot - y_top),
+                                KERF_FILL,
+                                KERF_STROKE
                             ));
                         }
                     }
@@ -2585,11 +2591,13 @@ fn build_svg(solutions: &[Solution], unplaced_items: &[UnplacedItem], trim: &Tri
                         let x_right = (a.x_mm + a.width_mm).min(b.x_mm + b.width_mm);
                         if x_right > x_left {
                             svg.push_str(&format!(
-                                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#7ab0d4\"/>",
+                                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\" stroke=\"{}\" stroke-width=\"0.3\"/>",
                                 fmt_mm(x_left),
                                 fmt_mm(a.y_mm + a.height_mm + y_offset),
                                 fmt_mm(x_right - x_left),
-                                fmt_mm(v_gap)
+                                fmt_mm(v_gap),
+                                KERF_FILL,
+                                KERF_STROKE
                             ));
                         }
                     }
@@ -2599,11 +2607,13 @@ fn build_svg(solutions: &[Solution], unplaced_items: &[UnplacedItem], trim: &Tri
                         let x_right = (a.x_mm + a.width_mm).min(b.x_mm + b.width_mm);
                         if x_right > x_left {
                             svg.push_str(&format!(
-                                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#7ab0d4\"/>",
+                                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\" stroke=\"{}\" stroke-width=\"0.3\"/>",
                                 fmt_mm(x_left),
                                 fmt_mm(b.y_mm + b.height_mm + y_offset),
                                 fmt_mm(x_right - x_left),
-                                fmt_mm(v_gap_rev)
+                                fmt_mm(v_gap_rev),
+                                KERF_FILL,
+                                KERF_STROKE
                             ));
                         }
                     }
