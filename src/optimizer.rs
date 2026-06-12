@@ -136,6 +136,11 @@ struct Candidate {
     /// Proxy for stddev; lower means sheets are more evenly packed.
     /// We store the un-scaled sum-squared-diff to keep tie-breaks integer-clean.
     sheet_util_sum_sq_diff_bps2: u64,
+    /// V9: sum over sheets of the largest free rectangle anchored at the
+    /// bottom-right corner, in area units. Higher is better — rewards layouts
+    /// where the waste is consolidated into one reusable corner remnant
+    /// instead of being scattered as thin corridors between pieces.
+    corner_free_area_units: u128,
 }
 
 #[derive(Clone, Copy)]
@@ -169,8 +174,7 @@ struct CandidateSelectionCounters {
     candidates_rejected_tie_bbox_area: u32,
     candidates_rejected_tie_perimeter: u32,
     candidates_rejected_tie_min_util: u32,
-    candidates_rejected_tie_max_edge_gap: u32,
-    candidates_rejected_tie_util_spread: u32,
+    candidates_rejected_tie_corner_free: u32,
     candidates_rejected_equal: u32,
 }
 
@@ -181,8 +185,7 @@ enum CandidateCompare {
     WorseByTieBboxArea,
     WorseByTiePerimeter,
     WorseByTieMinUtil,
-    WorseByTieMaxEdgeGap,
-    WorseByTieUtilSpread,
+    WorseByTieCornerFree,
     Equal,
 }
 
@@ -789,14 +792,9 @@ fn pick_best_candidate(
                         counters.candidates_rejected_tie_min_util.saturating_add(1);
                     Some(current)
                 }
-                CandidateCompare::WorseByTieMaxEdgeGap => {
-                    counters.candidates_rejected_tie_max_edge_gap =
-                        counters.candidates_rejected_tie_max_edge_gap.saturating_add(1);
-                    Some(current)
-                }
-                CandidateCompare::WorseByTieUtilSpread => {
-                    counters.candidates_rejected_tie_util_spread =
-                        counters.candidates_rejected_tie_util_spread.saturating_add(1);
+                CandidateCompare::WorseByTieCornerFree => {
+                    counters.candidates_rejected_tie_corner_free =
+                        counters.candidates_rejected_tie_corner_free.saturating_add(1);
                     Some(current)
                 }
                 CandidateCompare::Equal => {
@@ -940,8 +938,7 @@ async fn run_restarts_with_budget(
                                 | CandidateCompare::WorseByTieBboxArea
                                 | CandidateCompare::WorseByTiePerimeter
                                 | CandidateCompare::WorseByTieMinUtil
-                                | CandidateCompare::WorseByTieMaxEdgeGap
-                                | CandidateCompare::WorseByTieUtilSpread
+                                | CandidateCompare::WorseByTieCornerFree
                                 | CandidateCompare::Equal => {
                                     no_improve_streak = no_improve_streak.saturating_add(1);
                                     Some(current)
@@ -2404,54 +2401,51 @@ fn compact_solution(solution: &mut cut_optimizer_2d::Solution, kerf_gap_units: u
             }
         }
 
-        // Pass 2: bbox centering — shift the whole sheet's pieces so the
-        // largest of the four edge gaps is minimised.
-        let mut min_x: usize = usize::MAX;
-        let mut min_y: usize = usize::MAX;
-        let mut max_x: usize = 0;
-        let mut max_y: usize = 0;
-        for p in stock.cut_pieces.iter() {
-            if p.x < min_x {
-                min_x = p.x;
-            }
-            if p.y < min_y {
-                min_y = p.y;
-            }
-            let rx = p.x.saturating_add(p.width);
-            let ry = p.y.saturating_add(p.length);
-            if rx > max_x {
-                max_x = rx;
-            }
-            if ry > max_y {
-                max_y = ry;
-            }
-        }
-        if min_x == usize::MAX {
-            continue;
-        }
-        let bbox_w = max_x.saturating_sub(min_x);
-        let bbox_h = max_y.saturating_sub(min_y);
-        // slack = how much free space the bbox has within the sheet
-        let slack_x = (stock.width as i64) - (bbox_w as i64);
-        let slack_y = (stock.length as i64) - (bbox_h as i64);
-        // If slack is non-negative, shift so the bbox is centered.
-        // If slack is negative, the bbox is larger than the sheet (shouldn't
-        // happen for valid solutions); just clamp at 0.
-        let shift_x: i64 = if slack_x >= 0 { slack_x / 2 } else { -(min_x as i64) };
-        let shift_y: i64 = if slack_y >= 0 { slack_y / 2 } else { -(min_y as i64) };
-        if shift_x != 0 || shift_y != 0 {
-            for p in stock.cut_pieces.iter_mut() {
-                let new_x = (p.x as i64).saturating_sub(min_x as i64).saturating_add(shift_x);
-                let new_y = (p.y as i64).saturating_sub(min_y as i64).saturating_add(shift_y);
-                p.x = new_x.max(0) as usize;
-                p.y = new_y.max(0) as usize;
-                // We don't count centering moves in `total_moved` (those are
-                // free and don't reflect finding a better packing).
-            }
-        }
+        // Pass 2 (V9): corner anchoring — pieces stay slid to the top-left
+        // corner after pass 1.  The old bbox-centering pass was removed: it
+        // smeared the waste evenly around the perimeter, whereas the target
+        // quality (logs/perfect) is a single consolidated remnant at the
+        // bottom-right corner.
     }
 
     total_moved
+}
+
+/// V9: largest free rectangle anchored at the bottom-right corner of a sheet.
+/// Candidate left boundaries are the right edges of pieces (plus 0); for each
+/// boundary L the rect spans x in [L, W] and its height is limited by the
+/// lowest piece bottom within that x-band. O(n^2), n is small (<= ~40).
+fn corner_free_rect_area(stock: &cut_optimizer_2d::ResultStockPiece) -> u128 {
+    let w = stock.width;
+    let h = stock.length;
+    if stock.cut_pieces.is_empty() {
+        return area(w, h);
+    }
+    let mut lefts: Vec<usize> = stock
+        .cut_pieces
+        .iter()
+        .map(|p| p.x.saturating_add(p.width))
+        .filter(|&r| r < w)
+        .collect();
+    lefts.push(0);
+    let mut best: u128 = 0;
+    for &l in &lefts {
+        // Height of the free band [l, w): sheet bottom minus the lowest piece
+        // bottom among pieces overlapping that band.
+        let mut max_bottom: usize = 0;
+        for p in &stock.cut_pieces {
+            let overlaps = p.x < w && p.x.saturating_add(p.width) > l;
+            if overlaps {
+                max_bottom = max_bottom.max(p.y.saturating_add(p.length));
+            }
+        }
+        let band_h = h.saturating_sub(max_bottom);
+        let rect = area(w.saturating_sub(l), band_h);
+        if rect > best {
+            best = rect;
+        }
+    }
+    best
 }
 
 fn build_candidate(solution: cut_optimizer_2d::Solution) -> Candidate {
@@ -2465,8 +2459,12 @@ fn build_candidate(solution: cut_optimizer_2d::Solution) -> Candidate {
     let mut max_edge_gap_units: u64 = 0;
     // Collect per-sheet utilisation in bps to compute stddev-like spread metric.
     let mut sheet_utils_bps: Vec<u64> = Vec::with_capacity(solution.stock_pieces.len());
+    // V9: total corner-anchored free rectangle area across sheets.
+    let mut corner_free_area_units: u128 = 0;
 
     for stock in &solution.stock_pieces {
+        corner_free_area_units =
+            corner_free_area_units.saturating_add(corner_free_rect_area(stock));
         let stock_area = area(stock.width, stock.length);
         let mut used_area: u128 = 0;
         let mut min_x: usize = usize::MAX;
@@ -2537,6 +2535,7 @@ fn build_candidate(solution: cut_optimizer_2d::Solution) -> Candidate {
         min_sheet_util_bps,
         max_edge_gap_units,
         sheet_util_sum_sq_diff_bps2: sum_sq_diff,
+        corner_free_area_units,
         solution,
     }
 }
@@ -2573,34 +2572,29 @@ fn compare_candidates(
     }
 
     // Tie-break for same primary objective:
-    // 1. Prefer balanced per-sheet utilisation (higher min = more even packing).
-    //    This avoids layouts where one sheet is very loose (86-88%) while others are
-    //    near-perfect (94-97%).  All sheets should be packed densely.
+    // 1. V9: prefer larger consolidated corner remnant (dense-first goal).
+    //    Concentrating the fixed total waste into one large corner rectangle
+    //    both maximises utilisation of the leading sheets and produces a
+    //    business-reusable offcut, matching the logs/perfect reference shape.
+    if candidate.corner_free_area_units != best.corner_free_area_units {
+        if candidate.corner_free_area_units > best.corner_free_area_units {
+            return CandidateCompare::Better;
+        }
+        return CandidateCompare::WorseByTieCornerFree;
+    }
+    // 2. Prefer higher minimum per-sheet utilisation among otherwise equal
+    //    candidates (avoids degenerate near-empty sheets).
     if candidate.min_sheet_util_bps != best.min_sheet_util_bps {
         if candidate.min_sheet_util_bps > best.min_sheet_util_bps {
             return CandidateCompare::Better;
         }
         return CandidateCompare::WorseByTieMinUtil;
     }
-    // 2. Prefer smaller max edge gap — penalises "staircase" / corner-waste
-    //    patterns where pieces hug one corner and leave a big strip along an
-    //    opposite edge.
-    if candidate.max_edge_gap_units != best.max_edge_gap_units {
-        if candidate.max_edge_gap_units < best.max_edge_gap_units {
-            return CandidateCompare::Better;
-        }
-        return CandidateCompare::WorseByTieMaxEdgeGap;
-    }
-    // 3. Prefer smaller per-sheet utilisation spread — catches layouts where
-    //    the worst sheet is OK but the others are uneven (e.g. 90/95/95/95 vs
-    //    90/91/92/93 — both have min=90, but the second is more even).
-    if candidate.sheet_util_sum_sq_diff_bps2 != best.sheet_util_sum_sq_diff_bps2 {
-        if candidate.sheet_util_sum_sq_diff_bps2 < best.sheet_util_sum_sq_diff_bps2 {
-            return CandidateCompare::Better;
-        }
-        return CandidateCompare::WorseByTieUtilSpread;
-    }
-    // 4. Prefer denser occupied bounding region to reduce internal voids.
+    // NOTE (V9): max_edge_gap and util-spread tie-breakers were removed from
+    // the comparison — both reward smearing the waste evenly across sheets /
+    // around the perimeter, which directly contradicts corner consolidation.
+    // The metrics are still computed for telemetry.
+    // 3. Prefer denser occupied bounding region to reduce internal voids.
     if candidate.total_bbox_void_area_units != best.total_bbox_void_area_units {
         if candidate.total_bbox_void_area_units < best.total_bbox_void_area_units {
             return CandidateCompare::Better;
@@ -2637,8 +2631,7 @@ fn build_candidate_selection_telemetry(
         candidates_rejected_tie_bbox_area: counters.candidates_rejected_tie_bbox_area,
         candidates_rejected_tie_perimeter: counters.candidates_rejected_tie_perimeter,
         candidates_rejected_tie_min_util: counters.candidates_rejected_tie_min_util,
-        candidates_rejected_tie_max_edge_gap: counters.candidates_rejected_tie_max_edge_gap,
-        candidates_rejected_tie_util_spread: counters.candidates_rejected_tie_util_spread,
+        candidates_rejected_tie_corner_free: counters.candidates_rejected_tie_corner_free,
         candidates_rejected_equal: counters.candidates_rejected_equal,
         winner_used_stock_count: winner.used_stock_count,
         winner_waste_area_mm2: from_area_units(winner.total_waste_area_units),
@@ -2655,6 +2648,7 @@ fn build_candidate_selection_telemetry(
             let n = winner.used_stock_count.max(1) as f64;
             (winner.sheet_util_sum_sq_diff_bps2 as f64 / n).sqrt() / 100.0
         },
+        winner_corner_free_area_mm2: from_area_units(winner.corner_free_area_units),
     }
 }
 
