@@ -1093,9 +1093,13 @@ impl Optimizer {
         ) else {
             return vec![];
         };
-        for cut in &cuts {
-            unit.first_fit_with_heuristic(cut, &heuristic, &mut rng);
-        }
+        // V7 fix: do NOT iterate cuts a second time here.  The
+        // `with_heuristic` constructor (above) already places every
+        // cut piece via first_fit_with_heuristic, so a second pass
+        // duplicates them - each cut gets placed twice, producing
+        // N*2 cut pieces for N input items.  This was the source of
+        // the util-inflation seen on small fixtures like
+        // optimize_valid.json (3 items -> 6 placements).
         if unit.bins.is_empty() {
             return vec![];
         }
@@ -1129,9 +1133,9 @@ impl Optimizer {
         ) else {
             return vec![];
         };
-        for cut in &cuts {
-            unit.first_fit_with_heuristic(cut, &heuristic, &mut rng);
-        }
+        // V7 fix: see note in build_guillotine_heuristic - the
+        // `with_heuristic` constructor already places every cut piece,
+        // so a second pass would duplicate them.
         if unit.bins.is_empty() {
             return vec![];
         }
