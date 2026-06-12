@@ -751,15 +751,21 @@ fn pick_best_candidate(
     set: cut_optimizer_2d::SolutionSet,
     objective: &Objective,
     counters: &mut CandidateSelectionCounters,
+    kerf_gap_units: usize,
 ) -> Option<Candidate> {
     let mut best: Option<Candidate> = None;
-    for solution in set.solutions {
+    for mut solution in set.solutions {
         counters.candidates_total = counters.candidates_total.saturating_add(1);
         if solution.fitness < 0.0 {
             counters.candidates_invalid_fitness =
                 counters.candidates_invalid_fitness.saturating_add(1);
             continue;
         }
+        // V9.1: compact BEFORE building the candidate so corner_free_area and
+        // the other tie-breakers compare candidates in their final (anchored)
+        // geometry.  Previously only the winner was compacted, which made the
+        // corner_free tie-break see pre-compaction noise.
+        compact_solution(&mut solution, kerf_gap_units);
         let candidate = build_candidate(solution);
         counters.candidates_valid = counters.candidates_valid.saturating_add(1);
         best = match best {
@@ -820,6 +826,10 @@ async fn run_restarts_with_budget(
     restart_plan: Option<&RestartPlan>,
 ) -> Result<RunOutcome, OptimizeError> {
     let ga_runtime = resolve_ga_runtime(req);
+    // V9.1: kerf+spacing gap in vendor units, used to compact every candidate
+    // before ranking (see pick_best_candidate).
+    let kerf_gap_units =
+        ((req.params.kerf_mm + req.params.spacing_mm) * SCALE).round() as usize;
     let mut best: Option<Candidate> = None;
     let mut selection_counters = CandidateSelectionCounters {
         top_k_requested: u32::try_from(ga_runtime.top_k).unwrap_or(u32::MAX),
@@ -912,6 +922,7 @@ async fn run_restarts_with_budget(
                         solution_set,
                         &req.params.objective,
                         &mut selection_counters,
+                        kerf_gap_units,
                     ) else {
                         last_constraint = Some(OptimizeError::Constraint {
                             message: "no valid solution".to_string(),
@@ -979,14 +990,8 @@ async fn run_restarts_with_budget(
     }
 
     if let Some(best) = best {
-        // Post-compaction (V2): slide each piece as far left+up as it can go
-        // and re-centre each sheet's bounding box.  Rebuild the Candidate so
-        // the winner_* telemetry reflects the compacted layout.
-        let kerf_gap_mm = req.params.kerf_mm + req.params.spacing_mm;
-        let kerf_gap_units = ((kerf_gap_mm) * SCALE).round() as usize;
-        let mut solution = best.solution;
-        compact_solution(&mut solution, kerf_gap_units);
-        let best = build_candidate(solution);
+        // V9.1: candidates are already compacted inside pick_best_candidate,
+        // so the winner needs no extra compaction pass here.
         let candidate_selection = Some(build_candidate_selection_telemetry(
             &selection_counters,
             &best,
@@ -1068,6 +1073,7 @@ async fn run_restarts_with_budget(
                             solution_set,
                             &req.params.objective,
                             &mut selection_counters,
+                            kerf_gap_units,
                         ) {
                             rescue_used = true;
                             rescue_budget_ms = Some(rescue_budget);
