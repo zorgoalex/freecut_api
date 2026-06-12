@@ -48,6 +48,22 @@ pub struct Params {
     /// `retry_strategy = smart`.  Optional, defaults to 3.  Values below 1
     /// are clamped to 1 (no retry).
     pub max_retry_attempts: Option<u32>,
+    /// V8a: dense-first sheet partition control via iterative peeling.
+    /// When enabled, the optimizer repeatedly packs the remaining parts,
+    /// freezes the densest sheet of the result as-is and re-optimizes the
+    /// remainder, so the slack drains onto the last sheet instead of being
+    /// smeared across all sheets.  Falls back to the regular pipeline when
+    /// peeling would use more sheets.
+    pub partition: Option<PartitionParams>,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
+pub struct PartitionParams {
+    /// Enable dense-first peeling. Optional, defaults to true when `partition` object is provided.
+    pub enabled: Option<bool>,
+    /// Time budget per peeling iteration (ms). Optional, defaults to
+    /// `time_limit_ms / planned_sheet_count`.
+    pub sheet_budget_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]
@@ -248,6 +264,24 @@ pub struct Summary {
     /// was made.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry: Option<RetryTelemetry>,
+    /// V8a pre-partition telemetry.  Populated when `params.partition` is
+    /// enabled, including the fallback case.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partition: Option<PartitionTelemetry>,
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone)]
+pub struct PartitionTelemetry {
+    /// Whether the partitioned (peeled) packing was actually used for the
+    /// final answer (false = fell back to the regular pipeline).
+    pub applied: bool,
+    /// Number of parts frozen on each sheet, peel order (last = remainder).
+    pub group_sizes: Vec<u32>,
+    /// Utilisation (%) of each frozen sheet, peel order.
+    pub group_area_pct: Vec<f64>,
+    /// Reason for falling back to the regular pipeline, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone)]

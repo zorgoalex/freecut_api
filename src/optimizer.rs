@@ -11,8 +11,8 @@ use crate::config::AppConfig;
 use crate::models::{
     AlnsOperatorTelemetry, AlnsTelemetry, Artifacts, BeamTelemetry, CandidateSelectionTelemetry,
     ErrorResponse, GaProfile, LayoutMode, Objective, OptimizeRequest, OptimizeResponse,
-    PatternDirection, Placement, PortfolioTelemetry, RestartPolicyTelemetry, RetryStrategy,
-    RetryTelemetry, SlaProfile, Solution, Summary, Trim, UnplacedItem,
+    PartitionTelemetry, PatternDirection, Placement, PortfolioTelemetry, RestartPolicyTelemetry,
+    RetryStrategy, RetryTelemetry, SlaProfile, Solution, Summary, Trim, UnplacedItem,
 };
 use crate::validation::item_fits_any_stock_public;
 
@@ -274,6 +274,7 @@ async fn optimize_request_internal(
                 alns: None,
                 candidate_selection: None,
                 retry: None,
+                partition: None,
             },
             solutions: vec![],
             unplaced_items: prepared.oversized_items,
@@ -281,8 +282,26 @@ async fn optimize_request_internal(
         });
     }
 
-    let run_outcome = match mode {
-        SolveMode::Default => match &req.params.portfolio {
+    // V8a: dense-first pre-partition path.  When enabled and successful it
+    // bypasses the portfolio/standard pipeline entirely; on failure the
+    // regular pipeline below acts as the fallback.
+    let mut partition_telemetry: Option<PartitionTelemetry> = None;
+    let mut partitioned_outcome: Option<RunOutcome> = None;
+    if matches!(mode, SolveMode::Default) {
+        if let Some(partition_cfg) = &req.params.partition {
+            if partition_cfg.enabled.unwrap_or(true) {
+                let (outcome, telemetry) =
+                    run_partitioned(&req, &prepared, layout_mode, used_seed, time_limit_ms)
+                        .await?;
+                partitioned_outcome = outcome;
+                partition_telemetry = Some(telemetry);
+            }
+        }
+    }
+
+    let run_outcome = match (partitioned_outcome, mode) {
+        (Some(outcome), _) => outcome,
+        (None, SolveMode::Default) => match &req.params.portfolio {
             Some(portfolio_cfg) if portfolio_cfg.enabled.unwrap_or(true) => {
                 let deadline_ms = portfolio_cfg.deadline_ms.unwrap_or(time_limit_ms).max(100);
                 let candidates = portfolio_cfg
@@ -315,7 +334,7 @@ async fn optimize_request_internal(
                 .await?
             }
         },
-        SolveMode::BeamEndpoint => {
+        (None, SolveMode::BeamEndpoint) => {
             let beam_cfg = req.params.beam.as_ref();
             let deadline_ms = beam_cfg
                 .and_then(|c| c.deadline_ms)
@@ -346,7 +365,7 @@ async fn optimize_request_internal(
             )
             .await?
         }
-        SolveMode::AlnsEndpoint => {
+        (None, SolveMode::AlnsEndpoint) => {
             let alns_cfg = req.params.alns.as_ref();
             let deadline_ms = alns_cfg
                 .and_then(|c| c.deadline_ms)
@@ -392,10 +411,35 @@ async fn optimize_request_internal(
 
     let time_ms = start.elapsed().as_millis() as u64;
 
-    let all_solutions = build_solutions(&run_outcome.candidate.solution, &prepared);
+    Ok(build_response_from_outcome(
+        &req,
+        &prepared,
+        run_outcome,
+        time_ms,
+        restarts_requested,
+        used_seed,
+        layout_mode,
+        include_svg,
+        partition_telemetry,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_response_from_outcome(
+    req: &OptimizeRequest,
+    prepared: &PreparedInput,
+    run_outcome: RunOutcome,
+    time_ms: u64,
+    restarts_requested: u32,
+    used_seed: u64,
+    layout_mode: LayoutMode,
+    include_svg: bool,
+    partition: Option<PartitionTelemetry>,
+) -> OptimizeResponse {
+    let all_solutions = build_solutions(&run_outcome.candidate.solution, prepared);
 
     // Apply qty limits and collect unplaced items
-    let (solutions, mut unplaced_items) = apply_qty_limits(all_solutions, &prepared);
+    let (solutions, mut unplaced_items) = apply_qty_limits(all_solutions, prepared);
 
     // Merge oversized items (items that didn't fit any stock)
     unplaced_items.extend(prepared.oversized_items.clone());
@@ -425,6 +469,7 @@ async fn optimize_request_internal(
         alns: run_outcome.alns,
         candidate_selection: run_outcome.candidate_selection,
         retry: None,
+        partition,
     };
 
     let svg = if include_svg {
@@ -434,13 +479,13 @@ async fn optimize_request_internal(
         None
     };
 
-    Ok(OptimizeResponse {
+    OptimizeResponse {
         status: "ok",
         summary,
         solutions,
         unplaced_items,
         artifacts: Artifacts { svg },
-    })
+    }
 }
 
 struct RunOutcome {
@@ -551,27 +596,31 @@ fn assess_failure(resp: &OptimizeResponse) -> Option<FailureMode> {
     None
 }
 
-fn choose_strategy(failure: &FailureMode, retry_idx: usize) -> &'static str {
+fn choose_strategy(failure: &FailureMode, retry_idx: usize, rebalance_enabled: bool) -> &'static str {
     match failure {
         FailureMode::NoSolution => "different_seed",
         FailureMode::Imbalanced { .. } | FailureMode::Lumpy { .. } => {
             // Lumpy / imbalanced layouts are a SEARCH problem - the GA
-            // just didn't explore the right region.  Doubling the
-            // restart count gives the GA more diverse starting points
-            // per attempt, which is empirically the most effective lever
-            // for these cases.  Different seed is the second retry
-            // (replaces the random seed entirely, complementary to more
-            // restarts at the same seed).
+            // just didn't explore the right region.  V8b: when the caller
+            // opted into partition control, first try the inter-sheet
+            // rebalance (move parts from the sparsest sheet onto the denser
+            // ones) — it attacks the partition directly instead of hoping a
+            // wider search stumbles on a better one.  Otherwise: doubling
+            // the restart count gives the GA more diverse starting points
+            // per attempt; different seed is the second retry.
             match retry_idx {
+                1 if rebalance_enabled => "rebalance",
                 1 => "more_restarts",
                 _ => "different_seed",
             }
         }
         FailureMode::TooManySheets { .. } => "switch_to_nested",
         FailureMode::VeryLumpy { .. } => {
-            // First retry: try nested mode (often finds a tighter pack).
-            // Second+ retry: more restarts in the same mode.
+            // First retry: rebalance when enabled (the very-lumpy sheet is a
+            // partition defect), else nested mode (often finds a tighter
+            // pack).  Second+ retry: more restarts in the same mode.
             match retry_idx {
+                1 if rebalance_enabled => "rebalance",
                 1 => "switch_to_nested",
                 _ => "more_restarts",
             }
@@ -634,11 +683,31 @@ async fn optimize_with_smart_retry(
     let mut best = optimize_request_internal(req.clone(), config, SolveMode::Default).await?;
     let initial_failure = assess_failure(&best);
 
+    // V8a: a successfully applied dense-first partition is the intended
+    // shape — its utils are deliberately skewed ([~96, ~96, ~96, slack]),
+    // which the balance-oriented failure assessor would misread as lumpy.
+    // Never retry over it.
+    if best
+        .summary
+        .partition
+        .as_ref()
+        .map(|p| p.applied)
+        .unwrap_or(false)
+    {
+        return Ok(best);
+    }
+
     // If attempt 1 already passes, no retry needed.
     if initial_failure.is_none() {
         return Ok(best);
     }
 
+    let rebalance_enabled = req
+        .params
+        .partition
+        .as_ref()
+        .map(|p| p.enabled.unwrap_or(true))
+        .unwrap_or(false);
     let mut strategies: Vec<String> = Vec::new();
     let total_attempts = max_attempts.max(2);
 
@@ -649,7 +718,27 @@ async fn optimize_with_smart_retry(
         // The "current" failure mode is recomputed from `best` because a
         // successful retry may have shifted the situation.
         let current_failure = assess_failure(&best).unwrap();
-        let strategy = choose_strategy(&current_failure, retry_idx);
+        let mut strategy = choose_strategy(&current_failure, retry_idx, rebalance_enabled);
+        if strategy == "rebalance" {
+            match rebalance_attempt(&req, &best, retry_idx).await? {
+                Some(attempt) => {
+                    strategies.push("rebalance".to_string());
+                    // Dense-first acceptance: the rebalance intentionally
+                    // worsens min_util while raising lead utilisation, so it
+                    // is judged by dense_score, not the balance score.  An
+                    // accepted rebalance is terminal — further balance-driven
+                    // retries would only undo it.
+                    if dense_score(&attempt) < dense_score(&best) {
+                        best = attempt;
+                        break;
+                    }
+                    continue;
+                }
+                // No verified move possible — fall back to a regular
+                // strategy for this retry slot.
+                None => strategy = "different_seed",
+            }
+        }
         let mut req_retry = req.clone();
         apply_strategy(&mut req_retry, strategy, retry_idx);
         let attempt = optimize_request_internal(req_retry, config, SolveMode::Default).await?;
@@ -667,6 +756,537 @@ async fn optimize_with_smart_retry(
         initial_failure: initial_failure.map(|f| f.description()),
     });
     Ok(best)
+}
+
+// ---------------------------------------------------------------------------
+// V8a: dense-first partition control via iterative peeling.
+//
+// The GA distributes parts across sheets implicitly, which is what produces
+// lumpy layouts (CONTEXT.md ЭТАП 13).  A naive fix — pre-partition by area,
+// then pack each forced group — does NOT work: the GA cannot re-pack even a
+// known-feasible 95.9%-utilisation group into one sheet (verified
+// empirically; its single-sheet ceiling for forced groups is ~90-93%).  Dense
+// sheets only emerge when the GA is free to choose WHICH parts spill over.
+//
+// Peeling exploits exactly that freedom: pack all remaining parts, freeze the
+// densest sheet of the result AS-IS (geometry included, no re-pack), drop its
+// parts from the pool and re-optimize the remainder.  Each iteration the GA
+// concentrates its best packing on one sheet, and the slack drains onto the
+// final remainder sheet as one large reusable zone.
+// ---------------------------------------------------------------------------
+
+/// Run the GA restart machinery on a subset of the prepared cut pieces.
+async fn run_subset(
+    req: &OptimizeRequest,
+    prepared: &PreparedInput,
+    group: &[usize],
+    layout_mode: LayoutMode,
+    seed: u64,
+    budget_ms: u64,
+) -> Result<Option<(Candidate, u32)>, OptimizeError> {
+    let sub_prepared = PreparedInput {
+        stock_pieces: prepared.stock_pieces.clone(),
+        cut_pieces: group
+            .iter()
+            .map(|&i| prepared.cut_pieces[i].clone())
+            .collect(),
+        instance_map: prepared.instance_map.clone(),
+        stock_map: prepared.stock_map.clone(),
+        trim: prepared.trim,
+        cut_width: prepared.cut_width,
+        oversized_items: Vec::new(),
+    };
+    let restarts: u64 = 4;
+    let slice_ms = (budget_ms / restarts).max(MIN_SLICE_MS);
+    match run_restarts_with_budget(
+        req,
+        &sub_prepared,
+        restarts,
+        slice_ms,
+        layout_mode,
+        seed,
+        budget_ms,
+        false,
+        None,
+    )
+    .await
+    {
+        Ok(outcome) => Ok(Some((outcome.candidate, outcome.restarts_used))),
+        Err(OptimizeError::Internal(e)) => Err(OptimizeError::Internal(e)),
+        // Constraint/timeout on a sub-problem just means this subset is not
+        // packable within the budget — the caller falls back.
+        Err(_) => Ok(None),
+    }
+}
+
+/// Pack one group of cut pieces and accept the result only if it fits a
+/// single sheet.
+async fn pack_group_single_sheet(
+    req: &OptimizeRequest,
+    prepared: &PreparedInput,
+    group: &[usize],
+    layout_mode: LayoutMode,
+    seed: u64,
+    budget_ms: u64,
+) -> Result<Option<(Candidate, u32)>, OptimizeError> {
+    match run_subset(req, prepared, group, layout_mode, seed, budget_ms).await? {
+        Some((candidate, used)) if candidate.used_stock_count == 1 => Ok(Some((candidate, used))),
+        _ => Ok(None),
+    }
+}
+
+fn stock_piece_util_pct(stock: &cut_optimizer_2d::ResultStockPiece) -> f64 {
+    let stock_area = area(stock.width, stock.length);
+    if stock_area == 0 {
+        return 0.0;
+    }
+    let used: u128 = stock
+        .cut_pieces
+        .iter()
+        .map(|p| area(p.width, p.length))
+        .sum();
+    used as f64 / stock_area as f64 * 100.0
+}
+
+async fn run_partitioned(
+    req: &OptimizeRequest,
+    prepared: &PreparedInput,
+    layout_mode: LayoutMode,
+    base_seed: u64,
+    time_limit_ms: u64,
+) -> Result<(Option<RunOutcome>, PartitionTelemetry), OptimizeError> {
+    let cfg = req
+        .params
+        .partition
+        .as_ref()
+        .expect("run_partitioned called without partition params");
+    let fallback = |reason: String| PartitionTelemetry {
+        applied: false,
+        group_sizes: vec![],
+        group_area_pct: vec![],
+        fallback_reason: Some(reason),
+    };
+
+    // Peeling reasons about a single uniform sheet size.
+    let Some(template) = prepared.stock_pieces.first().copied() else {
+        return Ok((None, fallback("no_stock".to_string())));
+    };
+    if prepared
+        .stock_pieces
+        .iter()
+        .any(|s| s.width != template.width || s.length != template.length)
+    {
+        return Ok((None, fallback("mixed_stock_sizes".to_string())));
+    }
+
+    let usable_area = area(template.width, template.length);
+    let total_area: u128 = prepared.cut_pieces.iter().map(cut_piece_area).sum();
+    if usable_area == 0 || total_area == 0 {
+        return Ok((None, fallback("zero_area".to_string())));
+    }
+    let n_min_sheets = total_area.div_ceil(usable_area) as usize;
+    if n_min_sheets < 2 {
+        return Ok((None, fallback("single_sheet_problem".to_string())));
+    }
+
+    let started = Instant::now();
+    let peel_budget_ms = cfg
+        .sheet_budget_ms
+        .unwrap_or_else(|| (time_limit_ms / n_min_sheets as u64).max(500))
+        .max(200);
+    // Quality over latency: when the caller explicitly raises the per-peel
+    // budget, let the run take up to one full budget per planned sheet
+    // (plus one for the remainder) instead of clipping at 2x time_limit.
+    let total_budget_ms = time_limit_ms
+        .saturating_mul(2)
+        .max(peel_budget_ms.saturating_mul(n_min_sheets as u64 + 1))
+        .max(1_000);
+
+    let mut remaining: Vec<usize> = (0..prepared.cut_pieces.len()).collect();
+    let mut frozen: Vec<cut_optimizer_2d::ResultStockPiece> = Vec::new();
+    let mut group_sizes: Vec<u32> = Vec::new();
+    let mut group_area_pct: Vec<f64> = Vec::new();
+    let mut restarts_total: u32 = 0;
+    let mut fitness = 1.0_f64;
+    let mut peel_idx: u64 = 0;
+
+    loop {
+        let remaining_area: u128 = remaining
+            .iter()
+            .map(|&i| cut_piece_area(&prepared.cut_pieces[i]))
+            .sum();
+        let last_iteration = remaining_area <= usable_area;
+        let elapsed = started.elapsed().as_millis() as u64;
+        if elapsed >= total_budget_ms {
+            return Ok((None, fallback("peel_budget_exhausted".to_string())));
+        }
+        let budget = peel_budget_ms.min(total_budget_ms - elapsed).max(200);
+        peel_idx += 1;
+
+        // Best-of-K within the peel budget: a single subset run converges in
+        // well under a second (early-stop), so extra budget is converted into
+        // independent re-seeded attempts; keep the attempt whose densest
+        // sheet is the tightest.  An attempt is only eligible if the parts
+        // left after freezing still fit the remaining sheet count by area —
+        // freezing a loose sheet now forces a 5th sheet later.
+        let sheets_left_after = n_min_sheets.saturating_sub(frozen.len() + 1);
+        let peel_started = Instant::now();
+        // Many short attempts beat few long ones: a subset GA run converges
+        // (early-stop) in ~1-2s, so longer slices are wasted while a fresh
+        // re-seed explores a genuinely different region.
+        let attempt_budget_ms = (budget / 8).max(600);
+        let mut best_attempt: Option<Candidate> = None;
+        let mut attempt_idx: u64 = 0;
+        const MAX_PEEL_ATTEMPTS: u64 = 16;
+        while attempt_idx < MAX_PEEL_ATTEMPTS {
+            let peel_elapsed = peel_started.elapsed().as_millis() as u64;
+            if attempt_idx > 0 && peel_elapsed >= budget {
+                break;
+            }
+            let this_budget = attempt_budget_ms.min((budget - peel_elapsed.min(budget)).max(200));
+            let seed = base_seed.wrapping_add(
+                ((peel_idx << 8) + attempt_idx + 1).wrapping_mul(SEED_STRIDE),
+            );
+            attempt_idx += 1;
+            let Some((candidate, used)) =
+                run_subset(req, prepared, &remaining, layout_mode, seed, this_budget).await?
+            else {
+                continue;
+            };
+            restarts_total += used;
+            let better = if last_iteration {
+                // Remainder: fewer sheets first, then the larger corner zone.
+                match &best_attempt {
+                    None => true,
+                    Some(best) => {
+                        (candidate.used_stock_count, std::cmp::Reverse(candidate.corner_free_area_units))
+                            < (best.used_stock_count, std::cmp::Reverse(best.corner_free_area_units))
+                    }
+                }
+            } else {
+                let densest_util = candidate
+                    .solution
+                    .stock_pieces
+                    .iter()
+                    .map(stock_piece_util_pct)
+                    .fold(0.0_f64, f64::max);
+                let frozen_used = (usable_area as f64 * densest_util / 100.0) as u128;
+                let feasible = remaining_area.saturating_sub(frozen_used)
+                    <= usable_area.saturating_mul(sheets_left_after as u128);
+                feasible
+                    && match &best_attempt {
+                        None => true,
+                        Some(best) => {
+                            densest_util
+                                > best
+                                    .solution
+                                    .stock_pieces
+                                    .iter()
+                                    .map(stock_piece_util_pct)
+                                    .fold(0.0_f64, f64::max)
+                        }
+                    }
+            };
+            if better {
+                best_attempt = Some(candidate);
+            }
+        }
+        let Some(candidate) = best_attempt else {
+            return Ok((None, fallback(format!("peel_{}_failed", peel_idx))));
+        };
+        fitness = fitness.min(candidate.solution.fitness);
+
+        if last_iteration {
+            // Remainder fits one sheet by area; keep the whole sub-solution
+            // (normally a single slack sheet).
+            for stock in candidate.solution.stock_pieces {
+                group_sizes.push(stock.cut_pieces.len() as u32);
+                group_area_pct.push(stock_piece_util_pct(&stock));
+                frozen.push(stock);
+            }
+            break;
+        }
+
+        // Freeze the densest sheet as-is and drop its parts from the pool.
+        let Some(densest) = candidate
+            .solution
+            .stock_pieces
+            .into_iter()
+            .max_by(|a, b| {
+                stock_piece_util_pct(a)
+                    .partial_cmp(&stock_piece_util_pct(b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+        else {
+            return Ok((None, fallback(format!("peel_{}_empty", peel_idx))));
+        };
+        if densest.cut_pieces.is_empty() {
+            return Ok((None, fallback(format!("peel_{}_empty_sheet", peel_idx))));
+        }
+        let frozen_ids: std::collections::HashSet<usize> = densest
+            .cut_pieces
+            .iter()
+            .filter_map(|p| p.external_id)
+            .collect();
+        if frozen_ids.len() != densest.cut_pieces.len() {
+            return Ok((None, fallback("missing_external_ids".to_string())));
+        }
+        remaining.retain(|i| !frozen_ids.contains(i));
+        group_sizes.push(densest.cut_pieces.len() as u32);
+        group_area_pct.push(stock_piece_util_pct(&densest));
+        frozen.push(densest);
+        if remaining.is_empty() {
+            break;
+        }
+    }
+
+    // Reject peelings that need more sheets than the area lower bound — the
+    // regular pipeline reaches that bound reliably, so anything above it is
+    // a regression.
+    if frozen.len() > n_min_sheets {
+        return Ok((
+            None,
+            fallback(format!(
+                "peeled_{}_sheets_gt_min_{}",
+                frozen.len(),
+                n_min_sheets
+            )),
+        ));
+    }
+
+    let merged = cut_optimizer_2d::Solution::from_components(fitness, frozen, 0);
+    let candidate = build_candidate(merged);
+    let counters = CandidateSelectionCounters {
+        top_k_requested: u32::try_from(resolve_ga_runtime(req).top_k).unwrap_or(u32::MAX),
+        candidates_total: group_sizes.len() as u32,
+        candidates_valid: group_sizes.len() as u32,
+        ..Default::default()
+    };
+    let mut selection = build_candidate_selection_telemetry(&counters, &candidate);
+    selection.source = "dense_first_peeling".to_string();
+    let telemetry = PartitionTelemetry {
+        applied: true,
+        group_sizes,
+        group_area_pct,
+        fallback_reason: None,
+    };
+    Ok((
+        Some(RunOutcome {
+            candidate,
+            restarts_used: restarts_total,
+            timeout_reason: None,
+            restart_policy: None,
+            portfolio: None,
+            beam: None,
+            alns: None,
+            candidate_selection: Some(selection),
+        }),
+        telemetry,
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// V8b: post-GA rebalance (dense-first direction).
+//
+// Smart-retry strategy for lumpy fallback layouts: move parts from the
+// sparsest sheet onto the denser sheets (verified by an actual single-sheet
+// repack), draining the slack onto one remainder sheet.  Accepted by the
+// dense-first score (lead utilisation), not the balance score.
+// ---------------------------------------------------------------------------
+
+/// Dense-first quality score, lower is better: (sheets, -lead_util, -min_util)
+/// where lead_util is the mean utilisation of the n-1 densest sheets.
+fn dense_score(resp: &OptimizeResponse) -> (i32, f64, f64) {
+    let mut utils = per_sheet_utils(resp);
+    if utils.is_empty() {
+        return (i32::MAX, 0.0, 0.0);
+    }
+    utils.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    let lead = if utils.len() > 1 {
+        utils[..utils.len() - 1].iter().sum::<f64>() / (utils.len() - 1) as f64
+    } else {
+        utils[0]
+    };
+    (
+        resp.summary.used_stock_count as i32,
+        -lead,
+        -utils[utils.len() - 1],
+    )
+}
+
+async fn rebalance_attempt(
+    req: &OptimizeRequest,
+    best: &OptimizeResponse,
+    retry_idx: usize,
+) -> Result<Option<OptimizeResponse>, OptimizeError> {
+    let started = Instant::now();
+    let layout_mode = req.params.layout_mode.unwrap_or(LayoutMode::Guillotine);
+    let prepared = prepare_input(req)?;
+    if best.solutions.len() < 2 || !best.unplaced_items.is_empty() {
+        return Ok(None);
+    }
+    let Some(template) = prepared.stock_pieces.first().copied() else {
+        return Ok(None);
+    };
+    if prepared
+        .stock_pieces
+        .iter()
+        .any(|s| s.width != template.width || s.length != template.length)
+    {
+        return Ok(None);
+    }
+
+    // (item_id, instance) -> index into prepared.cut_pieces (== external_id
+    // by construction in prepare_input).
+    let mut piece_index: HashMap<(&str, u32), usize> = HashMap::new();
+    for (i, info) in prepared.instance_map.iter().enumerate() {
+        piece_index.insert((info.item_id.as_str(), info.instance), i);
+    }
+    let mut sheets: Vec<Vec<usize>> = Vec::with_capacity(best.solutions.len());
+    for sol in &best.solutions {
+        let mut ids = Vec::with_capacity(sol.placements.len());
+        for p in &sol.placements {
+            match piece_index.get(&(p.item_id.as_str(), p.instance)) {
+                Some(&i) => ids.push(i),
+                None => return Ok(None),
+            }
+        }
+        sheets.push(ids);
+    }
+
+    let utils = per_sheet_utils(best);
+    let donor = utils
+        .iter()
+        .enumerate()
+        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let mut receivers: Vec<usize> = (0..sheets.len()).filter(|&i| i != donor).collect();
+    receivers.sort_by(|&a, &b| {
+        utils[b]
+            .partial_cmp(&utils[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let time_limit_ms = req
+        .params
+        .time_limit_ms
+        .unwrap_or(10_000);
+    let pack_budget_ms = (time_limit_ms / 8).clamp(500, 2_000);
+    let total_budget_ms = time_limit_ms.saturating_mul(2).max(2_000);
+    let base_seed = req
+        .params
+        .seed
+        .unwrap_or(0)
+        .wrapping_add(77_777)
+        .wrapping_add(retry_idx as u64);
+
+    // Donor pieces, largest first: moving big slabs onto dense sheets frees
+    // the most slack per verified repack.
+    let mut donor_pieces = sheets[donor].clone();
+    donor_pieces.sort_by(|&a, &b| {
+        cut_piece_area(&prepared.cut_pieces[b]).cmp(&cut_piece_area(&prepared.cut_pieces[a]))
+    });
+
+    const MAX_PACK_TRIALS: usize = 10;
+    let mut packed: HashMap<usize, Candidate> = HashMap::new();
+    let mut moved = 0_usize;
+    let mut packs_tried = 0_usize;
+    for piece in donor_pieces {
+        if packs_tried >= MAX_PACK_TRIALS
+            || started.elapsed().as_millis() as u64 >= total_budget_ms
+        {
+            break;
+        }
+        for &r in &receivers {
+            if packs_tried >= MAX_PACK_TRIALS {
+                break;
+            }
+            let mut trial = sheets[r].clone();
+            trial.push(piece);
+            packs_tried += 1;
+            let seed =
+                base_seed.wrapping_add((packs_tried as u64).wrapping_mul(SEED_STRIDE));
+            if let Some((candidate, _)) =
+                pack_group_single_sheet(req, &prepared, &trial, layout_mode, seed, pack_budget_ms)
+                    .await?
+            {
+                sheets[r] = trial;
+                packed.insert(r, candidate);
+                sheets[donor].retain(|&x| x != piece);
+                moved += 1;
+                break;
+            }
+        }
+    }
+    if moved == 0 {
+        return Ok(None);
+    }
+
+    // Re-pack the remaining sheets (donor + untouched receivers) to obtain
+    // vendor-unit geometry for the merged solution.  If the donor emptied
+    // completely the sheet is dropped.
+    let mut merged_stocks = Vec::new();
+    let mut fitness = 1.0_f64;
+    let order: Vec<usize> = receivers
+        .iter()
+        .copied()
+        .chain(std::iter::once(donor))
+        .collect();
+    for idx in order {
+        if sheets[idx].is_empty() {
+            continue;
+        }
+        let candidate = match packed.remove(&idx) {
+            Some(c) => c,
+            None => {
+                let seed = base_seed
+                    .wrapping_add(((1_000 + idx) as u64).wrapping_mul(SEED_STRIDE));
+                match pack_group_single_sheet(
+                    req,
+                    &prepared,
+                    &sheets[idx],
+                    layout_mode,
+                    seed,
+                    pack_budget_ms,
+                )
+                .await?
+                {
+                    Some((c, _)) => c,
+                    None => return Ok(None),
+                }
+            }
+        };
+        fitness = fitness.min(candidate.solution.fitness);
+        merged_stocks.extend(candidate.solution.stock_pieces);
+    }
+    let merged = cut_optimizer_2d::Solution::from_components(fitness, merged_stocks, 0);
+    let candidate = build_candidate(merged);
+    let outcome = RunOutcome {
+        candidate,
+        restarts_used: packs_tried as u32,
+        timeout_reason: None,
+        restart_policy: None,
+        portfolio: None,
+        beam: None,
+        alns: None,
+        candidate_selection: None,
+    };
+    let include_svg = req.params.include_svg.unwrap_or(true);
+    let restarts_requested = req.params.restarts.unwrap_or(1).max(1);
+    let used_seed = req.params.seed.unwrap_or(0);
+    let time_ms = started.elapsed().as_millis() as u64;
+    Ok(Some(build_response_from_outcome(
+        req,
+        &prepared,
+        outcome,
+        time_ms,
+        restarts_requested,
+        used_seed,
+        layout_mode,
+        include_svg,
+        None,
+    )))
 }
 
 #[derive(Clone)]
