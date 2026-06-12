@@ -835,6 +835,452 @@ async fn pack_group_single_sheet(
     }
 }
 
+// ---------------------------------------------------------------------------
+// V9b: width-matched column constructor.
+//
+// The GA's guillotine packings leave thin vertical corridors because column
+// widths are not coordinated with the sheet width.  The logs/perfect etalons
+// all share one structure: vertical columns whose widths sum to ~the sheet
+// width, pieces of near-identical width stacked inside each column, waste
+// collected as one staircase at the corner.  This deterministic constructor
+// builds exactly that shape; its candidates compete with the GA attempts in
+// the peeling loop under the same selection rules, so it only ever replaces a
+// GA layout when it is at least as good.
+// ---------------------------------------------------------------------------
+
+/// Build one column-structured sheet from `pool`, removing the placed pieces.
+/// `tol` is the maximum allowed gap between the column width and a stacked
+/// piece's width (vendor units); larger tol packs more but leaves slivers.
+fn build_column_stock_piece(
+    prepared: &PreparedInput,
+    pool: &mut Vec<usize>,
+    sheet_w: usize,
+    sheet_h: usize,
+    gap: usize,
+    tol: usize,
+    anchor_by_area: bool,
+) -> Option<cut_optimizer_2d::ResultStockPiece> {
+    // (placed width, placed length) candidates per orientation.
+    let orientations = |idx: usize| -> Vec<(usize, usize)> {
+        let p = &prepared.cut_pieces[idx];
+        let mut v = vec![(p.width, p.length)];
+        if p.can_rotate && p.width != p.length {
+            v.push((p.length, p.width));
+        }
+        v
+    };
+
+    let mut placed: Vec<cut_optimizer_2d::ResultCutPiece> = Vec::new();
+    let mut x: usize = 0;
+    loop {
+        let space = sheet_w.saturating_sub(x);
+        if space == 0 || pool.is_empty() {
+            break;
+        }
+        // Anchor piece defines the column width.
+        let mut anchor: Option<(usize, usize, usize, u128)> = None; // (pool_pos, w, l, area)
+        for (pos, &idx) in pool.iter().enumerate() {
+            for (w, l) in orientations(idx) {
+                if w > space || l > sheet_h {
+                    continue;
+                }
+                let piece_area = area(w, l);
+                let better = match anchor {
+                    None => true,
+                    Some((_, bw, _, barea)) => {
+                        if anchor_by_area {
+                            piece_area > barea || (piece_area == barea && w > bw)
+                        } else {
+                            w > bw || (w == bw && piece_area > barea)
+                        }
+                    }
+                };
+                if better {
+                    anchor = Some((pos, w, l, piece_area));
+                }
+            }
+        }
+        let Some((anchor_pos, col_w, anchor_l, _)) = anchor else {
+            break;
+        };
+        let anchor_idx = pool.swap_remove(anchor_pos);
+        placed.push(cut_optimizer_2d::ResultCutPiece {
+            external_id: prepared.cut_pieces[anchor_idx].external_id,
+            x,
+            y: 0,
+            width: col_w,
+            length: anchor_l,
+            pattern_direction: CutPatternDirection::None,
+            is_rotated: col_w != prepared.cut_pieces[anchor_idx].width,
+        });
+        let mut y = anchor_l.saturating_add(gap);
+
+        // Stack width-matched pieces below the anchor.
+        loop {
+            let height_left = sheet_h.saturating_sub(y);
+            if height_left == 0 || pool.is_empty() {
+                break;
+            }
+            // Pick the piece whose width is closest to the column width
+            // (within tol), tie-break on the largest area placed.
+            let mut pick: Option<(usize, usize, usize, usize, u128)> = None; // (pos, w, l, sliver, area)
+            for (pos, &idx) in pool.iter().enumerate() {
+                for (w, l) in orientations(idx) {
+                    if w > col_w || w + tol < col_w || l > height_left {
+                        continue;
+                    }
+                    let sliver = col_w - w;
+                    let piece_area = area(w, l);
+                    let better = match pick {
+                        None => true,
+                        Some((_, _, _, bsliver, barea)) => {
+                            sliver < bsliver || (sliver == bsliver && piece_area > barea)
+                        }
+                    };
+                    if better {
+                        pick = Some((pos, w, l, sliver, piece_area));
+                    }
+                }
+            }
+            let Some((pos, w, l, _, _)) = pick else {
+                break;
+            };
+            let idx = pool.swap_remove(pos);
+            placed.push(cut_optimizer_2d::ResultCutPiece {
+                external_id: prepared.cut_pieces[idx].external_id,
+                x,
+                y,
+                width: w,
+                length: l,
+                pattern_direction: CutPatternDirection::None,
+                is_rotated: w != prepared.cut_pieces[idx].width,
+            });
+            y = y.saturating_add(l).saturating_add(gap);
+        }
+
+        x = x.saturating_add(col_w).saturating_add(gap);
+    }
+
+    if placed.is_empty() {
+        return None;
+    }
+    Some(cut_optimizer_2d::ResultStockPiece {
+        width: sheet_w,
+        length: sheet_h,
+        pattern_direction: CutPatternDirection::None,
+        cut_pieces: placed,
+        waste_pieces: Vec::new(),
+        price: 0,
+    })
+}
+
+/// Build one shelf-structured (FFDH) sheet from `pool`, removing the placed
+/// pieces.  Pieces are oriented landscape (`wide_orient`) or portrait, sorted
+/// by height, packed into horizontal shelves first-fit; shelves are then
+/// reordered by used width (widest at the top) and pieces inside each shelf
+/// by height, so the free space forms one monotonic staircase running to the
+/// bottom-right corner — the logs/perfect waste shape.
+fn build_shelf_stock_piece(
+    prepared: &PreparedInput,
+    pool: &mut Vec<usize>,
+    sheet_w: usize,
+    sheet_h: usize,
+    gap: usize,
+    wide_orient: bool,
+) -> Option<cut_optimizer_2d::ResultStockPiece> {
+    struct ShelfPiece {
+        idx: usize,
+        w: usize,
+        l: usize,
+    }
+    struct Shelf {
+        height: usize,
+        used_w: usize,
+        pieces: Vec<ShelfPiece>,
+    }
+
+    let orient = |idx: usize| -> (usize, usize) {
+        let p = &prepared.cut_pieces[idx];
+        if !p.can_rotate || p.width == p.length {
+            return (p.width, p.length);
+        }
+        let (a, b) = (p.width.max(p.length), p.width.min(p.length));
+        if wide_orient {
+            (a, b)
+        } else {
+            (b, a)
+        }
+    };
+
+    // Tallest pieces first so each shelf's height is set by its first piece.
+    let mut order: Vec<usize> = pool.clone();
+    order.sort_by(|&a, &b| {
+        let (wa, la) = orient(a);
+        let (wb, lb) = orient(b);
+        lb.cmp(&la).then(wb.cmp(&wa))
+    });
+
+    let mut shelves: Vec<Shelf> = Vec::new();
+    let mut used_h: usize = 0;
+    let mut placed_ids: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for idx in order {
+        let (mut w, mut l) = orient(idx);
+        if w > sheet_w {
+            // Fall back to the other orientation if the preferred one is too
+            // wide for the sheet.
+            std::mem::swap(&mut w, &mut l);
+            if w > sheet_w {
+                continue;
+            }
+        }
+        let mut target: Option<usize> = None;
+        for (s, shelf) in shelves.iter().enumerate() {
+            if l <= shelf.height && shelf.used_w + gap + w <= sheet_w {
+                target = Some(s);
+                break;
+            }
+        }
+        match target {
+            Some(s) => {
+                let shelf = &mut shelves[s];
+                shelf.used_w += gap + w;
+                shelf.pieces.push(ShelfPiece { idx, w, l });
+            }
+            None => {
+                let next_h = used_h + if shelves.is_empty() { 0 } else { gap } + l;
+                if next_h > sheet_h {
+                    continue;
+                }
+                used_h = next_h;
+                shelves.push(Shelf {
+                    height: l,
+                    used_w: w,
+                    pieces: vec![ShelfPiece { idx, w, l }],
+                });
+            }
+        }
+        placed_ids.insert(idx);
+    }
+    if shelves.is_empty() {
+        return None;
+    }
+
+    // Monotonic staircase: widest shelf on top, tallest piece on the left.
+    shelves.sort_by(|a, b| b.used_w.cmp(&a.used_w));
+    let mut placed: Vec<cut_optimizer_2d::ResultCutPiece> = Vec::new();
+    let mut y: usize = 0;
+    for shelf in &mut shelves {
+        shelf.pieces.sort_by(|a, b| b.l.cmp(&a.l));
+        let mut x: usize = 0;
+        for p in &shelf.pieces {
+            placed.push(cut_optimizer_2d::ResultCutPiece {
+                external_id: prepared.cut_pieces[p.idx].external_id,
+                x,
+                y,
+                width: p.w,
+                length: p.l,
+                pattern_direction: CutPatternDirection::None,
+                is_rotated: p.w != prepared.cut_pieces[p.idx].width,
+            });
+            x = x.saturating_add(p.w).saturating_add(gap);
+        }
+        y = y.saturating_add(shelf.height).saturating_add(gap);
+    }
+    pool.retain(|i| !placed_ids.contains(i));
+    Some(cut_optimizer_2d::ResultStockPiece {
+        width: sheet_w,
+        length: sheet_h,
+        pattern_direction: CutPatternDirection::None,
+        cut_pieces: placed,
+        waste_pieces: Vec::new(),
+        price: 0,
+    })
+}
+
+/// Column-layout candidates over `remaining`.  When `multi_sheet` is false
+/// the candidate holds one best-effort dense sheet (peel competitor); when
+/// true it must place every remaining piece (slack/remainder competitor).
+fn build_column_candidates(
+    prepared: &PreparedInput,
+    remaining: &[usize],
+    sheet_w: usize,
+    sheet_h: usize,
+    gap: usize,
+    multi_sheet: bool,
+) -> Vec<Candidate> {
+    // Generators: width-matched columns (tol in vendor units = mm * SCALE)
+    // and monotonic FFDH shelves (landscape / portrait orientation).
+    enum Gen {
+        Columns { tol: usize, by_area: bool },
+        Shelves { wide: bool },
+    }
+    const COLUMN_VARIANTS: [(usize, bool); 4] =
+        [(0, false), (40_000, false), (80_000, false), (40_000, true)];
+    let mut generators: Vec<Gen> = COLUMN_VARIANTS
+        .iter()
+        .map(|&(tol, by_area)| Gen::Columns { tol, by_area })
+        .collect();
+    generators.push(Gen::Shelves { wide: true });
+    generators.push(Gen::Shelves { wide: false });
+
+    let mut out = Vec::new();
+    for generator in &generators {
+        let mut pool: Vec<usize> = remaining.to_vec();
+        let mut stocks = Vec::new();
+        loop {
+            let stock = match generator {
+                Gen::Columns { tol, by_area } => build_column_stock_piece(
+                    prepared, &mut pool, sheet_w, sheet_h, gap, *tol, *by_area,
+                ),
+                Gen::Shelves { wide } => {
+                    build_shelf_stock_piece(prepared, &mut pool, sheet_w, sheet_h, gap, *wide)
+                }
+            };
+            match stock {
+                Some(stock) => stocks.push(stock),
+                None => break,
+            }
+            if !multi_sheet || pool.is_empty() {
+                break;
+            }
+        }
+        if stocks.is_empty() || (multi_sheet && !pool.is_empty()) {
+            continue;
+        }
+        let solution = cut_optimizer_2d::Solution::from_components(1.0, stocks, 0);
+        out.push(build_candidate(solution));
+    }
+    out
+}
+
+/// Count connected free regions (>= 5000 mm^2) on a sheet, 10mm grid, with
+/// pieces inflated by the kerf gap.  Mirrors the benchmark's flood-fill
+/// metric closely enough to rank candidates by waste fragmentation.
+fn waste_region_count(stock: &cut_optimizer_2d::ResultStockPiece, gap: usize) -> u32 {
+    const CELL: usize = 10_000; // 10mm in vendor units
+    let nx = stock.width / CELL;
+    let ny = stock.length / CELL;
+    if nx == 0 || ny == 0 {
+        return 0;
+    }
+    let mut occ = vec![false; nx * ny];
+    for p in &stock.cut_pieces {
+        let x0 = p.x.saturating_sub(gap);
+        let y0 = p.y.saturating_sub(gap);
+        let x1 = (p.x + p.width + gap).min(stock.width);
+        let y1 = (p.y + p.length + gap).min(stock.length);
+        let i0 = x0 / CELL;
+        let j0 = y0 / CELL;
+        let i1 = (x1.saturating_sub(1) / CELL).min(nx - 1);
+        let j1 = (y1.saturating_sub(1) / CELL).min(ny - 1);
+        for j in j0..=j1 {
+            for i in i0..=i1 {
+                occ[j * nx + i] = true;
+            }
+        }
+    }
+    let mut seen = vec![false; nx * ny];
+    let mut regions = 0_u32;
+    let mut stack: Vec<(usize, usize)> = Vec::new();
+    for j in 0..ny {
+        for i in 0..nx {
+            if occ[j * nx + i] || seen[j * nx + i] {
+                continue;
+            }
+            let mut cells = 0_u64;
+            stack.push((i, j));
+            seen[j * nx + i] = true;
+            while let Some((ci, cj)) = stack.pop() {
+                cells += 1;
+                if ci > 0 && !occ[cj * nx + ci - 1] && !seen[cj * nx + ci - 1] {
+                    seen[cj * nx + ci - 1] = true;
+                    stack.push((ci - 1, cj));
+                }
+                if ci + 1 < nx && !occ[cj * nx + ci + 1] && !seen[cj * nx + ci + 1] {
+                    seen[cj * nx + ci + 1] = true;
+                    stack.push((ci + 1, cj));
+                }
+                if cj > 0 && !occ[(cj - 1) * nx + ci] && !seen[(cj - 1) * nx + ci] {
+                    seen[(cj - 1) * nx + ci] = true;
+                    stack.push((ci, cj - 1));
+                }
+                if cj + 1 < ny && !occ[(cj + 1) * nx + ci] && !seen[(cj + 1) * nx + ci] {
+                    seen[(cj + 1) * nx + ci] = true;
+                    stack.push((ci, cj + 1));
+                }
+            }
+            // 5000 mm^2 = 50 cells of 10x10mm.
+            if cells >= 50 {
+                regions += 1;
+            }
+        }
+    }
+    regions
+}
+
+fn candidate_waste_regions(candidate: &Candidate, gap: usize) -> u32 {
+    candidate
+        .solution
+        .stock_pieces
+        .iter()
+        .map(|s| waste_region_count(s, gap))
+        .sum()
+}
+
+/// Peel-loop selection rule, shared by GA attempts and column candidates.
+fn peel_candidate_better(
+    candidate: &Candidate,
+    best: Option<&Candidate>,
+    last_iteration: bool,
+    remaining_area: u128,
+    usable_area: u128,
+    sheets_left_after: usize,
+    gap: usize,
+) -> bool {
+    if last_iteration {
+        // Remainder (slack sheet): fewer sheets, then the LEAST fragmented
+        // waste (V9b: one staircase beats a slightly larger but scattered
+        // corner rect), then the larger corner zone.
+        match best {
+            None => true,
+            Some(best) => {
+                (
+                    candidate.used_stock_count,
+                    candidate_waste_regions(candidate, gap),
+                    std::cmp::Reverse(candidate.corner_free_area_units),
+                ) < (
+                    best.used_stock_count,
+                    candidate_waste_regions(best, gap),
+                    std::cmp::Reverse(best.corner_free_area_units),
+                )
+            }
+        }
+    } else {
+        let densest_util = candidate
+            .solution
+            .stock_pieces
+            .iter()
+            .map(stock_piece_util_pct)
+            .fold(0.0_f64, f64::max);
+        let frozen_used = (usable_area as f64 * densest_util / 100.0) as u128;
+        let feasible = remaining_area.saturating_sub(frozen_used)
+            <= usable_area.saturating_mul(sheets_left_after as u128);
+        feasible
+            && match best {
+                None => true,
+                Some(best) => {
+                    densest_util
+                        > best
+                            .solution
+                            .stock_pieces
+                            .iter()
+                            .map(stock_piece_util_pct)
+                            .fold(0.0_f64, f64::max)
+                }
+            }
+    }
+}
+
 fn stock_piece_util_pct(stock: &cut_optimizer_2d::ResultStockPiece) -> f64 {
     let stock_area = area(stock.width, stock.length);
     if stock_area == 0 {
@@ -954,40 +1400,38 @@ async fn run_partitioned(
                 continue;
             };
             restarts_total += used;
-            let better = if last_iteration {
-                // Remainder: fewer sheets first, then the larger corner zone.
-                match &best_attempt {
-                    None => true,
-                    Some(best) => {
-                        (candidate.used_stock_count, std::cmp::Reverse(candidate.corner_free_area_units))
-                            < (best.used_stock_count, std::cmp::Reverse(best.corner_free_area_units))
-                    }
-                }
-            } else {
-                let densest_util = candidate
-                    .solution
-                    .stock_pieces
-                    .iter()
-                    .map(stock_piece_util_pct)
-                    .fold(0.0_f64, f64::max);
-                let frozen_used = (usable_area as f64 * densest_util / 100.0) as u128;
-                let feasible = remaining_area.saturating_sub(frozen_used)
-                    <= usable_area.saturating_mul(sheets_left_after as u128);
-                feasible
-                    && match &best_attempt {
-                        None => true,
-                        Some(best) => {
-                            densest_util
-                                > best
-                                    .solution
-                                    .stock_pieces
-                                    .iter()
-                                    .map(stock_piece_util_pct)
-                                    .fold(0.0_f64, f64::max)
-                        }
-                    }
-            };
-            if better {
+            if peel_candidate_better(
+                &candidate,
+                best_attempt.as_ref(),
+                last_iteration,
+                remaining_area,
+                usable_area,
+                sheets_left_after,
+                prepared.cut_width,
+            ) {
+                best_attempt = Some(candidate);
+            }
+        }
+        // V9b: deterministic width-matched column layouts compete with the
+        // GA attempts under the same selection rule — they win only when at
+        // least as dense (peels) / at least as corner-consolidated (slack).
+        for candidate in build_column_candidates(
+            prepared,
+            &remaining,
+            template.width,
+            template.length,
+            prepared.cut_width,
+            last_iteration,
+        ) {
+            if peel_candidate_better(
+                &candidate,
+                best_attempt.as_ref(),
+                last_iteration,
+                remaining_area,
+                usable_area,
+                sheets_left_after,
+                prepared.cut_width,
+            ) {
                 best_attempt = Some(candidate);
             }
         }
