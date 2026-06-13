@@ -1282,6 +1282,51 @@ fitness = util.powf(2.0)
 
 **Место в коде**: `vendor/cut-optimizer-2d/src/guillotine.rs` и `maxrects.rs` — fitness-функция.
 
+### V15 результат sweep (2026-06-14)
+
+Ветка реализации: `feat/v15-zones-fitness`. Продолжение sweep/документация: `feat/v15-sweep-results`.
+
+Реализовано:
+- `vendor/cut-optimizer-2d/src/lib.rs`: `free_rect_connected_components()` через union-find по free rects с kerf-tolerance.
+- `vendor/cut-optimizer-2d/src/guillotine.rs` и `maxrects.rs`: fitness заменён с proxy `free_rects.len()` на `util^2 * zone_factor * fill_factor`.
+- Env-параметры: `FREECUT_GA_ZONE_PENALTY` (default `0.3`), `FREECUT_GA_FILL_PENALTY` (default `0.1`).
+- Бенчмарк: `scripts/test_v15_zones_fitness.py`, fixture `tests/fixtures/multisheet_varied_4sheets.json`, seeds 1..30, `guillotine+portfolio`, `partition.sheet_budget_ms=20000`, `time_limit_ms=10000`, `restarts=5`, smart retry.
+
+Численные результаты:
+
+| Конфиг | 4-sheet | lead_util | min_util | avg zones | <=4 zones | <=5 zones | avg max_corner | Лучший seed |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| V8 20s | 30/30 | 94.20% | 85.10% | 7.93 | 0/30 | 1/30 | 461k | seed 16: 5 zones |
+| V9b | 30/30 | 94.26% | 84.93% | 6.93 | 0/30 | 3/30 | 421k | seed 2: 5 zones |
+| **V15 zp=0.3 fp=0.1** | **30/30** | **94.47%** | 84.29% | **6.07** | **3/30** | 4/30 | 397k | seeds **5/20/28: 4 zones** |
+| V15 zp=0.5 fp=0.1 | 30/30 | **94.49%** | 84.24% | **5.97** | 1/30 | **6/30** | 398k | seed **8: 4 zones** |
+| V15 zp=0.8 fp=0.1 | 0/30 | — | — | — | 0/30 | 0/30 | — | все 30 запросов HTTP 408 |
+
+Выводы:
+1. ✅ V15 — первый реальный прорыв по zones после V9b/V13: появились раскрои с целевыми **4 зонами = 1 зона на лист**.
+2. ✅ `zp=0.3` лучше как основной профиль: даёт 3 perfect-layouts с 4 зонами и визуально более пригодный остаток, при сохранении lead 94.47%.
+3. ⚠️ `zp=0.5` чуть лучше по среднему zones (5.97 vs 6.07) и по числу <=5 zones, но хуже по perfect-rate (1/30 vs 3/30) и лучший SVG имеет меньший usable corner (260k vs 327k у `zp=0.3 seed=5`).
+4. ❌ `zp=0.8` фальсифицирован: 30/30 HTTP 408 на текущем benchmark-протоколе. Такой pressure слишком агрессивен/дорог для SLA и не должен становиться default.
+5. ⚠️ Обычный `cargo test` на V15 может падать в parallel mode из-за short-budget timeout-тестов (4 failures 408→200). Изолированный тест проходит, `cargo test -- --test-threads=1` проходит: 43 passed, 6 ignored. Корень — CPU contention + более дорогой V15 fitness; `spawn_blocking` slice после timeout не останавливается мгновенно.
+
+Визуальный аудит (`ai_docs/tmp/layout_visual_compare_v15_sheets.png`):
+- V8/V9b часто дают крупный corner, но остаток разрывается внутренними карманами/коридорами; визуально это не один пригодный кусок.
+- V9b `seed=5` уже близок к цели, но 4-й лист содержит мелкие верхние/центральные карманы, поэтому остаётся 5 зон.
+- V15 `zp=0.3 seed=5/20/28` визуально формирует один связный остаток на каждом листе. Первые 2-3 листа особенно чистые: edge-to-edge блоки и один правый/нижний остаток.
+- V15 `zp=0.5 seed=8` тоже даёт 4 зоны, но через более тонкие вертикальные хвосты и меньший usable corner; визуально хуже для полезного остатка.
+
+Артефакты:
+- `ai_docs/tmp/best_layouts_v15/v15_zp0.3_fp0.1_summary.json`
+- `ai_docs/tmp/best_layouts_v15/v15_zp0.5_fp0.1_summary.json`
+- `ai_docs/tmp/best_layouts_v15/v15_zp0.8_fp0.1_summary.json` (пустой, all 408)
+- Лучший визуальный SVG: `ai_docs/tmp/best_layouts_v15/rank_01_zones4_seed_5.svg`
+- Сравнительный PNG: `ai_docs/tmp/layout_visual_compare_v15_sheets.png`
+
+Следующий рычаг после V15:
+- Не усиливать `zp` дальше.
+- Делать V16 как per-sheet repair для оставшихся листов с 2+ зонами/тонкими хвостами: цель снизить **средний** zones 6.0→5.0 без потери 30/30 4-sheet.
+- Отдельно рассмотреть multi-profile candidate pool (`zp=0.3` + `zp=0.5`) только как генератор кандидатов, а не как единый default.
+
 ### V14 результат (завершено, нейтрально)
 A3: Guillotine-repack nested peel winners — метрики идентичны V13.
 Вывод: V13 zones penalty уже смещает peel-селектор в сторону guillotine; nested побеждает редко, и guillotine-repack не может воспроизвести ту же плотность.
@@ -1299,4 +1344,5 @@ A3: Guillotine-repack nested peel winners — метрики идентичны 
 | `feat/v12-nested-first-peel` | v10 | V12 — РЕГРЕССИЯ |
 | `feat/v13-nested-zones-hybrid` | v11 | V13 — лучший компромисс |
 | `feat/v14-guill-repack` | v13 | A3 guillotine-repack — ЗАВЕРШЕНО, без улучшения |
-| `feat/v15-zones-fitness` | v13 | **В РАБОТЕ** — V15 zones-aware GA fitness |
+| `feat/v15-zones-fitness` | v13 | V15 zones-aware GA fitness — реализовано, лучший default `zp=0.3` |
+| `feat/v15-sweep-results` | v15 | V15 sweep/doc continuation — `zp=0.8` фальсифицирован, выводы зафиксированы |
