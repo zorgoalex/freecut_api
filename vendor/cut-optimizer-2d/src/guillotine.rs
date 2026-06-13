@@ -131,8 +131,33 @@ impl Bin for GuillotineBin {
                 .iter()
                 .fold(0, |acc, fr| acc + fr.width as u64 * fr.length as u64) as f64;
 
-        // Fragmentation penalty (0.5 = best balance)
-        (used_area / (used_area + free_area) as f64).powf(2.0 + self.free_rects.len() as f64 * 0.2)
+        let total_area = used_area + free_area;
+        if total_area == 0.0 {
+            return 0.0;
+        }
+        let util = used_area / total_area;
+
+        // V15: zones-aware fitness.
+        // Replace raw free_rects.len() fragmentation proxy with connected-
+        // component count on free rects — a much better approximation of
+        // actual waste zones.
+        let (n_zones, largest_zone_area) =
+            free_rect_connected_components(&self.free_rects, self.blade_width);
+        let lambda_z = ga_zone_penalty();
+        let lambda_f = ga_fill_penalty();
+
+        // Zone penalty: exponential decay for each zone beyond the first.
+        let zone_factor = (-(lambda_z * (n_zones.saturating_sub(1)) as f64)).exp();
+
+        // Fill penalty: reward having a single large waste component.
+        let total_free = free_area.max(1.0);
+        let largest_fill = largest_zone_area as f64 / total_free;
+        let fill_factor = (-(lambda_f * (1.0 - largest_fill))).exp();
+
+        // Combined: util^2 * zone_factor * fill_factor
+        // The exponent 2.0 maintains the original shape; zone and fill
+        // factors provide additional selection pressure toward 1-zone layouts.
+        util.powf(2.0) * zone_factor * fill_factor
     }
 
     fn price(&self) -> usize {

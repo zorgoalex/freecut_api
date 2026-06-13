@@ -373,6 +373,103 @@ impl Fit {
     }
 }
 
+// ---------------------------------------------------------------------------
+// V15: zones-aware GA fitness helpers.
+//
+// Connected-component counting on free rectangles gives a cheap approximation
+// of waste zones without grid flood-fill.  Two free rects are "connected"
+// when they touch or overlap (with a small tolerance for the kerf gap).
+//
+// Env-configurable parameters (read once, cached):
+//   FREECUT_GA_ZONE_PENALTY  (default 0.3) — per-zone exponential penalty
+//   FREECUT_GA_FILL_PENALTY  (default 0.1) — largest-component fill penalty
+// ---------------------------------------------------------------------------
+
+fn ga_zone_penalty() -> f64 {
+    static VAL: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *VAL.get_or_init(|| {
+        std::env::var("FREECUT_GA_ZONE_PENALTY")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.3)
+    })
+}
+
+fn ga_fill_penalty() -> f64 {
+    static VAL: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *VAL.get_or_init(|| {
+        std::env::var("FREECUT_GA_FILL_PENALTY")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.1)
+    })
+}
+
+/// Count connected components among `free_rects` using union-find.
+/// Two rects are connected when their inflated bounding boxes touch
+/// (tolerance = blade_width, so kerf-adjacent waste zones merge).
+fn free_rect_connected_components(free_rects: &[Rect], blade_width: usize) -> (usize, u64) {
+    let n = free_rects.len();
+    if n == 0 {
+        return (0, 0);
+    }
+    // Union-Find with path compression.
+    let mut parent: Vec<usize> = (0..n).collect();
+    let mut rank: Vec<usize> = vec![0; n];
+
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    fn union(parent: &mut [usize], rank: &mut [usize], a: usize, b: usize) {
+        let ra = find(parent, a);
+        let rb = find(parent, b);
+        if ra == rb {
+            return;
+        }
+        if rank[ra] < rank[rb] {
+            parent[ra] = rb;
+        } else if rank[ra] > rank[rb] {
+            parent[rb] = ra;
+        } else {
+            parent[rb] = ra;
+            rank[ra] += 1;
+        }
+    }
+
+    let tol = blade_width;
+    for i in 0..n {
+        let ri = &free_rects[i];
+        let x1i = ri.x + ri.width;
+        let y1i = ri.y + ri.length;
+        for j in (i + 1)..n {
+            let rj = &free_rects[j];
+            let x1j = rj.x + rj.width;
+            let y1j = rj.y + rj.length;
+            // Touch/overlap with tolerance.
+            if ri.x <= x1j + tol && x1i + tol >= rj.x && ri.y <= y1j + tol && y1i + tol >= rj.y {
+                union(&mut parent, &mut rank, i, j);
+            }
+        }
+    }
+
+    // Count distinct roots and find the largest component area.
+    let mut root_area: std::collections::HashMap<usize, u64> = std::collections::HashMap::new();
+    for i in 0..n {
+        let root = find(&mut parent, i);
+        let r = &free_rects[i];
+        let area = r.width as u64 * r.length as u64;
+        *root_area.entry(root).or_insert(0) += area;
+    }
+    let n_components = root_area.len();
+    let largest_area = root_area.values().copied().max().unwrap_or(0);
+    (n_components, largest_area)
+}
+
+
 /// Represents a bin used for bin-packing.
 trait Bin {
     /// Heuristic used for inserting `CutPiece`s.
