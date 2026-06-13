@@ -251,7 +251,12 @@ async fn optimize_request_internal(
     if prepared.cut_pieces.is_empty() {
         let time_ms = start.elapsed().as_millis() as u64;
         let svg = if include_svg {
-            Some(build_svg(&[], &prepared.oversized_items, &prepared.trim, 0.0))
+            Some(build_svg(
+                &[],
+                &prepared.oversized_items,
+                &prepared.trim,
+                0.0,
+            ))
         } else {
             None
         };
@@ -291,15 +296,15 @@ async fn optimize_request_internal(
         if let Some(partition_cfg) = &req.params.partition {
             if partition_cfg.enabled.unwrap_or(true) {
                 let (outcome, telemetry) =
-                    run_partitioned(&req, &prepared, layout_mode, used_seed, time_limit_ms)
-                        .await?;
+                    run_partitioned(&req, &prepared, layout_mode, used_seed, time_limit_ms).await?;
                 partitioned_outcome = outcome;
                 partition_telemetry = Some(telemetry);
             }
         }
     }
 
-    let run_outcome = match (partitioned_outcome, mode) {
+    let repair_partitioned_sheets = matches!(&mode, SolveMode::Default);
+    let mut run_outcome = match (partitioned_outcome, mode) {
         (Some(outcome), _) => outcome,
         (None, SolveMode::Default) => match &req.params.portfolio {
             Some(portfolio_cfg) if portfolio_cfg.enabled.unwrap_or(true) => {
@@ -409,6 +414,24 @@ async fn optimize_request_internal(
         }
     };
 
+    if repair_partitioned_sheets
+        && partition_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.applied)
+            .unwrap_or(false)
+        && sheet_repair_enabled()
+    {
+        repair_fragmented_sheets(
+            &req,
+            &prepared,
+            &mut run_outcome.candidate,
+            layout_mode,
+            used_seed.wrapping_add(161_616),
+            time_limit_ms,
+        )
+        .await?;
+    }
+
     let time_ms = start.elapsed().as_millis() as u64;
 
     Ok(build_response_from_outcome(
@@ -474,7 +497,12 @@ fn build_response_from_outcome(
 
     let svg = if include_svg {
         let gap_mm = req.params.kerf_mm + req.params.spacing_mm;
-        Some(build_svg(&solutions, &unplaced_items, &prepared.trim, gap_mm))
+        Some(build_svg(
+            &solutions,
+            &unplaced_items,
+            &prepared.trim,
+            gap_mm,
+        ))
     } else {
         None
     };
@@ -562,14 +590,8 @@ fn assess_failure(resp: &OptimizeResponse) -> Option<FailureMode> {
         return Some(FailureMode::NoSolution);
     }
     let n_sheets = resp.summary.used_stock_count as u32;
-    let min_util = utils
-        .iter()
-        .copied()
-        .fold(f64::INFINITY, f64::min);
-    let max_util = utils
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
+    let min_util = utils.iter().copied().fold(f64::INFINITY, f64::min);
+    let max_util = utils.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let range = max_util - min_util;
 
     // "Too many sheets" is the worst case — it means we failed to find a
@@ -596,7 +618,11 @@ fn assess_failure(resp: &OptimizeResponse) -> Option<FailureMode> {
     None
 }
 
-fn choose_strategy(failure: &FailureMode, retry_idx: usize, rebalance_enabled: bool) -> &'static str {
+fn choose_strategy(
+    failure: &FailureMode,
+    retry_idx: usize,
+    rebalance_enabled: bool,
+) -> &'static str {
     match failure {
         FailureMode::NoSolution => "different_seed",
         FailureMode::Imbalanced { .. } | FailureMode::Lumpy { .. } => {
@@ -1296,8 +1322,7 @@ fn peel_candidate_better(
         if !feasible {
             return false;
         }
-        let candidate_zones =
-            densest_sheet_waste_regions(&candidate.solution.stock_pieces, gap);
+        let candidate_zones = densest_sheet_waste_regions(&candidate.solution.stock_pieces, gap);
         let candidate_effective =
             densest_util - (candidate_zones.saturating_sub(1) as f64) * ZONES_PENALTY_PP;
         match best {
@@ -1309,8 +1334,7 @@ fn peel_candidate_better(
                     .iter()
                     .map(stock_piece_util_pct)
                     .fold(0.0_f64, f64::max);
-                let best_zones =
-                    densest_sheet_waste_regions(&best.solution.stock_pieces, gap);
+                let best_zones = densest_sheet_waste_regions(&best.solution.stock_pieces, gap);
                 let best_effective =
                     best_densest_util - (best_zones.saturating_sub(1) as f64) * ZONES_PENALTY_PP;
                 if (candidate_effective - best_effective).abs() < 0.01 {
@@ -1339,6 +1363,144 @@ fn stock_piece_util_pct(stock: &cut_optimizer_2d::ResultStockPiece) -> f64 {
         .map(|p| area(p.width, p.length))
         .sum();
     used as f64 / stock_area as f64 * 100.0
+}
+
+fn stock_piece_external_ids(stock: &cut_optimizer_2d::ResultStockPiece) -> Option<Vec<usize>> {
+    let mut ids = Vec::with_capacity(stock.cut_pieces.len());
+    for piece in &stock.cut_pieces {
+        ids.push(piece.external_id?);
+    }
+    ids.sort_unstable();
+    Some(ids)
+}
+
+fn sheet_repair_better(
+    original: &cut_optimizer_2d::ResultStockPiece,
+    repaired: &cut_optimizer_2d::ResultStockPiece,
+    gap: usize,
+) -> bool {
+    if original.width != repaired.width || original.length != repaired.length {
+        return false;
+    }
+
+    if stock_piece_external_ids(original) != stock_piece_external_ids(repaired) {
+        return false;
+    }
+
+    let original_zones = waste_region_count(original, gap);
+    let repaired_zones = waste_region_count(repaired, gap);
+    repaired_zones < original_zones
+}
+
+fn sheet_repair_enabled() -> bool {
+    match std::env::var("FREECUT_SHEET_REPAIR") {
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => false,
+    }
+}
+
+async fn repair_fragmented_sheets(
+    req: &OptimizeRequest,
+    prepared: &PreparedInput,
+    candidate: &mut Candidate,
+    layout_mode: LayoutMode,
+    base_seed: u64,
+    time_limit_ms: u64,
+) -> Result<(), OptimizeError> {
+    const MAX_REPAIR_SHEETS: usize = 4;
+    const MAX_ATTEMPTS_PER_SHEET: usize = 2;
+
+    if candidate.solution.stock_pieces.len() < 2 {
+        return Ok(());
+    }
+
+    let started = Instant::now();
+    let total_budget_ms = (time_limit_ms / 5).clamp(500, 3_000);
+    let pack_budget_ms = (time_limit_ms / 12).clamp(500, 1_500);
+    let mut repaired_stocks = candidate.solution.stock_pieces.clone();
+    let original_total_zones = candidate_waste_regions(candidate, prepared.cut_width);
+    let mut accepted = 0_usize;
+    let mut considered = 0_usize;
+
+    for (sheet_idx, original) in candidate.solution.stock_pieces.iter().enumerate() {
+        if considered >= MAX_REPAIR_SHEETS
+            || started.elapsed().as_millis() as u64 >= total_budget_ms
+        {
+            break;
+        }
+        if waste_region_count(original, prepared.cut_width) <= 1 {
+            continue;
+        }
+        let Some(group) = stock_piece_external_ids(original) else {
+            continue;
+        };
+        if group.len() < 2 {
+            continue;
+        }
+        considered += 1;
+
+        for constructed in build_column_candidates(
+            prepared,
+            &group,
+            original.width,
+            original.length,
+            prepared.cut_width,
+            false,
+        ) {
+            let Some(repaired) = constructed.solution.stock_pieces.first() else {
+                continue;
+            };
+            if sheet_repair_better(original, repaired, prepared.cut_width) {
+                repaired_stocks[sheet_idx] = repaired.clone();
+                accepted += 1;
+                break;
+            }
+        }
+        if sheet_repair_better(original, &repaired_stocks[sheet_idx], prepared.cut_width) {
+            continue;
+        }
+
+        for attempt_idx in 0..MAX_ATTEMPTS_PER_SHEET {
+            if started.elapsed().as_millis() as u64 >= total_budget_ms {
+                break;
+            }
+            let seed = base_seed
+                .wrapping_add((sheet_idx as u64).wrapping_mul(10_000_019))
+                .wrapping_add((attempt_idx as u64).wrapping_mul(SEED_STRIDE));
+            let Some((repair_candidate, _)) =
+                pack_group_single_sheet(req, prepared, &group, layout_mode, seed, pack_budget_ms)
+                    .await?
+            else {
+                continue;
+            };
+            let Some(repaired) = repair_candidate.solution.stock_pieces.first() else {
+                continue;
+            };
+            if sheet_repair_better(original, repaired, prepared.cut_width) {
+                repaired_stocks[sheet_idx] = repaired.clone();
+                accepted += 1;
+                break;
+            }
+        }
+    }
+
+    if accepted > 0 {
+        let mut solution = cut_optimizer_2d::Solution::from_components(
+            candidate.solution.fitness,
+            repaired_stocks,
+            0,
+        );
+        compact_solution(&mut solution, prepared.cut_width);
+        let repaired_candidate = build_candidate(solution);
+        if candidate_waste_regions(&repaired_candidate, prepared.cut_width) < original_total_zones {
+            *candidate = repaired_candidate;
+        }
+    }
+
+    Ok(())
 }
 
 async fn run_partitioned(
@@ -1439,9 +1601,8 @@ async fn run_partitioned(
                 break;
             }
             let this_budget = attempt_budget_ms.min((budget - peel_elapsed.min(budget)).max(200));
-            let seed = base_seed.wrapping_add(
-                ((peel_idx << 8) + attempt_idx + 1).wrapping_mul(SEED_STRIDE),
-            );
+            let seed = base_seed
+                .wrapping_add(((peel_idx << 8) + attempt_idx + 1).wrapping_mul(SEED_STRIDE));
             // V11: alternate guillotine/nested in peel attempts for non-last
             // iterations.  Nested is not constrained by guillotine cuts and
             // can pack the densest sheet more tightly, potentially raising
@@ -1514,16 +1675,11 @@ async fn run_partitioned(
         }
 
         // Freeze the densest sheet as-is and drop its parts from the pool.
-        let Some(densest) = candidate
-            .solution
-            .stock_pieces
-            .into_iter()
-            .max_by(|a, b| {
-                stock_piece_util_pct(a)
-                    .partial_cmp(&stock_piece_util_pct(b))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-        else {
+        let Some(densest) = candidate.solution.stock_pieces.into_iter().max_by(|a, b| {
+            stock_piece_util_pct(a)
+                .partial_cmp(&stock_piece_util_pct(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) else {
             return Ok((None, fallback(format!("peel_{}_empty", peel_idx))));
         };
         if densest.cut_pieces.is_empty() {
@@ -1677,10 +1833,7 @@ async fn rebalance_attempt(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    let time_limit_ms = req
-        .params
-        .time_limit_ms
-        .unwrap_or(10_000);
+    let time_limit_ms = req.params.time_limit_ms.unwrap_or(10_000);
     let pack_budget_ms = (time_limit_ms / 8).clamp(500, 2_000);
     let total_budget_ms = time_limit_ms.saturating_mul(2).max(2_000);
     let base_seed = req
@@ -1702,8 +1855,7 @@ async fn rebalance_attempt(
     let mut moved = 0_usize;
     let mut packs_tried = 0_usize;
     for piece in donor_pieces {
-        if packs_tried >= MAX_PACK_TRIALS
-            || started.elapsed().as_millis() as u64 >= total_budget_ms
+        if packs_tried >= MAX_PACK_TRIALS || started.elapsed().as_millis() as u64 >= total_budget_ms
         {
             break;
         }
@@ -1714,8 +1866,7 @@ async fn rebalance_attempt(
             let mut trial = sheets[r].clone();
             trial.push(piece);
             packs_tried += 1;
-            let seed =
-                base_seed.wrapping_add((packs_tried as u64).wrapping_mul(SEED_STRIDE));
+            let seed = base_seed.wrapping_add((packs_tried as u64).wrapping_mul(SEED_STRIDE));
             if let Some((candidate, _)) =
                 pack_group_single_sheet(req, &prepared, &trial, layout_mode, seed, pack_budget_ms)
                     .await?
@@ -1749,8 +1900,7 @@ async fn rebalance_attempt(
         let candidate = match packed.remove(&idx) {
             Some(c) => c,
             None => {
-                let seed = base_seed
-                    .wrapping_add(((1_000 + idx) as u64).wrapping_mul(SEED_STRIDE));
+                let seed = base_seed.wrapping_add(((1_000 + idx) as u64).wrapping_mul(SEED_STRIDE));
                 match pack_group_single_sheet(
                     req,
                     &prepared,
@@ -1928,8 +2078,9 @@ fn pick_best_candidate(
                     Some(current)
                 }
                 CandidateCompare::WorseByTieCornerFree => {
-                    counters.candidates_rejected_tie_corner_free =
-                        counters.candidates_rejected_tie_corner_free.saturating_add(1);
+                    counters.candidates_rejected_tie_corner_free = counters
+                        .candidates_rejected_tie_corner_free
+                        .saturating_add(1);
                     Some(current)
                 }
                 CandidateCompare::Equal => {
@@ -1957,8 +2108,7 @@ async fn run_restarts_with_budget(
     let ga_runtime = resolve_ga_runtime(req);
     // V9.1: kerf+spacing gap in vendor units, used to compact every candidate
     // before ranking (see pick_best_candidate).
-    let kerf_gap_units =
-        ((req.params.kerf_mm + req.params.spacing_mm) * SCALE).round() as usize;
+    let kerf_gap_units = ((req.params.kerf_mm + req.params.spacing_mm) * SCALE).round() as usize;
     let mut best: Option<Candidate> = None;
     let mut selection_counters = CandidateSelectionCounters {
         top_k_requested: u32::try_from(ga_runtime.top_k).unwrap_or(u32::MAX),
@@ -4069,7 +4219,12 @@ fn build_placement(
     })
 }
 
-fn build_svg(solutions: &[Solution], unplaced_items: &[UnplacedItem], trim: &Trim, kerf_gap_mm: f64) -> String {
+fn build_svg(
+    solutions: &[Solution],
+    unplaced_items: &[UnplacedItem],
+    trim: &Trim,
+    kerf_gap_mm: f64,
+) -> String {
     const SHEET_GAP: f64 = 50.0; // Gap between sheets in SVG
     const UNPLACED_SECTION_GAP: f64 = 80.0; // Gap before unplaced items section
     const UNPLACED_ITEM_GAP: f64 = 30.0; // Gap between unplaced items
@@ -4494,5 +4649,52 @@ mod tests {
         let mut rng = 42_u64;
         let idx = choose_operator(&ops, &mut rng);
         assert!(idx < ops.len());
+    }
+
+    #[test]
+    fn sheet_repair_accepts_same_parts_with_fewer_waste_zones() {
+        let original = cut_optimizer_2d::ResultStockPiece {
+            width: 1_000_000,
+            length: 1_000_000,
+            pattern_direction: CutPatternDirection::None,
+            price: 0,
+            cut_pieces: vec![
+                test_result_piece(0, 400_000, 0, 200_000, 1_000_000),
+                test_result_piece(1, 0, 0, 100_000, 100_000),
+            ],
+            waste_pieces: vec![],
+        };
+        let repaired = cut_optimizer_2d::ResultStockPiece {
+            width: 1_000_000,
+            length: 1_000_000,
+            pattern_direction: CutPatternDirection::None,
+            price: 0,
+            cut_pieces: vec![
+                test_result_piece(0, 0, 0, 200_000, 1_000_000),
+                test_result_piece(1, 200_000, 0, 100_000, 100_000),
+            ],
+            waste_pieces: vec![],
+        };
+
+        assert!(sheet_repair_better(&original, &repaired, 0));
+        assert!(!sheet_repair_better(&repaired, &original, 0));
+    }
+
+    fn test_result_piece(
+        external_id: usize,
+        x: usize,
+        y: usize,
+        width: usize,
+        length: usize,
+    ) -> cut_optimizer_2d::ResultCutPiece {
+        cut_optimizer_2d::ResultCutPiece {
+            external_id: Some(external_id),
+            x,
+            y,
+            width,
+            length,
+            pattern_direction: CutPatternDirection::None,
+            is_rotated: false,
+        }
     }
 }
