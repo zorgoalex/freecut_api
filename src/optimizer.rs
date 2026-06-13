@@ -1437,9 +1437,18 @@ async fn run_partitioned(
             let seed = base_seed.wrapping_add(
                 ((peel_idx << 8) + attempt_idx + 1).wrapping_mul(SEED_STRIDE),
             );
+            // V12: use nested for ALL attempts in the first peel iteration
+            // (densest sheet, where density matters most for lead util), and
+            // guillotine-only for subsequent peels (minimises waste zones on
+            // sheets 2-3 where nested fragments waste into 2-4 zones).
+            let attempt_mode = if peel_idx == 1 && !last_iteration {
+                LayoutMode::Nested
+            } else {
+                layout_mode
+            };
             attempt_idx += 1;
             let Some((candidate, used)) =
-                run_subset(req, prepared, &remaining, layout_mode, seed, this_budget).await?
+                run_subset(req, prepared, &remaining, attempt_mode, seed, this_budget).await?
             else {
                 continue;
             };
