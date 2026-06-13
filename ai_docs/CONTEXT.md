@@ -1221,6 +1221,70 @@ Pareto-front по (util, zones) в GA. Вместо одного лучшего 
 | V11 | v11-nested-mix | + nested/guillotine micro | 94.87% | 9.0 | 459k | 83.09% | 30/30 |
 | V12 | v12-nested-first | nested first peel only | 94.19% | 8.1 | 434k | 85.13% | 30/30 |
 | **V13** | v13-nested-zones | + 0.8pp/zone penalty | **94.65%** | **7.0** | **454k** | 83.77% | 30/30 |
+| V14 | v14-guill-repack | A3: guillotine-repack nested winners | 94.65% | 7.0 | 454k | 83.77% | 30/30 |
+
+---
+
+## ЭТАП 21: ПЛАН — Новая стратегия гипотез (по research_approach.md, 2026-06-13)
+
+### Главная диагностика
+Проблема уже **не в количестве листов** (4 листа стабильно), а в **форме отхода**.
+Идеал: 1 зона отхода на лист (угловая лесенка), waste_fill ≥ 50%. Текущий V13: 7 зон, waste_fill 5–25%, коридоры и L-образные карманы.
+**Ключевой вывод**: tie-breaker выбирает из того, что GA уже создал. Если в популяции нет «лесенок», ранжирование их не создаст. Нужно менять **генерацию**, а не только **выбор**.
+
+### Обновлённый приоритет гипотез
+
+| Приоритет | ID | Гипотеза | Ветка | Ожидание | Сложность |
+|---|---|---|---|---|---|
+| **1** | **V15** | **Zones-aware GA fitness** (внутри vendor) | `feat/v15-zones-fitness` | zones 7→4–5 | Средняя |
+| **2** | **V16** | **Per-sheet reoptimization/repair** | `feat/v16-sheet-repair` | zones 7→5–6 | Низкая |
+| **3** | **V17** | **Touching Perimeter + gap-fill** | `feat/v17-touching-perim` | zones 4–6 | Высокая |
+| 4 | V18 | GA profile diversification | — | lead +0.2–0.5pp | Низкая |
+| 5 | V19 | Shelf-all (как repair/seed, не основной) | — | zones вниз, lead может просесть | Средняя |
+
+### Критерии принятия
+
+```
+Must keep:
+  4-sheet rate = 30/30
+
+Strong win:
+  avg waste regions <= 5.8
+  lead_util >= 94.3%
+
+Breakthrough:
+  avg waste regions <= 5.0
+  layouts with <=4 regions >= 10/30
+
+Production-quality target:
+  avg waste regions ~= 4
+  largest_region_fill >= 50%
+  lead_util >= 94–95%
+```
+
+### V15: Zones-aware GA fitness (ТЕКУЩИЙ ШАГ)
+**Идея**: перенести zones-штраф из peel-селектора внутрь vendor GA fitness. Штрафовать не только free_rects, а число компонент отхода, compactness/fill крупнейшей зоны и размер corner-free остатка.
+
+**Целевая fitness-формула**:
+```rust
+fitness = util.powf(2.0)
+    * exp(-lambda_zones * max(0, waste_regions - 1))
+    * exp(-lambda_fill * (1.0 - largest_region_fill))
+    * (1.0 + lambda_corner * corner_free_pct);
+```
+
+**Быстрая аппроксимация**: считать компоненты не на 10mm-сетке, а по графу free rectangles (узлы — свободные прямоугольники, ребро — если касаются/пересекаются с учётом kerf).
+
+**Sweep параметры**:
+- `lambda_zones` = 0.15, 0.3, 0.5, 0.8
+- `lambda_corner` = 0.05, 0.1
+- `lambda_fill` = 0.1, 0.2
+
+**Место в коде**: `vendor/cut-optimizer-2d/src/guillotine.rs` и `maxrects.rs` — fitness-функция.
+
+### V14 результат (завершено, нейтрально)
+A3: Guillotine-repack nested peel winners — метрики идентичны V13.
+Вывод: V13 zones penalty уже смещает peel-селектор в сторону guillotine; nested побеждает редко, и guillotine-repack не может воспроизвести ту же плотность.
 
 ---
 
@@ -1234,3 +1298,5 @@ Pareto-front по (util, zones) в GA. Вместо одного лучшего 
 | `feat/v11-peel-nested-mix` | v10 | V11 — lead +0.63pp, зоны +2.2 |
 | `feat/v12-nested-first-peel` | v10 | V12 — РЕГРЕССИЯ |
 | `feat/v13-nested-zones-hybrid` | v11 | V13 — лучший компромисс |
+| `feat/v14-guill-repack` | v13 | A3 guillotine-repack — ЗАВЕРШЕНО, без улучшения |
+| `feat/v15-zones-fitness` | v13 | **В РАБОТЕ** — V15 zones-aware GA fitness |
