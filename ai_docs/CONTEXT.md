@@ -1221,6 +1221,7 @@ Pareto-front по (util, zones) в GA. Вместо одного лучшего 
 | V11 | v11-nested-mix | + nested/guillotine micro | 94.87% | 9.0 | 459k | 83.09% | 30/30 |
 | V12 | v12-nested-first | nested first peel only | 94.19% | 8.1 | 434k | 85.13% | 30/30 |
 | **V13** | v13-nested-zones | + 0.8pp/zone penalty | **94.65%** | **7.0** | **454k** | 83.77% | 30/30 |
+| V14 | v14-guill-repack | A3: guillotine-repack nested winners | 94.65% | 7.0 | 454k | 83.77% | 30/30 |
 
 ---
 
@@ -1250,8 +1251,11 @@ Pareto-front по (util, zones) в GA. Вместо одного лучшего 
 
 ### Детали реализации (для следующей сессии)
 
-#### A3: Guillotine-repack (ВЕТКА СОЗДАНА, код НЕ написан)
-**Идея:** когда nested кандидат побеждает в peel-раунде (V11 чередование), взять детали плотнейшего листа и переупаковать через guillotine GA. Если guillotine даёт ≤ зон при util ≥ nested_util - 0.5pp — использовать guillotine.
+#### A3: Guillotine-repack (ЗАВЕРШЕНО, без улучшения)
+**Результат V14 (30 seeds)**: lead_util 94.65%, zones 7.0, max_corner 454k, min_util 83.77%, 4-sheet 30/30.
+**Вывод**: Идентично V13. Guillotine-repack не сработал, потому что V13 zones penalty (0.8pp/zone) уже смещает peel-селектор в сторону guillotine. Nested побеждает редко (только при очень высокой плотности), и в этих случаях guillotine не может воспроизвести ту же плотность. A3 = нейтральный.
+**Best seeds**: 22 и 30 достигают zones=[1,1,1,1] (как и в V13).
+**Top-5 SVG**: сохранены в `ai_docs/tmp/best_layouts_v14/`.
 
 **Место в коде** (`src/optimizer.rs`):
 - Peel loop: L1433-1475 (best_attempt selection), L1516-1545 (freeze densest sheet)
@@ -1304,4 +1308,4 @@ python scripts/test_v14_guill_repack.py
 | `feat/v11-peel-nested-mix` | v10 | V11 — lead +0.63pp, зоны +2.2 |
 | `feat/v12-nested-first-peel` | v10 | V12 — РЕГРЕССИЯ |
 | `feat/v13-nested-zones-hybrid` | v11 | V13 — лучший компромисс |
-| `feat/v14-guill-repack` | v13 | **В РАБОТЕ** — A3 guillotine-repack (ветка создана, код не написан) |
+| `feat/v14-guill-repack` | v13 | A3 guillotine-repack — **ЗАВЕРШЕНО, без улучшения** (метрики идентичны V13) |

@@ -1431,6 +1431,7 @@ async fn run_partitioned(
         // re-seed explores a genuinely different region.
         let attempt_budget_ms = (budget / 8).max(600);
         let mut best_attempt: Option<Candidate> = None;
+        let mut best_attempt_mode: Option<LayoutMode> = None;
         let mut attempt_idx: u64 = 0;
         const MAX_PEEL_ATTEMPTS: u64 = 16;
         while attempt_idx < MAX_PEEL_ATTEMPTS {
@@ -1471,6 +1472,7 @@ async fn run_partitioned(
                 prepared.cut_width,
             ) {
                 best_attempt = Some(candidate);
+                best_attempt_mode = Some(attempt_mode);
             }
         }
         // V9b: deterministic width-matched column layouts compete with the
@@ -1494,6 +1496,7 @@ async fn run_partitioned(
                 prepared.cut_width,
             ) {
                 best_attempt = Some(candidate);
+                best_attempt_mode = Some(LayoutMode::Guillotine); // column candidates are always guillotine
             }
         }
         let Some(candidate) = best_attempt else {
@@ -1537,6 +1540,77 @@ async fn run_partitioned(
         if frozen_ids.len() != densest.cut_pieces.len() {
             return Ok((None, fallback("missing_external_ids".to_string())));
         }
+        // ------------------------------------------------------------------
+        // A3 (V14): guillotine-repack nested peel winners.
+        // When the winning attempt used Nested layout, take the densest
+        // sheet's piece set and re-run through guillotine GA.  Accept the
+        // guillotine result if it has ≤ zones at util ≥ nested - 0.5 pp.
+        // ------------------------------------------------------------------
+        let densest = if !last_iteration
+            && best_attempt_mode == Some(LayoutMode::Nested)
+        {
+            let repack_group: Vec<usize> = remaining
+                .iter()
+                .filter(|i| frozen_ids.contains(i))
+                .copied()
+                .collect();
+            let repack_seed = base_seed.wrapping_add(
+                ((peel_idx << 12) + 0xDEAD).wrapping_mul(SEED_STRIDE),
+            );
+            let repack_budget = attempt_budget_ms;
+            if let Ok(Some((guill_candidate, _))) = pack_group_single_sheet(
+                req,
+                prepared,
+                &repack_group,
+                LayoutMode::Guillotine,
+                repack_seed,
+                repack_budget,
+            )
+            .await
+            {
+                if let Some(guill_stock) = guill_candidate
+                    .solution
+                    .stock_pieces
+                    .iter()
+                    .max_by(|a, b| {
+                        stock_piece_util_pct(a)
+                            .partial_cmp(&stock_piece_util_pct(b))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                {
+                    let nested_util = stock_piece_util_pct(&densest);
+                    let guill_util = stock_piece_util_pct(guill_stock);
+                    let nested_zones =
+                        waste_region_count(&densest, prepared.cut_width);
+                    let guill_zones =
+                        waste_region_count(guill_stock, prepared.cut_width);
+                    if guill_zones <= nested_zones
+                        && guill_util >= nested_util - 0.5
+                    {
+                        // Accept guillotine repack — same or fewer zones
+                        // at comparable density.
+                        guill_candidate
+                            .solution
+                            .stock_pieces
+                            .into_iter()
+                            .max_by(|a, b| {
+                                stock_piece_util_pct(a)
+                                    .partial_cmp(&stock_piece_util_pct(b))
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                            .unwrap()
+                    } else {
+                        densest
+                    }
+                } else {
+                    densest
+                }
+            } else {
+                densest
+            }
+        } else {
+            densest
+        };
         remaining.retain(|i| !frozen_ids.contains(i));
         group_sizes.push(densest.cut_pieces.len() as u32);
         let densest_util_pct = stock_piece_util_pct(&densest);
