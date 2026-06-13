@@ -1227,6 +1227,23 @@ fn candidate_waste_regions(candidate: &Candidate, gap: usize) -> u32 {
         .sum()
 }
 
+fn densest_sheet_waste_regions(sheets: &[cut_optimizer_2d::ResultStockPiece], gap: usize) -> u32 {
+    if sheets.is_empty() {
+        return u32::MAX;
+    }
+    let idx = sheets
+        .iter()
+        .enumerate()
+        .max_by(|a, b| {
+            let ua = stock_piece_util_pct(&sheets[a.0]);
+            let ub = stock_piece_util_pct(&sheets[b.0]);
+            ua.partial_cmp(&ub).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    waste_region_count(&sheets[idx], gap)
+}
+
 /// Peel-loop selection rule, shared by GA attempts and column candidates.
 fn peel_candidate_better(
     candidate: &Candidate,
@@ -1256,6 +1273,12 @@ fn peel_candidate_better(
             }
         }
     } else {
+        // V10: zones-aware peel selection. When two candidates have similar
+        // densest util (within 0.3pp), prefer fewer waste regions on the
+        // densest sheet — this produces less fragmented frozen sheets and
+        // reduces the total waste region count in the final layout.
+        const UTIL_EPSILON_PP: f64 = 0.3;
+
         let densest_util = candidate
             .solution
             .stock_pieces
@@ -1265,19 +1288,38 @@ fn peel_candidate_better(
         let frozen_used = (usable_area as f64 * densest_util / 100.0) as u128;
         let feasible = remaining_area.saturating_sub(frozen_used)
             <= usable_area.saturating_mul(sheets_left_after as u128);
-        feasible
-            && match best {
-                None => true,
-                Some(best) => {
-                    densest_util
-                        > best
-                            .solution
-                            .stock_pieces
-                            .iter()
-                            .map(stock_piece_util_pct)
-                            .fold(0.0_f64, f64::max)
+        if !feasible {
+            return false;
+        }
+        match best {
+            None => true,
+            Some(best) => {
+                let best_densest_util = best
+                    .solution
+                    .stock_pieces
+                    .iter()
+                    .map(stock_piece_util_pct)
+                    .fold(0.0_f64, f64::max);
+                let util_diff = densest_util - best_densest_util;
+                if util_diff > UTIL_EPSILON_PP {
+                    true
+                } else if util_diff < -UTIL_EPSILON_PP {
+                    false
+                } else {
+                    let candidate_zones =
+                        densest_sheet_waste_regions(&candidate.solution.stock_pieces, gap);
+                    let best_zones =
+                        densest_sheet_waste_regions(&best.solution.stock_pieces, gap);
+                    if candidate_zones < best_zones {
+                        true
+                    } else if candidate_zones > best_zones {
+                        false
+                    } else {
+                        densest_util > best_densest_util
+                    }
                 }
             }
+        }
     }
 }
 
@@ -1311,6 +1353,7 @@ async fn run_partitioned(
         group_sizes: vec![],
         group_area_pct: vec![],
         fallback_reason: Some(reason),
+        densest_zones: vec![],
     };
 
     // Peeling reasons about a single uniform sheet size.
@@ -1352,6 +1395,7 @@ async fn run_partitioned(
     let mut frozen: Vec<cut_optimizer_2d::ResultStockPiece> = Vec::new();
     let mut group_sizes: Vec<u32> = Vec::new();
     let mut group_area_pct: Vec<f64> = Vec::new();
+    let mut densest_zones: Vec<u32> = Vec::new();
     let mut restarts_total: u32 = 0;
     let mut fitness = 1.0_f64;
     let mut peel_idx: u64 = 0;
@@ -1446,6 +1490,7 @@ async fn run_partitioned(
             for stock in candidate.solution.stock_pieces {
                 group_sizes.push(stock.cut_pieces.len() as u32);
                 group_area_pct.push(stock_piece_util_pct(&stock));
+                densest_zones.push(waste_region_count(&stock, prepared.cut_width));
                 frozen.push(stock);
             }
             break;
@@ -1477,7 +1522,9 @@ async fn run_partitioned(
         }
         remaining.retain(|i| !frozen_ids.contains(i));
         group_sizes.push(densest.cut_pieces.len() as u32);
-        group_area_pct.push(stock_piece_util_pct(&densest));
+        let densest_util_pct = stock_piece_util_pct(&densest);
+        group_area_pct.push(densest_util_pct);
+        densest_zones.push(waste_region_count(&densest, prepared.cut_width));
         frozen.push(densest);
         if remaining.is_empty() {
             break;
@@ -1513,6 +1560,7 @@ async fn run_partitioned(
         group_sizes,
         group_area_pct,
         fallback_reason: None,
+        densest_zones,
     };
     Ok((
         Some(RunOutcome {

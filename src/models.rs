@@ -282,6 +282,10 @@ pub struct PartitionTelemetry {
     /// Reason for falling back to the regular pipeline, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback_reason: Option<String>,
+    /// V10: waste regions on the densest sheet for each peel iteration.
+    /// Empty when partition was not applied.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub densest_zones: Vec<u32>,
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
