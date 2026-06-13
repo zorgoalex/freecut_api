@@ -1273,11 +1273,16 @@ fn peel_candidate_better(
             }
         }
     } else {
-        // V10: zones-aware peel selection. When two candidates have similar
-        // densest util (within 0.3pp), prefer fewer waste regions on the
-        // densest sheet — this produces less fragmented frozen sheets and
-        // reduces the total waste region count in the final layout.
-        const UTIL_EPSILON_PP: f64 = 0.3;
+        // V13: zones-penalised peel selection.  When nested candidates have
+        // higher util but more waste regions, a pure util comparison lets
+        // them win even though they produce fragmented frozen sheets (9 zones
+        // vs 6.8 for guillotine).  We penalise each waste region beyond 1
+        // (the ideal = single corner remnant) by ZONES_PENALTY_PP per zone.
+        // This makes the effective comparison:
+        //   effective_util = densest_util - max(0, zones - 1) * ZONES_PENALTY_PP
+        // So a candidate with 3 zones needs to be >0.6pp denser than a
+        // candidate with 1 zone to win — balancing density vs. consolidation.
+        const ZONES_PENALTY_PP: f64 = 0.8;
 
         let densest_util = candidate
             .solution
@@ -1291,6 +1296,10 @@ fn peel_candidate_better(
         if !feasible {
             return false;
         }
+        let candidate_zones =
+            densest_sheet_waste_regions(&candidate.solution.stock_pieces, gap);
+        let candidate_effective =
+            densest_util - (candidate_zones.saturating_sub(1) as f64) * ZONES_PENALTY_PP;
         match best {
             None => true,
             Some(best) => {
@@ -1300,23 +1309,19 @@ fn peel_candidate_better(
                     .iter()
                     .map(stock_piece_util_pct)
                     .fold(0.0_f64, f64::max);
-                let util_diff = densest_util - best_densest_util;
-                if util_diff > UTIL_EPSILON_PP {
-                    true
-                } else if util_diff < -UTIL_EPSILON_PP {
-                    false
-                } else {
-                    let candidate_zones =
-                        densest_sheet_waste_regions(&candidate.solution.stock_pieces, gap);
-                    let best_zones =
-                        densest_sheet_waste_regions(&best.solution.stock_pieces, gap);
-                    if candidate_zones < best_zones {
-                        true
-                    } else if candidate_zones > best_zones {
-                        false
+                let best_zones =
+                    densest_sheet_waste_regions(&best.solution.stock_pieces, gap);
+                let best_effective =
+                    best_densest_util - (best_zones.saturating_sub(1) as f64) * ZONES_PENALTY_PP;
+                if (candidate_effective - best_effective).abs() < 0.01 {
+                    // Effective utils are equal — fall back to raw util then zones
+                    if (densest_util - best_densest_util).abs() < 0.01 {
+                        candidate_zones <= best_zones
                     } else {
                         densest_util > best_densest_util
                     }
+                } else {
+                    candidate_effective > best_effective
                 }
             }
         }
