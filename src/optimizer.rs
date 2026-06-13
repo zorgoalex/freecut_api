@@ -5,7 +5,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use cut_optimizer_2d::{CutPiece, Optimizer, PatternDirection as CutPatternDirection, StockPiece};
+use cut_optimizer_2d::{
+    CutPiece, GaFitnessConfig, Optimizer, PatternDirection as CutPatternDirection, StockPiece,
+};
 
 use crate::config::AppConfig;
 use crate::models::{
@@ -251,7 +253,12 @@ async fn optimize_request_internal(
     if prepared.cut_pieces.is_empty() {
         let time_ms = start.elapsed().as_millis() as u64;
         let svg = if include_svg {
-            Some(build_svg(&[], &prepared.oversized_items, &prepared.trim, 0.0))
+            Some(build_svg(
+                &[],
+                &prepared.oversized_items,
+                &prepared.trim,
+                0.0,
+            ))
         } else {
             None
         };
@@ -291,8 +298,7 @@ async fn optimize_request_internal(
         if let Some(partition_cfg) = &req.params.partition {
             if partition_cfg.enabled.unwrap_or(true) {
                 let (outcome, telemetry) =
-                    run_partitioned(&req, &prepared, layout_mode, used_seed, time_limit_ms)
-                        .await?;
+                    run_partitioned(&req, &prepared, layout_mode, used_seed, time_limit_ms).await?;
                 partitioned_outcome = outcome;
                 partition_telemetry = Some(telemetry);
             }
@@ -474,7 +480,12 @@ fn build_response_from_outcome(
 
     let svg = if include_svg {
         let gap_mm = req.params.kerf_mm + req.params.spacing_mm;
-        Some(build_svg(&solutions, &unplaced_items, &prepared.trim, gap_mm))
+        Some(build_svg(
+            &solutions,
+            &unplaced_items,
+            &prepared.trim,
+            gap_mm,
+        ))
     } else {
         None
     };
@@ -562,14 +573,8 @@ fn assess_failure(resp: &OptimizeResponse) -> Option<FailureMode> {
         return Some(FailureMode::NoSolution);
     }
     let n_sheets = resp.summary.used_stock_count as u32;
-    let min_util = utils
-        .iter()
-        .copied()
-        .fold(f64::INFINITY, f64::min);
-    let max_util = utils
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
+    let min_util = utils.iter().copied().fold(f64::INFINITY, f64::min);
+    let max_util = utils.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let range = max_util - min_util;
 
     // "Too many sheets" is the worst case — it means we failed to find a
@@ -596,7 +601,11 @@ fn assess_failure(resp: &OptimizeResponse) -> Option<FailureMode> {
     None
 }
 
-fn choose_strategy(failure: &FailureMode, retry_idx: usize, rebalance_enabled: bool) -> &'static str {
+fn choose_strategy(
+    failure: &FailureMode,
+    retry_idx: usize,
+    rebalance_enabled: bool,
+) -> &'static str {
     match failure {
         FailureMode::NoSolution => "different_seed",
         FailureMode::Imbalanced { .. } | FailureMode::Lumpy { .. } => {
@@ -1296,8 +1305,7 @@ fn peel_candidate_better(
         if !feasible {
             return false;
         }
-        let candidate_zones =
-            densest_sheet_waste_regions(&candidate.solution.stock_pieces, gap);
+        let candidate_zones = densest_sheet_waste_regions(&candidate.solution.stock_pieces, gap);
         let candidate_effective =
             densest_util - (candidate_zones.saturating_sub(1) as f64) * ZONES_PENALTY_PP;
         match best {
@@ -1309,8 +1317,7 @@ fn peel_candidate_better(
                     .iter()
                     .map(stock_piece_util_pct)
                     .fold(0.0_f64, f64::max);
-                let best_zones =
-                    densest_sheet_waste_regions(&best.solution.stock_pieces, gap);
+                let best_zones = densest_sheet_waste_regions(&best.solution.stock_pieces, gap);
                 let best_effective =
                     best_densest_util - (best_zones.saturating_sub(1) as f64) * ZONES_PENALTY_PP;
                 if (candidate_effective - best_effective).abs() < 0.01 {
@@ -1439,9 +1446,8 @@ async fn run_partitioned(
                 break;
             }
             let this_budget = attempt_budget_ms.min((budget - peel_elapsed.min(budget)).max(200));
-            let seed = base_seed.wrapping_add(
-                ((peel_idx << 8) + attempt_idx + 1).wrapping_mul(SEED_STRIDE),
-            );
+            let seed = base_seed
+                .wrapping_add(((peel_idx << 8) + attempt_idx + 1).wrapping_mul(SEED_STRIDE));
             // V11: alternate guillotine/nested in peel attempts for non-last
             // iterations.  Nested is not constrained by guillotine cuts and
             // can pack the densest sheet more tightly, potentially raising
@@ -1514,16 +1520,11 @@ async fn run_partitioned(
         }
 
         // Freeze the densest sheet as-is and drop its parts from the pool.
-        let Some(densest) = candidate
-            .solution
-            .stock_pieces
-            .into_iter()
-            .max_by(|a, b| {
-                stock_piece_util_pct(a)
-                    .partial_cmp(&stock_piece_util_pct(b))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-        else {
+        let Some(densest) = candidate.solution.stock_pieces.into_iter().max_by(|a, b| {
+            stock_piece_util_pct(a)
+                .partial_cmp(&stock_piece_util_pct(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) else {
             return Ok((None, fallback(format!("peel_{}_empty", peel_idx))));
         };
         if densest.cut_pieces.is_empty() {
@@ -1677,10 +1678,7 @@ async fn rebalance_attempt(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    let time_limit_ms = req
-        .params
-        .time_limit_ms
-        .unwrap_or(10_000);
+    let time_limit_ms = req.params.time_limit_ms.unwrap_or(10_000);
     let pack_budget_ms = (time_limit_ms / 8).clamp(500, 2_000);
     let total_budget_ms = time_limit_ms.saturating_mul(2).max(2_000);
     let base_seed = req
@@ -1702,8 +1700,7 @@ async fn rebalance_attempt(
     let mut moved = 0_usize;
     let mut packs_tried = 0_usize;
     for piece in donor_pieces {
-        if packs_tried >= MAX_PACK_TRIALS
-            || started.elapsed().as_millis() as u64 >= total_budget_ms
+        if packs_tried >= MAX_PACK_TRIALS || started.elapsed().as_millis() as u64 >= total_budget_ms
         {
             break;
         }
@@ -1714,8 +1711,7 @@ async fn rebalance_attempt(
             let mut trial = sheets[r].clone();
             trial.push(piece);
             packs_tried += 1;
-            let seed =
-                base_seed.wrapping_add((packs_tried as u64).wrapping_mul(SEED_STRIDE));
+            let seed = base_seed.wrapping_add((packs_tried as u64).wrapping_mul(SEED_STRIDE));
             if let Some((candidate, _)) =
                 pack_group_single_sheet(req, &prepared, &trial, layout_mode, seed, pack_budget_ms)
                     .await?
@@ -1749,8 +1745,7 @@ async fn rebalance_attempt(
         let candidate = match packed.remove(&idx) {
             Some(c) => c,
             None => {
-                let seed = base_seed
-                    .wrapping_add(((1_000 + idx) as u64).wrapping_mul(SEED_STRIDE));
+                let seed = base_seed.wrapping_add(((1_000 + idx) as u64).wrapping_mul(SEED_STRIDE));
                 match pack_group_single_sheet(
                     req,
                     &prepared,
@@ -1876,6 +1871,17 @@ fn resolve_ga_runtime(req: &OptimizeRequest) -> GaRuntime {
     runtime
 }
 
+fn resolve_ga_fitness_config(req: &OptimizeRequest) -> Option<GaFitnessConfig> {
+    let override_cfg = req.params.ga_override.as_ref()?;
+    match (override_cfg.zone_penalty, override_cfg.fill_penalty) {
+        (None, None) => None,
+        (zone_penalty, fill_penalty) => Some(GaFitnessConfig {
+            zone_penalty: zone_penalty.unwrap_or(0.3),
+            fill_penalty: fill_penalty.unwrap_or(0.1),
+        }),
+    }
+}
+
 fn pick_best_candidate(
     set: cut_optimizer_2d::SolutionSet,
     objective: &Objective,
@@ -1928,8 +1934,9 @@ fn pick_best_candidate(
                     Some(current)
                 }
                 CandidateCompare::WorseByTieCornerFree => {
-                    counters.candidates_rejected_tie_corner_free =
-                        counters.candidates_rejected_tie_corner_free.saturating_add(1);
+                    counters.candidates_rejected_tie_corner_free = counters
+                        .candidates_rejected_tie_corner_free
+                        .saturating_add(1);
                     Some(current)
                 }
                 CandidateCompare::Equal => {
@@ -1955,10 +1962,10 @@ async fn run_restarts_with_budget(
     restart_plan: Option<&RestartPlan>,
 ) -> Result<RunOutcome, OptimizeError> {
     let ga_runtime = resolve_ga_runtime(req);
+    let ga_fitness_config = resolve_ga_fitness_config(req);
     // V9.1: kerf+spacing gap in vendor units, used to compact every candidate
     // before ranking (see pick_best_candidate).
-    let kerf_gap_units =
-        ((req.params.kerf_mm + req.params.spacing_mm) * SCALE).round() as usize;
+    let kerf_gap_units = ((req.params.kerf_mm + req.params.spacing_mm) * SCALE).round() as usize;
     let mut best: Option<Candidate> = None;
     let mut selection_counters = CandidateSelectionCounters {
         top_k_requested: u32::try_from(ga_runtime.top_k).unwrap_or(u32::MAX),
@@ -2004,6 +2011,7 @@ async fn run_restarts_with_budget(
         let cut_width = prepared.cut_width;
         let restart_idx = i;
         let ga_runtime = ga_runtime;
+        let ga_fitness_config = ga_fitness_config;
 
         let mut handle = tokio::task::spawn_blocking(move || {
             let diversified_stock = diversify_stock_order(&stock_templates, seed, restart_idx);
@@ -2017,11 +2025,16 @@ async fn run_restarts_with_budget(
                 .set_ga_survival_factor(ga_runtime.survival_factor)
                 .add_stock_pieces(diversified_stock.into_iter())
                 .add_cut_pieces(diversified_cut.into_iter());
-            let ga_set = match mode {
+            let run_optimizer = || match mode {
                 LayoutMode::Nested => optimizer.optimize_nested_top_k(ga_runtime.top_k, |_| {}),
                 LayoutMode::Guillotine => {
                     optimizer.optimize_guillotine_top_k(ga_runtime.top_k, |_| {})
                 }
+            };
+            let ga_set = if let Some(config) = ga_fitness_config {
+                cut_optimizer_2d::with_ga_fitness_config(config, run_optimizer)
+            } else {
+                run_optimizer()
             };
             // V4 heuristic seeding: also run a pure First-Fit-Decreasing
             // heuristic and prepend it to the candidate pool.  The
@@ -2170,6 +2183,7 @@ async fn run_restarts_with_budget(
             let cut_width = prepared.cut_width;
             let restart_idx = planned_restarts;
             let ga_runtime = ga_runtime;
+            let ga_fitness_config = ga_fitness_config;
             let mut rescue_handle = tokio::task::spawn_blocking(move || {
                 let diversified_stock =
                     diversify_stock_order(&stock_templates, rescue_seed, restart_idx);
@@ -2183,11 +2197,16 @@ async fn run_restarts_with_budget(
                     .set_ga_survival_factor(ga_runtime.survival_factor)
                     .add_stock_pieces(diversified_stock.into_iter())
                     .add_cut_pieces(diversified_cut.into_iter());
-                match mode {
+                let run_optimizer = || match mode {
                     LayoutMode::Nested => optimizer.optimize_nested_top_k(ga_runtime.top_k, |_| {}),
                     LayoutMode::Guillotine => {
                         optimizer.optimize_guillotine_top_k(ga_runtime.top_k, |_| {})
                     }
+                };
+                if let Some(config) = ga_fitness_config {
+                    cut_optimizer_2d::with_ga_fitness_config(config, run_optimizer)
+                } else {
+                    run_optimizer()
                 }
             });
 
@@ -4069,7 +4088,12 @@ fn build_placement(
     })
 }
 
-fn build_svg(solutions: &[Solution], unplaced_items: &[UnplacedItem], trim: &Trim, kerf_gap_mm: f64) -> String {
+fn build_svg(
+    solutions: &[Solution],
+    unplaced_items: &[UnplacedItem],
+    trim: &Trim,
+    kerf_gap_mm: f64,
+) -> String {
     const SHEET_GAP: f64 = 50.0; // Gap between sheets in SVG
     const UNPLACED_SECTION_GAP: f64 = 80.0; // Gap before unplaced items section
     const UNPLACED_ITEM_GAP: f64 = 30.0; // Gap between unplaced items

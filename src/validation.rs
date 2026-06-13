@@ -131,6 +131,20 @@ pub fn validate_request(
                 ));
             }
         }
+        if let Some(zone_penalty) = ga.zone_penalty {
+            if !zone_penalty.is_finite() || !(0.0..=1.0).contains(&zone_penalty) {
+                return Err(ValidationError::new(
+                    "ga_override.zone_penalty must be finite and in range [0, 1]",
+                ));
+            }
+        }
+        if let Some(fill_penalty) = ga.fill_penalty {
+            if !fill_penalty.is_finite() || !(0.0..=1.0).contains(&fill_penalty) {
+                return Err(ValidationError::new(
+                    "ga_override.fill_penalty must be finite and in range [0, 1]",
+                ));
+            }
+        }
     }
 
     if let Some(portfolio) = &req.params.portfolio {

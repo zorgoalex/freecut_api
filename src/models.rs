@@ -160,6 +160,10 @@ pub struct GaOverrideParams {
     pub survival_factor: Option<f64>,
     /// Top-K population candidates to evaluate by business scorer in range 1..=64.
     pub top_k_candidates: Option<u32>,
+    /// V15/V17 zones-aware GA fitness penalty. Optional, defaults to service env/default.
+    pub zone_penalty: Option<f64>,
+    /// V15/V17 largest-waste-component fill penalty. Optional, defaults to service env/default.
+    pub fill_penalty: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy)]
