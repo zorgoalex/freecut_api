@@ -1,0 +1,724 @@
+{
+  "results": [
+    {
+      "seed": 1,
+      "sheets": 4,
+      "min_util": 84.63,
+      "lead_util": 94.36,
+      "utils": [
+        95.4,
+        95.3,
+        92.4,
+        84.6
+      ],
+      "n_waste_regions": 6,
+      "max_corner_mm2": 424440,
+      "sum_corner_mm2": 722142,
+      "winner_corner_free_mm2": 722141.75,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        2,
+        1,
+        2
+      ]
+    },
+    {
+      "seed": 2,
+      "sheets": 4,
+      "min_util": 85.4,
+      "lead_util": 94.1,
+      "utils": [
+        96.6,
+        93.7,
+        92.1,
+        85.4
+      ],
+      "n_waste_regions": 5,
+      "max_corner_mm2": 261600,
+      "sum_corner_mm2": 686048,
+      "winner_corner_free_mm2": 686048.5,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        1,
+        2,
+        1
+      ]
+    },
+    {
+      "seed": 3,
+      "sheets": 4,
+      "min_util": 83.36,
+      "lead_util": 94.78,
+      "utils": [
+        96.6,
+        94.7,
+        93.0,
+        83.4
+      ],
+      "n_waste_regions": 11,
+      "max_corner_mm2": 493770,
+      "sum_corner_mm2": 763989,
+      "winner_corner_free_mm2": 763989.0,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        2,
+        2,
+        4
+      ]
+    },
+    {
+      "seed": 4,
+      "sheets": 4,
+      "min_util": 83.21,
+      "lead_util": 94.83,
+      "utils": [
+        95.4,
+        95.7,
+        93.4,
+        83.2
+      ],
+      "n_waste_regions": 7,
+      "max_corner_mm2": 337582,
+      "sum_corner_mm2": 571289,
+      "winner_corner_free_mm2": 571289.0,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        3,
+        3,
+        1
+      ]
+    },
+    {
+      "seed": 5,
+      "sheets": 4,
+      "min_util": 84.34,
+      "lead_util": 94.46,
+      "utils": [
+        96.6,
+        93.7,
+        93.1,
+        84.3
+      ],
+      "n_waste_regions": 8,
+      "max_corner_mm2": 416079,
+      "sum_corner_mm2": 686464,
+      "winner_corner_free_mm2": 686463.5,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        1,
+        3,
+        2
+      ]
+    },
+    {
+      "seed": 6,
+      "sheets": 4,
+      "min_util": 82.29,
+      "lead_util": 95.14,
+      "utils": [
+        96.7,
+        96.1,
+        92.6,
+        82.3
+      ],
+      "n_waste_regions": 9,
+      "max_corner_mm2": 609147,
+      "sum_corner_mm2": 881090,
+      "winner_corner_free_mm2": 881090.25,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        2,
+        2,
+        2,
+        1
+      ]
+    },
+    {
+      "seed": 7,
+      "sheets": 4,
+      "min_util": 84.07,
+      "lead_util": 94.55,
+      "utils": [
+        95.4,
+        95.3,
+        92.9,
+        84.1
+      ],
+      "n_waste_regions": 7,
+      "max_corner_mm2": 397812,
+      "sum_corner_mm2": 748479,
+      "winner_corner_free_mm2": 748479.0,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        2,
+        1,
+        3
+      ]
+    },
+    {
+      "seed": 8,
+      "sheets": 4,
+      "min_util": 83.05,
+      "lead_util": 94.88,
+      "utils": [
+        95.4,
+        95.3,
+        93.9,
+        83.1
+      ],
+      "n_waste_regions": 7,
+      "max_corner_mm2": 462420,
+      "sum_corner_mm2": 889729,
+      "winner_corner_free_mm2": 889729.0,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        2,
+        2,
+        2
+      ]
+    },
+    {
+      "seed": 9,
+      "sheets": 4,
+      "min_util": 83.76,
+      "lead_util": 94.65,
+      "utils": [
+        96.6,
+        95.0,
+        92.4,
+        83.8
+      ],
+      "n_waste_regions": 7,
+      "max_corner_mm2": 526434,
+      "sum_corner_mm2": 758314,
+      "winner_corner_free_mm2": 758313.5,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        2,
+        3,
+        2
+      ]
+    },
+    {
+      "seed": 10,
+      "sheets": 4,
+      "min_util": 83.9,
+      "lead_util": 94.6,
+      "utils": [
+        95.4,
+        94.4,
+        94.0,
+        83.9
+      ],
+      "n_waste_regions": 6,
+      "max_corner_mm2": 439010,
+      "sum_corner_mm2": 679116,
+      "winner_corner_free_mm2": 679116.25,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        2,
+        1,
+        1
+      ]
+    },
+    {
+      "seed": 11,
+      "sheets": 4,
+      "min_util": 83.9,
+      "lead_util": 94.6,
+      "utils": [
+        95.4,
+        94.4,
+        94.0,
+        83.9
+      ],
+      "n_waste_regions": 5,
+      "max_corner_mm2": 383350,
+      "sum_corner_mm2": 623456,
+      "winner_corner_free_mm2": 623456.25,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        2,
+        1,
+        1
+      ]
+    },
+    {
+      "seed": 12,
+      "sheets": 4,
+      "min_util": 83.22,
+      "lead_util": 94.83,
+      "utils": [
+        95.4,
+        95.3,
+        93.8,
+        83.2
+      ],
+      "n_waste_regions": 6,
+      "max_corner_mm2": 443200,
+      "sum_corner_mm2": 686802,
+      "winner_corner_free_mm2": 686802.25,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        2,
+        2,
+        1
+      ]
+    },
+    {
+      "seed": 13,
+      "sheets": 4,
+      "min_util": 84.63,
+      "lead_util": 94.36,
+      "utils": [
+        95.8,
+        95.2,
+        92.1,
+        84.6
+      ],
+      "n_waste_regions": 8,
+      "max_corner_mm2": 448694,
+      "sum_corner_mm2": 818814,
+      "winner_corner_free_mm2": 818814.5,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        2,
+        2,
+        2
+      ]
+    },
+    {
+      "seed": 14,
+      "sheets": 4,
+      "min_util": 83.9,
+      "lead_util": 94.6,
+      "utils": [
+        95.4,
+        94.4,
+        94.0,
+        83.9
+      ],
+      "n_waste_regions": 5,
+      "max_corner_mm2": 524810,
+      "sum_corner_mm2": 764916,
+      "winner_corner_free_mm2": 764916.25,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        2,
+        1,
+        1
+      ]
+    },
+    {
+      "seed": 15,
+      "sheets": 4,
+      "min_util": 80.08,
+      "lead_util": 95.88,
+      "utils": [
+        96.6,
+        95.2,
+        95.9,
+        80.1
+      ],
+      "n_waste_regions": 7,
+      "max_corner_mm2": 305040,
+      "sum_corner_mm2": 463034,
+      "winner_corner_free_mm2": 463034.5,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        2,
+        2,
+        1
+      ]
+    },
+    {
+      "seed": 16,
+      "sheets": 4,
+      "min_util": 83.9,
+      "lead_util": 94.6,
+      "utils": [
+        95.4,
+        94.4,
+        94.0,
+        83.9
+      ],
+      "n_waste_regions": 6,
+      "max_corner_mm2": 428494,
+      "sum_corner_mm2": 668601,
+      "winner_corner_free_mm2": 668600.75,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        2,
+        1,
+        1
+      ]
+    },
+    {
+      "seed": 17,
+      "sheets": 4,
+      "min_util": 83.03,
+      "lead_util": 94.89,
+      "utils": [
+        95.4,
+        95.4,
+        93.9,
+        83.0
+      ],
+      "n_waste_regions": 8,
+      "max_corner_mm2": 964660,
+      "sum_corner_mm2": 1242927,
+      "winner_corner_free_mm2": 1242927.25,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        2,
+        2,
+        3
+      ]
+    },
+    {
+      "seed": 18,
+      "sheets": 4,
+      "min_util": 83.9,
+      "lead_util": 94.6,
+      "utils": [
+        95.4,
+        94.4,
+        94.0,
+        83.9
+      ],
+      "n_waste_regions": 6,
+      "max_corner_mm2": 439010,
+      "sum_corner_mm2": 679116,
+      "winner_corner_free_mm2": 679116.25,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        2,
+        1,
+        1
+      ]
+    },
+    {
+      "seed": 19,
+      "sheets": 4,
+      "min_util": 83.9,
+      "lead_util": 94.6,
+      "utils": [
+        95.4,
+        94.4,
+        94.0,
+        83.9
+      ],
+      "n_waste_regions": 6,
+      "max_corner_mm2": 428494,
+      "sum_corner_mm2": 668601,
+      "winner_corner_free_mm2": 668600.75,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        2,
+        1,
+        1
+      ]
+    },
+    {
+      "seed": 20,
+      "sheets": 4,
+      "min_util": 82.53,
+      "lead_util": 95.06,
+      "utils": [
+        96.6,
+        95.1,
+        93.5,
+        82.5
+      ],
+      "n_waste_regions": 10,
+      "max_corner_mm2": 406054,
+      "sum_corner_mm2": 658264,
+      "winner_corner_free_mm2": 658263.5,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        1,
+        2,
+        4
+      ]
+    },
+    {
+      "seed": 21,
+      "sheets": 4,
+      "min_util": 86.47,
+      "lead_util": 93.75,
+      "utils": [
+        95.8,
+        94.2,
+        91.3,
+        86.5
+      ],
+      "n_waste_regions": 7,
+      "max_corner_mm2": 269660,
+      "sum_corner_mm2": 677810,
+      "winner_corner_free_mm2": 677810.0,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "seed": 22,
+      "sheets": 4,
+      "min_util": 83.65,
+      "lead_util": 94.69,
+      "utils": [
+        95.4,
+        94.8,
+        93.8,
+        83.6
+      ],
+      "n_waste_regions": 5,
+      "max_corner_mm2": 534035,
+      "sum_corner_mm2": 822792,
+      "winner_corner_free_mm2": 822792.25,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "seed": 23,
+      "sheets": 4,
+      "min_util": 82.29,
+      "lead_util": 95.14,
+      "utils": [
+        96.6,
+        95.9,
+        92.9,
+        82.3
+      ],
+      "n_waste_regions": 11,
+      "max_corner_mm2": 587524,
+      "sum_corner_mm2": 799674,
+      "winner_corner_free_mm2": 799673.5,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        3,
+        2,
+        4
+      ]
+    },
+    {
+      "seed": 24,
+      "sheets": 4,
+      "min_util": 84.92,
+      "lead_util": 94.26,
+      "utils": [
+        95.4,
+        95.7,
+        91.6,
+        84.9
+      ],
+      "n_waste_regions": 9,
+      "max_corner_mm2": 451304,
+      "sum_corner_mm2": 755482,
+      "winner_corner_free_mm2": 755481.75,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        3,
+        3,
+        2
+      ]
+    },
+    {
+      "seed": 25,
+      "sheets": 4,
+      "min_util": 83.22,
+      "lead_util": 94.83,
+      "utils": [
+        95.4,
+        95.3,
+        93.8,
+        83.2
+      ],
+      "n_waste_regions": 7,
+      "max_corner_mm2": 540270,
+      "sum_corner_mm2": 783872,
+      "winner_corner_free_mm2": 783872.25,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        2,
+        2,
+        2
+      ]
+    },
+    {
+      "seed": 26,
+      "sheets": 4,
+      "min_util": 86.03,
+      "lead_util": 93.89,
+      "utils": [
+        96.6,
+        93.5,
+        91.7,
+        86.0
+      ],
+      "n_waste_regions": 7,
+      "max_corner_mm2": 344199,
+      "sum_corner_mm2": 629713,
+      "winner_corner_free_mm2": 629713.0,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        1,
+        1,
+        2
+      ]
+    },
+    {
+      "seed": 27,
+      "sheets": 4,
+      "min_util": 84.6,
+      "lead_util": 94.37,
+      "utils": [
+        96.6,
+        93.4,
+        93.1,
+        84.6
+      ],
+      "n_waste_regions": 6,
+      "max_corner_mm2": 429660,
+      "sum_corner_mm2": 700044,
+      "winner_corner_free_mm2": 700044.5,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        1,
+        3,
+        1
+      ]
+    },
+    {
+      "seed": 28,
+      "sheets": 4,
+      "min_util": 83.3,
+      "lead_util": 94.8,
+      "utils": [
+        96.6,
+        95.4,
+        92.4,
+        83.3
+      ],
+      "n_waste_regions": 6,
+      "max_corner_mm2": 529590,
+      "sum_corner_mm2": 796387,
+      "winner_corner_free_mm2": 796387.25,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        1,
+        2,
+        2
+      ]
+    },
+    {
+      "seed": 29,
+      "sheets": 4,
+      "min_util": 83.9,
+      "lead_util": 94.6,
+      "utils": [
+        95.4,
+        94.4,
+        94.0,
+        83.9
+      ],
+      "n_waste_regions": 6,
+      "max_corner_mm2": 404310,
+      "sum_corner_mm2": 644416,
+      "winner_corner_free_mm2": 644415.75,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        2,
+        1,
+        1
+      ]
+    },
+    {
+      "seed": 30,
+      "sheets": 4,
+      "min_util": 83.71,
+      "lead_util": 94.67,
+      "utils": [
+        96.6,
+        94.8,
+        92.6,
+        83.7
+      ],
+      "n_waste_regions": 5,
+      "max_corner_mm2": 384110,
+      "sum_corner_mm2": 660760,
+      "winner_corner_free_mm2": 660760.0,
+      "attempts": 1,
+      "partition_applied": true,
+      "densest_zones": [
+        1,
+        1,
+        1,
+        1
+      ]
+    }
+  ]
+}

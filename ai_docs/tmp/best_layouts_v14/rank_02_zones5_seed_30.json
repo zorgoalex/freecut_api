@@ -1,0 +1,24 @@
+{
+  "seed": 30,
+  "sheets": 4,
+  "min_util": 83.71,
+  "lead_util": 94.67,
+  "utils": [
+    96.6,
+    94.8,
+    92.6,
+    83.7
+  ],
+  "n_waste_regions": 5,
+  "max_corner_mm2": 384110,
+  "sum_corner_mm2": 660760,
+  "winner_corner_free_mm2": 660760.0,
+  "attempts": 1,
+  "partition_applied": true,
+  "densest_zones": [
+    1,
+    1,
+    1,
+    1
+  ]
+}
