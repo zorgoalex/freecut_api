@@ -1224,6 +1224,76 @@ Pareto-front по (util, zones) в GA. Вместо одного лучшего 
 
 ---
 
+## ЭТАП 21: ПЛАН — Группа А: Изменение структуры размещения (в работе, 2026-06-13)
+
+### Состояние на момент старта
+- **Текущий лучший**: V13 (0.8pp/zone penalty), ветка `feat/v13-nested-zones-hybrid`
+- **Метрики V13 (30 seeds)**: lead_util 94.65%, zones 7.0, max_corner 454k, min_util 83.77%, 4-sheet 30/30
+- **Лучшие seeds**: seed 22 и 30 достигают 4 зон (densest_zones=[1,1,1,1])
+- **Основной gap**: zones 7→4 (цель: 1 зона на лист, угловая лесенка)
+
+### Анализ данных V13 (v13_0.8pp_summary.json)
+- Seeds с 4 зонами (идеал): **22** (lead 94.69%, corner 534k) и **30** (lead 94.67%, corner 384k)
+- Seeds с 5 зонами: большинство (2, 5, 7, 8, 9, 11, 13, 14, 16, 18, 19, 25, 27, 28, 29)
+- Seeds с 6+ зонами: 1, 3, 4, 6, 10, 12, 15, 17, 20, 21, 23, 24, 26
+- **densest_zones** показывает: 1-й peel ВСЕГДА zones=1, проблема в peels 2-3 (nested кандидаты с 2-3 зонами)
+- V11 чередование guillotine/nested: нечётные attempts используют nested → nested иногда побеждает по density → замораживается лист с 2-3 зонами
+
+### Группы А гипотезы (из «ПЛАН ДАЛЬНЕЙШЕЙ РЕАЛИЗАЦИИ»)
+
+| Приоритет | ID | Гипотеза | Ветка | Ожидание | Сложность |
+|---|---|---|---|---|---|
+| **1** | **A3** | Guillotine-repack nested peel winners | `feat/v14-guill-repack` | zones 7→5-6 | Низкая |
+| **2** | **A1** | Shelf-FFDH для ВСЕХ листов (не только slack) | `feat/v15-shelf-all` | zones ~4, lead ~91-93% | Средняя |
+| **3** | **A2** | Column-seeded GA (shelf как seed в GA population) | `feat/v16-column-seed` | zones 4-5, lead ~94% | Средняя |
+| **4** | **A4** | Two-level: guillotine frame + nested fill | `feat/v17-two-level` | zones ~5, lead ~94%+ | Высокая |
+
+### Детали реализации (для следующей сессии)
+
+#### A3: Guillotine-repack (ВЕТКА СОЗДАНА, код НЕ написан)
+**Идея:** когда nested кандидат побеждает в peel-раунде (V11 чередование), взять детали плотнейшего листа и переупаковать через guillotine GA. Если guillotine даёт ≤ зон при util ≥ nested_util - 0.5pp — использовать guillotine.
+
+**Место в коде** (`src/optimizer.rs`):
+- Peel loop: L1433-1475 (best_attempt selection), L1516-1545 (freeze densest sheet)
+- Нужно: (1) добавить `best_attempt_mode: Option<LayoutMode>` рядом с `best_attempt`, (2) после заморозки densest sheet, если mode==Nested, запустить `pack_group_single_sheet` с Guillotine, (3) сравнить и подменить
+- `pack_group_single_sheet` уже существует (L824-836)
+- Budget: attempt_budget_ms (budget/8, min 600ms) — достаточно для 1-sheet repack
+
+#### A1: Shelf для всех листов
+**Идея:** `build_shelf_stock_piece` (L983-1098) сейчас участвует только в slack-итерации. Сделать его конкурентом GA и в обычных peel-итерациях. Shelf даёт 1 зону по построению (монотонная лесенка), но util ~91% vs GA ~94-97%.
+
+#### A2: Column-seeded GA
+**Идея:** inject shelf-решение как начальный индивид в GA population (не как post-hoc кандидат, как V4). V4 (FFD seeding) был фальсифицирован, но shelf структурно ближе к идеалу.
+
+#### A4: Two-level layout
+**Идея:** guillotine размещает крупные детали (формирует каркас), nested заполняет пустоты мелкими. Самый сложный для реализации.
+
+### Последовательность выполнения
+1. **A3** → реализовать → `cargo build --release` → 30-seed benchmark → сохранить top-5 SVG в `ai_docs/tmp/best_layouts_v14/` → записать результаты
+2. **A1** → новая ветка от v13 → реализовать → benchmark → `best_layouts_v15/`
+3. **A2** → новая ветка от v13 → реализовать → benchmark → `best_layouts_v16/`
+4. **A4** → новая ветка от v13 → реализовать → benchmark → `best_layouts_v17/`
+5. Сравнительная таблица всех Group A результатов → обновление CONTEXT.md
+
+### Тестовый скрипт (база)
+`scripts/test_v13_zones_penalty.py` — клонировать для каждой гипотезы, менять только:
+- `FREECUT_OUT_DIR` (env variable)
+- `FREECUT_PORT` (если другой порт)
+- Имя summary-файла
+
+### Команды для старта
+```bash
+git checkout feat/v14-guill-repack
+cargo build --release
+.\target\release\freecut.exe
+# В другом терминале:
+$env:FREECUT_OUT_DIR="ai_docs\tmp\best_layouts_v14"
+$env:FREECUT_PORT="8088"
+python scripts/test_v14_guill_repack.py
+```
+
+---
+
 ## Git ветки (актуальное состояние)
 
 | Ветка | Базируется на | Статус |
@@ -1234,3 +1304,4 @@ Pareto-front по (util, zones) в GA. Вместо одного лучшего 
 | `feat/v11-peel-nested-mix` | v10 | V11 — lead +0.63pp, зоны +2.2 |
 | `feat/v12-nested-first-peel` | v10 | V12 — РЕГРЕССИЯ |
 | `feat/v13-nested-zones-hybrid` | v11 | V13 — лучший компромисс |
+| `feat/v14-guill-repack` | v13 | **В РАБОТЕ** — A3 guillotine-repack (ветка создана, код не написан) |
