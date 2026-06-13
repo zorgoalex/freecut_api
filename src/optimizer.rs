@@ -1437,9 +1437,21 @@ async fn run_partitioned(
             let seed = base_seed.wrapping_add(
                 ((peel_idx << 8) + attempt_idx + 1).wrapping_mul(SEED_STRIDE),
             );
+            // V11: alternate guillotine/nested in peel attempts for non-last
+            // iterations.  Nested is not constrained by guillotine cuts and
+            // can pack the densest sheet more tightly, potentially raising
+            // lead util from 94% toward 95%+.  For the slack iteration we
+            // keep guillotine only (shelf/column constructors handle it).
+            let attempt_mode = if last_iteration {
+                layout_mode
+            } else if attempt_idx % 2 == 0 {
+                layout_mode
+            } else {
+                LayoutMode::Nested
+            };
             attempt_idx += 1;
             let Some((candidate, used)) =
-                run_subset(req, prepared, &remaining, layout_mode, seed, this_budget).await?
+                run_subset(req, prepared, &remaining, attempt_mode, seed, this_budget).await?
             else {
                 continue;
             };
