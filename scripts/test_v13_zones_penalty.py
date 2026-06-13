@@ -16,7 +16,8 @@ try:
 except Exception:
     pass
 
-OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "ai_docs", "tmp", "best_layouts_v13")
+OUT_DIR = os.environ.get("FREECUT_OUT_DIR",
+    os.path.join(os.path.dirname(__file__), "..", "ai_docs", "tmp", "best_layouts_v13"))
 os.makedirs(OUT_DIR, exist_ok=True)
 PORT = os.environ.get("FREECUT_PORT", "8088")
 
@@ -131,6 +132,7 @@ for seed in range(1, 31):
         "attempts": retry.get("attempts", 1),
         "partition_applied": ptn.get("applied", False),
         "densest_zones": ptn.get("densest_zones", []),
+        "data": data,
     })
     mark = "OK " if n_sheets == 4 else "5s "
     dz = results[-1]["densest_zones"]
@@ -148,7 +150,7 @@ avg_max_corner = sum(r["max_corner_mm2"] for r in results) / n
 n_regions_le_4 = sum(1 for r in results if r["n_waste_regions"] <= 4)
 n_corner_300k = sum(1 for r in results if r["max_corner_mm2"] >= 300_000)
 
-print(f"\nV13 Summary (30 seeds): elapsed {elapsed:.0f}s")
+print(f"\nV13x Summary (30 seeds): elapsed {elapsed:.0f}s")
 print(f"  4-sheet rate:                 {n_4}/{len(results)}")
 print(f"  Avg lead util (best n-1):     {avg_lead:.2f}%")
 print(f"  Avg min util:                 {avg_min:.2f}%")
@@ -160,21 +162,22 @@ n_peel = sum(1 for r in results if r['partition_applied'])
 print(f"  Peeling applied:              {n_peel}/{len(results)}")
 
 ranked = sorted([r for r in results if r["sheets"] == 4],
-                key=lambda r: (r["n_waste_regions"], -r["max_corner_mm2"], -r["lead_util"]))
+                key=lambda r: (r["n_waste_regions"], -r["lead_util"]))
 for i, r in enumerate(ranked[:5], start=1):
-    svg = r.get("data", {}).get("artifacts", {}).get("svg", "") if "data" in r else ""
+    svg = r.get("data", {}).get("artifacts", {}).get("svg", "") if isinstance(r.get("data"), dict) else ""
     stem = f"rank_{i:02d}_zones{r['n_waste_regions']}_seed_{r['seed']}"
     if svg:
-        with open(os.path.join(OUT_DIR, stem + ".svg"), "w") as f:
+        with open(os.path.join(OUT_DIR, stem + ".svg"), "w", encoding="utf-8") as f:
             f.write(svg)
-    d = dict(r)
-    d.pop("data", None)
-    with open(os.path.join(OUT_DIR, stem + ".json"), "w") as f:
-        json.dump(d, f, indent=2)
+    d = {k: v for k, v in r.items() if k != "data"}
+    with open(os.path.join(OUT_DIR, stem + ".json"), "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=2, ensure_ascii=False)
     print(f"  rank {i}: seed={r['seed']}, zones={r['n_waste_regions']}, "
           f"corner={r['max_corner_mm2']/1e3:.0f}k, lead={r['lead_util']}%, "
           f"utils={r['utils']}, densest_zones={r['densest_zones']}")
 
-with open(os.path.join(OUT_DIR, "v13_summary.json"), "w") as f:
+fmt = "v13_{:.1f}pp".format(float(os.environ.get("ZONES_PENALTY_PP", "0.8")))
+summary_name = f"{fmt}_summary.json"
+with open(os.path.join(OUT_DIR, summary_name), "w") as f:
     json.dump({"results": [{k: v for k, v in r.items() if k != "data"} for r in results]}, f, indent=2)
 print(f"Saved to {OUT_DIR}")
