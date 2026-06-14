@@ -1,7 +1,31 @@
 # Freecut
 
-Freecut is a Rust service for 2D rectangular cut optimization with an HTTP API and optional SVG output.
+Freecut is an open-source Rust service for 2D rectangular cut optimization with an HTTP API and optional SVG output.
+It targets practical sheet-cutting workflows used in woodworking, furniture production, CNC machining, metal fabrication, signage, plastics, and other material-intensive manufacturing contexts.
 It uses Axum and the `cut-optimizer-2d` engine.
+
+## Purpose
+
+Cutting stock optimization is a practical production problem: every inefficient layout turns expensive sheet material into waste.
+Freecut aims to provide transparent, API-first optimization for workshops and software teams that need reliable layouts without depending entirely on closed black-box tools.
+
+The project focuses on outcomes that matter in real manufacturing:
+- fewer sheets used per job;
+- lower material waste and purchasing cost;
+- cleaner, more reusable offcuts;
+- deterministic runs through explicit seeds and telemetry;
+- visual auditability through SVG output and saved benchmark artifacts;
+- support for both nested and guillotine-style cutting workflows.
+
+These improvements have business and environmental value at the same time.
+Better layouts reduce discarded material, replacement purchases, transport, and energy use across the production chain.
+
+## Open Source Approach
+
+Freecut is intended as open infrastructure for ERP, MES, CAD/CAM, CNC, quoting, and production-planning systems.
+The optimizer exposes its trade-offs through JSON responses, telemetry, benchmarks, and visual artifacts so contributors can inspect, compare, and improve the algorithms.
+
+The goal is to make practical cutting optimization accessible to small workshops, independent developers, researchers, and integrators, not only to organizations that can afford specialized commercial tooling.
 
 ## Features
 - 2D rectangle nesting with kerf/spacing/trim support
