@@ -241,7 +241,7 @@ async fn optimize_request_internal(
             .map(|pool| pool.enabled.unwrap_or(true))
             .unwrap_or(false)
     {
-        return optimize_profile_pool(req, config).await;
+        return optimize_profile_pool(req, config, used_seed).await;
     }
     let prepared = prepare_input(&req)?;
 
@@ -514,6 +514,7 @@ fn build_response_from_outcome(
 
 struct ProfilePoolCandidate {
     response: OptimizeResponse,
+    seed: u64,
     zone_penalty: f64,
     waste_regions: u32,
     lead_util_pct: f64,
@@ -523,6 +524,7 @@ struct ProfilePoolCandidate {
 async fn optimize_profile_pool(
     req: OptimizeRequest,
     config: &AppConfig,
+    base_seed: u64,
 ) -> Result<OptimizeResponse, OptimizeError> {
     let started_at = Instant::now();
     let pool_cfg = req
@@ -544,6 +546,11 @@ async fn optimize_profile_pool(
         })
         .unwrap_or(0.1);
     let max_lead_drop_pp = pool_cfg.max_lead_drop_pp.unwrap_or(0.4);
+    let seed_offsets = pool_cfg.seed_offsets.clone().unwrap_or_default();
+    let rescue_when_zones_gt = pool_cfg
+        .rescue_when_zones_gt
+        .or_else(|| (!seed_offsets.is_empty()).then_some(5));
+    let rescue_when_max_corner_below_mm2 = pool_cfg.rescue_when_max_corner_below_mm2;
 
     let mut candidates: Vec<ProfilePoolCandidate> = Vec::new();
     let mut timed_out = 0_u32;
@@ -551,49 +558,13 @@ async fn optimize_profile_pool(
     let mut last_error: Option<OptimizeError> = None;
 
     for &zone_penalty in &profiles {
-        let mut profile_req = req.clone();
-        profile_req.params.profile_pool = None;
-        let mut ga_override = profile_req
-            .params
-            .ga_override
-            .clone()
-            .unwrap_or(GaOverrideParams {
-                epochs: None,
-                breed_factor: None,
-                survival_factor: None,
-                top_k_candidates: None,
-                zone_penalty: None,
-                fill_penalty: None,
-            });
-        ga_override.zone_penalty = Some(zone_penalty);
-        ga_override.fill_penalty = Some(fill_penalty);
-        profile_req.params.ga_override = Some(ga_override);
-
-        match Box::pin(optimize_request_internal(
-            profile_req,
-            config,
-            SolveMode::Default,
-        ))
-        .await
-        {
-            Ok(response) => {
-                let gap_mm = req.params.kerf_mm + req.params.spacing_mm;
-                candidates.push(ProfilePoolCandidate {
-                    waste_regions: response_waste_regions(&response, gap_mm),
-                    lead_util_pct: response_lead_util_pct(&response),
-                    max_corner_mm2: response_max_corner_mm2(&response),
-                    response,
-                    zone_penalty,
-                });
-            }
-            Err(OptimizeError::Timeout) => {
-                timed_out = timed_out.saturating_add(1);
-            }
-            Err(err @ OptimizeError::Constraint { .. }) | Err(err @ OptimizeError::Internal(_)) => {
-                failed = failed.saturating_add(1);
-                last_error = Some(err);
-            }
-        }
+        record_profile_pool_candidate_result(
+            run_profile_pool_candidate(&req, config, base_seed, zone_penalty, fill_penalty).await,
+            &mut candidates,
+            &mut timed_out,
+            &mut failed,
+            &mut last_error,
+        );
     }
 
     if candidates.is_empty() {
@@ -605,6 +576,124 @@ async fn optimize_profile_pool(
         }));
     }
 
+    let provisional_idx = profile_pool_winner_idx(&candidates, max_lead_drop_pp);
+    let provisional = &candidates[provisional_idx];
+    let zones_rescue = rescue_when_zones_gt
+        .map(|threshold| provisional.waste_regions > threshold)
+        .unwrap_or(false);
+    let corner_rescue = rescue_when_max_corner_below_mm2
+        .map(|threshold| provisional.max_corner_mm2 < threshold)
+        .unwrap_or(false);
+    let rescue_triggered = !seed_offsets.is_empty() && (zones_rescue || corner_rescue);
+    let mut seed_offsets_used: Vec<u64> = Vec::new();
+
+    if rescue_triggered {
+        for offset in &seed_offsets {
+            let seed = base_seed.wrapping_add(*offset);
+            seed_offsets_used.push(*offset);
+            for &zone_penalty in &profiles {
+                record_profile_pool_candidate_result(
+                    run_profile_pool_candidate(&req, config, seed, zone_penalty, fill_penalty)
+                        .await,
+                    &mut candidates,
+                    &mut timed_out,
+                    &mut failed,
+                    &mut last_error,
+                );
+            }
+        }
+    }
+
+    let winner_idx = profile_pool_winner_idx(&candidates, max_lead_drop_pp);
+    let completed = candidates.len() as u32;
+    let mut winner = candidates.swap_remove(winner_idx);
+    winner.response.summary.time_ms = started_at.elapsed().as_millis() as u64;
+    winner.response.summary.profile_pool = Some(ProfilePoolTelemetry {
+        profiles_requested: profiles,
+        candidates_total: completed.saturating_add(timed_out).saturating_add(failed),
+        candidates_completed: completed,
+        candidates_timed_out: timed_out,
+        candidates_failed: failed,
+        seed_offsets_requested: seed_offsets,
+        seed_offsets_used,
+        rescue_triggered,
+        rescue_when_zones_gt,
+        rescue_when_max_corner_below_mm2,
+        winner_seed: winner.seed,
+        winner_zone_penalty: winner.zone_penalty,
+        winner_waste_regions: winner.waste_regions,
+        winner_lead_util_pct: winner.lead_util_pct,
+        winner_max_corner_mm2: winner.max_corner_mm2,
+        max_lead_drop_pp,
+    });
+    Ok(winner.response)
+}
+
+async fn run_profile_pool_candidate(
+    req: &OptimizeRequest,
+    config: &AppConfig,
+    seed: u64,
+    zone_penalty: f64,
+    fill_penalty: f64,
+) -> Result<ProfilePoolCandidate, OptimizeError> {
+    let mut profile_req = req.clone();
+    profile_req.params.profile_pool = None;
+    profile_req.params.seed = Some(seed);
+    let mut ga_override = profile_req
+        .params
+        .ga_override
+        .clone()
+        .unwrap_or(GaOverrideParams {
+            epochs: None,
+            breed_factor: None,
+            survival_factor: None,
+            top_k_candidates: None,
+            zone_penalty: None,
+            fill_penalty: None,
+        });
+    ga_override.zone_penalty = Some(zone_penalty);
+    ga_override.fill_penalty = Some(fill_penalty);
+    profile_req.params.ga_override = Some(ga_override);
+
+    let response = Box::pin(optimize_request_internal(
+        profile_req,
+        config,
+        SolveMode::Default,
+    ))
+    .await?;
+    let gap_mm = req.params.kerf_mm + req.params.spacing_mm;
+    Ok(ProfilePoolCandidate {
+        waste_regions: response_waste_regions(&response, gap_mm),
+        lead_util_pct: response_lead_util_pct(&response),
+        max_corner_mm2: response_max_corner_mm2(&response),
+        response,
+        seed,
+        zone_penalty,
+    })
+}
+
+fn record_profile_pool_candidate_result(
+    result: Result<ProfilePoolCandidate, OptimizeError>,
+    candidates: &mut Vec<ProfilePoolCandidate>,
+    timed_out: &mut u32,
+    failed: &mut u32,
+    last_error: &mut Option<OptimizeError>,
+) {
+    match result {
+        Ok(candidate) => {
+            candidates.push(candidate);
+        }
+        Err(OptimizeError::Timeout) => {
+            *timed_out = timed_out.saturating_add(1);
+        }
+        Err(err @ OptimizeError::Constraint { .. }) | Err(err @ OptimizeError::Internal(_)) => {
+            *failed = failed.saturating_add(1);
+            *last_error = Some(err);
+        }
+    }
+}
+
+fn profile_pool_winner_idx(candidates: &[ProfilePoolCandidate], max_lead_drop_pp: f64) -> usize {
     let best_lead = candidates
         .iter()
         .map(|candidate| candidate.lead_util_pct)
@@ -624,7 +713,7 @@ async fn optimize_profile_pool(
             winner_idx = Some(idx);
         }
     }
-    let winner_idx = winner_idx.unwrap_or_else(|| {
+    winner_idx.unwrap_or_else(|| {
         candidates
             .iter()
             .enumerate()
@@ -633,24 +722,7 @@ async fn optimize_profile_pool(
             })
             .map(|(idx, _)| idx)
             .unwrap_or(0)
-    });
-
-    let completed = candidates.len() as u32;
-    let mut winner = candidates.swap_remove(winner_idx);
-    winner.response.summary.time_ms = started_at.elapsed().as_millis() as u64;
-    winner.response.summary.profile_pool = Some(ProfilePoolTelemetry {
-        profiles_requested: profiles,
-        candidates_total: completed.saturating_add(timed_out).saturating_add(failed),
-        candidates_completed: completed,
-        candidates_timed_out: timed_out,
-        candidates_failed: failed,
-        winner_zone_penalty: winner.zone_penalty,
-        winner_waste_regions: winner.waste_regions,
-        winner_lead_util_pct: winner.lead_util_pct,
-        winner_max_corner_mm2: winner.max_corner_mm2,
-        max_lead_drop_pp,
-    });
-    Ok(winner.response)
+    })
 }
 
 fn profile_pool_candidate_better(

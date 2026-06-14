@@ -179,6 +179,15 @@ pub struct ProfilePoolParams {
     /// Maximum lead-utilisation drop allowed before a lower-zone candidate
     /// is rejected, except breakthrough layouts with <=4 zones.
     pub max_lead_drop_pp: Option<f64>,
+    /// Extra seed offsets to evaluate adaptively when the initial profile pool
+    /// still has too many waste regions or too small a reusable corner.
+    pub seed_offsets: Option<Vec<u64>>,
+    /// Trigger adaptive seed rescue when the provisional winner has more than
+    /// this many waste regions. Optional, defaults to 5 when seed_offsets exist.
+    pub rescue_when_zones_gt: Option<u32>,
+    /// Trigger adaptive seed rescue when the provisional winner's largest
+    /// corner-free rectangle is below this area.
+    pub rescue_when_max_corner_below_mm2: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy)]
@@ -317,6 +326,16 @@ pub struct ProfilePoolTelemetry {
     pub candidates_completed: u32,
     pub candidates_timed_out: u32,
     pub candidates_failed: u32,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub seed_offsets_requested: Vec<u64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub seed_offsets_used: Vec<u64>,
+    pub rescue_triggered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rescue_when_zones_gt: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rescue_when_max_corner_below_mm2: Option<f64>,
+    pub winner_seed: u64,
     pub winner_zone_penalty: f64,
     pub winner_waste_regions: u32,
     pub winner_lead_util_pct: f64,

@@ -25,6 +25,11 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 PORT = os.environ.get("FREECUT_PORT", "8088")
 SEEDS = int(os.environ.get("FREECUT_SEEDS", "8"))
+SEED_LIST = [
+    int(x.strip())
+    for x in os.environ.get("FREECUT_SEED_LIST", "").split(",")
+    if x.strip()
+]
 TIME_LIMIT_MS = int(os.environ.get("FREECUT_TIME_LIMIT_MS", "10000"))
 SHEET_BUDGET_MS = int(os.environ.get("FREECUT_SHEET_BUDGET_MS", "20000"))
 PROFILES = [
@@ -33,6 +38,13 @@ PROFILES = [
     if x.strip()
 ]
 MAX_LEAD_DROP_PP = float(os.environ.get("FREECUT_PROFILE_POOL_MAX_LEAD_DROP_PP", "0.4"))
+SEED_OFFSETS = [
+    int(x.strip())
+    for x in os.environ.get("FREECUT_PROFILE_POOL_SEED_OFFSETS", "").split(",")
+    if x.strip()
+]
+RESCUE_ZONES_GT = os.environ.get("FREECUT_PROFILE_POOL_RESCUE_ZONES_GT")
+RESCUE_CORNER_BELOW = os.environ.get("FREECUT_PROFILE_POOL_RESCUE_CORNER_BELOW_MM2")
 
 with open(os.path.join(ROOT, "tests", "fixtures", "multisheet_varied_4sheets.json")) as f:
     base_req = json.load(f)
@@ -57,6 +69,14 @@ base_req["params"]["profile_pool"] = {
     "fill_penalty": 0.1,
     "max_lead_drop_pp": MAX_LEAD_DROP_PP,
 }
+if SEED_OFFSETS:
+    base_req["params"]["profile_pool"]["seed_offsets"] = SEED_OFFSETS
+if RESCUE_ZONES_GT not in (None, ""):
+    base_req["params"]["profile_pool"]["rescue_when_zones_gt"] = int(RESCUE_ZONES_GT)
+if RESCUE_CORNER_BELOW not in (None, ""):
+    base_req["params"]["profile_pool"]["rescue_when_max_corner_below_mm2"] = float(
+        RESCUE_CORNER_BELOW
+    )
 
 
 def call_optimize(seed):
@@ -96,6 +116,9 @@ def row_from_response(seed, data):
         "n_waste_regions": pool.get("winner_waste_regions", 0),
         "lead_util": round(pool.get("winner_lead_util_pct", 0.0), 2),
         "max_corner_mm2": round(pool.get("winner_max_corner_mm2", 0.0)),
+        "winner_seed": pool.get("winner_seed"),
+        "rescue_triggered": pool.get("rescue_triggered", False),
+        "seed_offsets_used": pool.get("seed_offsets_used", []),
         "utils": [round(u, 1) for u in utils],
         "candidates_completed": pool.get("candidates_completed", 0),
         "candidates_timed_out": pool.get("candidates_timed_out", 0),
@@ -107,7 +130,14 @@ def main():
     rows = []
     started = time.time()
     print(f"profiles={PROFILES}, max_lead_drop_pp={MAX_LEAD_DROP_PP}", flush=True)
-    for seed in range(1, SEEDS + 1):
+    if SEED_OFFSETS:
+        print(
+            f"seed_offsets={SEED_OFFSETS}, rescue_zones_gt={RESCUE_ZONES_GT}, "
+            f"rescue_corner_below={RESCUE_CORNER_BELOW}",
+            flush=True,
+        )
+    seeds_to_run = SEED_LIST or list(range(1, SEEDS + 1))
+    for seed in seeds_to_run:
         try:
             data = call_optimize(seed)
         except Exception as exc:
@@ -117,6 +147,7 @@ def main():
         rows.append(row)
         print(
             f"  seed={seed:2d}: sheets={row['sheets']}, zp={row['zone_penalty']}, "
+            f"winner_seed={row['winner_seed']}, rescue={row['rescue_triggered']}, "
             f"lead={row['lead_util']:5.2f}%, regions={row['n_waste_regions']}, "
             f"corner={row['max_corner_mm2'] / 1e3:.0f}k, "
             f"completed={row['candidates_completed']}, timeouts={row['candidates_timed_out']}",
@@ -159,6 +190,18 @@ def main():
             {
                 "profiles": PROFILES,
                 "max_lead_drop_pp": MAX_LEAD_DROP_PP,
+                "seed_offsets": SEED_OFFSETS,
+                "rescue_when_zones_gt": (
+                    int(RESCUE_ZONES_GT)
+                    if RESCUE_ZONES_GT not in (None, "")
+                    else None
+                ),
+                "rescue_when_max_corner_below_mm2": (
+                    float(RESCUE_CORNER_BELOW)
+                    if RESCUE_CORNER_BELOW not in (None, "")
+                    else None
+                ),
+                "seeds": seeds_to_run,
                 "results": [{k: v for k, v in r.items() if k != "data"} for r in rows],
             },
             f,

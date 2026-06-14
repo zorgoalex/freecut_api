@@ -178,6 +178,25 @@ pub fn validate_request(
                     ));
                 }
             }
+            if let Some(seed_offsets) = &pool.seed_offsets {
+                if seed_offsets.is_empty() || seed_offsets.len() > 8 {
+                    return Err(ValidationError::new(
+                        "profile_pool.seed_offsets must contain 1..=8 positive values",
+                    ));
+                }
+                if seed_offsets.iter().any(|offset| *offset == 0) {
+                    return Err(ValidationError::new(
+                        "profile_pool.seed_offsets values must be positive",
+                    ));
+                }
+            }
+            if let Some(corner_threshold) = pool.rescue_when_max_corner_below_mm2 {
+                if !corner_threshold.is_finite() || corner_threshold < 0.0 {
+                    return Err(ValidationError::new(
+                        "profile_pool.rescue_when_max_corner_below_mm2 must be finite and >= 0",
+                    ));
+                }
+            }
         }
     }
 
