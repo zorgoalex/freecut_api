@@ -1000,6 +1000,59 @@ async fn optimize_accepts_group_shift_and_reports_telemetry() {
 }
 
 #[tokio::test]
+async fn optimize_group_shift_debug_artifacts_are_opt_in() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("time_limit_ms".to_string(), Value::from(300));
+        params.insert("restarts".to_string(), Value::from(1));
+        params.insert("include_svg".to_string(), Value::from(true));
+        params.insert("retry_strategy".to_string(), Value::from("disabled"));
+        params.insert(
+            "group_shift".to_string(),
+            serde_json::json!({
+                "enabled": true,
+                "min_shift_mm": 5.0,
+                "max_passes": 3
+            }),
+        );
+    }
+
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json_without_debug) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json_without_debug}");
+    assert!(json_without_debug
+        .pointer("/artifacts/svg")
+        .and_then(Value::as_str)
+        .is_some_and(|svg| svg.contains("<svg")));
+    assert!(json_without_debug
+        .pointer("/artifacts/group_shift_before_svg")
+        .is_none());
+    assert!(json_without_debug
+        .pointer("/artifacts/group_shift_diff_svg")
+        .is_none());
+
+    if let Some(group_shift) = json
+        .pointer_mut("/params/group_shift")
+        .and_then(Value::as_object_mut)
+    {
+        group_shift.insert("debug_artifacts".to_string(), Value::Bool(true));
+    }
+
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json_with_debug) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json_with_debug}");
+    assert!(json_with_debug
+        .pointer("/artifacts/group_shift_before_svg")
+        .and_then(Value::as_str)
+        .is_some_and(|svg| svg.contains("<svg")));
+    assert!(json_with_debug
+        .pointer("/artifacts/group_shift_diff_svg")
+        .and_then(Value::as_str)
+        .is_some_and(|svg| svg.contains("Group shift diff")));
+}
+
+#[tokio::test]
 async fn optimize_rejects_invalid_group_shift_min_shift() {
     let app = app_for_test();
     let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();

@@ -310,7 +310,11 @@ async fn optimize_request_internal(
             },
             solutions: vec![],
             unplaced_items: prepared.oversized_items,
-            artifacts: Artifacts { svg },
+            artifacts: Artifacts {
+                svg,
+                group_shift_before_svg: None,
+                group_shift_diff_svg: None,
+            },
         });
     }
 
@@ -476,7 +480,19 @@ fn build_response_from_outcome(
     unplaced_items.extend(prepared.oversized_items.clone());
 
     let gap_mm = req.params.kerf_mm + req.params.spacing_mm;
-    let group_shift = group_shift_options(&req.params)
+    let group_shift_options = group_shift_options(&req.params);
+    let group_shift_debug_artifacts = include_svg
+        && group_shift_options
+            .as_ref()
+            .is_some_and(|options| options.enabled)
+        && req
+            .params
+            .group_shift
+            .as_ref()
+            .and_then(|group_shift| group_shift.debug_artifacts)
+            .unwrap_or(false);
+    let group_shift_before_solutions = group_shift_debug_artifacts.then(|| solutions.clone());
+    let group_shift = group_shift_options
         .map(|options| apply_group_shift_postprocess(&mut solutions, gap_mm, options));
 
     // Recalculate stats for kept solutions only
@@ -519,13 +535,23 @@ fn build_response_from_outcome(
     } else {
         None
     };
+    let group_shift_before_svg = group_shift_before_solutions
+        .as_ref()
+        .map(|before| build_svg(before, &unplaced_items, &prepared.trim, gap_mm));
+    let group_shift_diff_svg = group_shift_before_solutions
+        .as_ref()
+        .map(|before| build_group_shift_diff_svg(before, &solutions, &prepared.trim));
 
     OptimizeResponse {
         status: "ok",
         summary,
         solutions,
         unplaced_items,
-        artifacts: Artifacts { svg },
+        artifacts: Artifacts {
+            svg,
+            group_shift_before_svg,
+            group_shift_diff_svg,
+        },
     }
 }
 
@@ -5292,6 +5318,117 @@ fn build_svg(
 
     svg.push_str("</svg>");
     svg
+}
+
+fn build_group_shift_diff_svg(
+    before_solutions: &[Solution],
+    after_solutions: &[Solution],
+    trim: &Trim,
+) -> String {
+    const SHEET_GAP: f64 = 50.0;
+
+    let mut max_width = 0.0_f64;
+    let mut total_height = 0.0_f64;
+    for (i, solution) in before_solutions.iter().enumerate() {
+        max_width = max_width.max(solution.width_mm);
+        total_height += solution.height_mm;
+        if i > 0 {
+            total_height += SHEET_GAP;
+        }
+    }
+    if max_width == 0.0 {
+        max_width = 500.0;
+    }
+    if total_height == 0.0 {
+        total_height = 200.0;
+    }
+
+    let min_x = -trim.left;
+    let min_y = -trim.top;
+    let mut svg = String::new();
+    svg.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" ");
+    svg.push_str(&format!(
+        "viewBox=\"{} {} {} {}\">",
+        fmt_mm(min_x),
+        fmt_mm(min_y),
+        fmt_mm(max_width),
+        fmt_mm(total_height)
+    ));
+    svg.push_str("<title>Group shift diff: red before, green after</title>");
+
+    let mut y_offset = 0.0_f64;
+    for (sheet_idx, before_solution) in before_solutions.iter().enumerate() {
+        let sheet_x = -trim.left;
+        let sheet_y = -trim.top + y_offset;
+        svg.push_str(&format!(
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#f5f5f5\" stroke=\"#333\" stroke-width=\"1\"/>",
+            fmt_mm(sheet_x),
+            fmt_mm(sheet_y),
+            fmt_mm(before_solution.width_mm),
+            fmt_mm(before_solution.height_mm)
+        ));
+
+        let Some(after_solution) = after_solutions.get(sheet_idx) else {
+            y_offset += before_solution.height_mm + SHEET_GAP;
+            continue;
+        };
+        let after_by_key: HashMap<(&str, u32), &Placement> = after_solution
+            .placements
+            .iter()
+            .map(|placement| ((placement.item_id.as_str(), placement.instance), placement))
+            .collect();
+
+        for before in &before_solution.placements {
+            let Some(after) = after_by_key.get(&(before.item_id.as_str(), before.instance)) else {
+                continue;
+            };
+            if !placement_geometry_changed(before, after) {
+                continue;
+            }
+            let before_x = before.x_mm;
+            let before_y = before.y_mm + y_offset;
+            let after_x = after.x_mm;
+            let after_y = after.y_mm + y_offset;
+            let before_cx = before_x + before.width_mm / 2.0;
+            let before_cy = before_y + before.height_mm / 2.0;
+            let after_cx = after_x + after.width_mm / 2.0;
+            let after_cy = after_y + after.height_mm / 2.0;
+
+            svg.push_str(&format!(
+                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#ff4d4d\" fill-opacity=\"0.10\" stroke=\"#c52222\" stroke-width=\"6\" stroke-dasharray=\"24 18\"/>",
+                fmt_mm(before_x),
+                fmt_mm(before_y),
+                fmt_mm(before.width_mm),
+                fmt_mm(before.height_mm)
+            ));
+            svg.push_str(&format!(
+                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#2fbd5a\" fill-opacity=\"0.12\" stroke=\"#12833a\" stroke-width=\"6\"/>",
+                fmt_mm(after_x),
+                fmt_mm(after_y),
+                fmt_mm(after.width_mm),
+                fmt_mm(after.height_mm)
+            ));
+            svg.push_str(&format!(
+                "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#ff9800\" stroke-width=\"8\" stroke-linecap=\"round\"/>",
+                fmt_mm(before_cx),
+                fmt_mm(before_cy),
+                fmt_mm(after_cx),
+                fmt_mm(after_cy)
+            ));
+        }
+
+        y_offset += before_solution.height_mm + SHEET_GAP;
+    }
+
+    svg.push_str("</svg>");
+    svg
+}
+
+fn placement_geometry_changed(before: &Placement, after: &Placement) -> bool {
+    (before.x_mm - after.x_mm).abs() > GROUP_SHIFT_EPS
+        || (before.y_mm - after.y_mm).abs() > GROUP_SHIFT_EPS
+        || (before.width_mm - after.width_mm).abs() > GROUP_SHIFT_EPS
+        || (before.height_mm - after.height_mm).abs() > GROUP_SHIFT_EPS
 }
 
 fn fmt_mm(value: f64) -> String {

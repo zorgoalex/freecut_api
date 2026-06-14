@@ -76,6 +76,9 @@ pub struct GroupShiftParams {
     /// Enable group-shift postprocess. Optional, defaults to true when
     /// `group_shift` object is provided.
     pub enabled: Option<bool>,
+    /// Emit before/diff SVG artifacts for paired visual analysis. Optional,
+    /// defaults to false.
+    pub debug_artifacts: Option<bool>,
     /// Ignore moves smaller than this many millimeters. Optional, defaults to 5.0.
     pub min_shift_mm: Option<f64>,
     /// Maximum accepted side-group shifts. Optional, defaults to 4.
@@ -534,7 +537,7 @@ pub struct CandidateSelectionTelemetry {
     pub winner_corner_free_area_mm2: f64,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct Solution {
     pub stock_id: String,
     pub index: u32,
@@ -544,7 +547,7 @@ pub struct Solution {
     pub placements: Vec<Placement>,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct Placement {
     pub item_id: String,
     pub instance: u32,
@@ -560,6 +563,10 @@ pub struct Placement {
 pub struct Artifacts {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub svg: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_shift_before_svg: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_shift_diff_svg: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
