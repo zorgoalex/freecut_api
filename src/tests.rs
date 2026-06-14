@@ -971,7 +971,7 @@ async fn optimize_profile_pool_returns_telemetry() {
 }
 
 #[tokio::test]
-async fn optimize_profile_pool_defaults_use_zp02_profile_and_wider_guard() {
+async fn optimize_profile_pool_defaults_use_zp02_zp04_profiles_and_wider_guard() {
     let app = app_for_test();
     let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
     if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
@@ -996,7 +996,7 @@ async fn optimize_profile_pool_defaults_use_zp02_profile_and_wider_guard() {
         .expect("expected summary.profile_pool telemetry");
     assert_eq!(
         pool.get("candidates_total").and_then(Value::as_u64),
-        Some(3)
+        Some(4)
     );
     assert_eq!(
         pool.get("max_lead_drop_pp").and_then(Value::as_f64),
@@ -1006,8 +1006,9 @@ async fn optimize_profile_pool_defaults_use_zp02_profile_and_wider_guard() {
         .get("profiles_requested")
         .and_then(Value::as_array)
         .expect("expected profiles_requested");
-    assert_eq!(profiles.len(), 3);
+    assert_eq!(profiles.len(), 4);
     assert_eq!(profiles.first().and_then(Value::as_f64), Some(0.2));
+    assert!(profiles.iter().any(|profile| profile.as_f64() == Some(0.4)));
 }
 
 #[tokio::test]

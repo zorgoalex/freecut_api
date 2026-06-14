@@ -535,7 +535,7 @@ async fn optimize_profile_pool(
     let profiles = pool_cfg
         .zone_penalties
         .clone()
-        .unwrap_or_else(|| vec![0.2, 0.3, 0.5]);
+        .unwrap_or_else(|| vec![0.2, 0.3, 0.4, 0.5]);
     let fill_penalty = pool_cfg
         .fill_penalty
         .or_else(|| {
