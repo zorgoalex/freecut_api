@@ -32,6 +32,8 @@ pub struct Params {
     pub ga_profile: Option<GaProfile>,
     /// Optional GA parameter override for advanced tuning.
     pub ga_override: Option<GaOverrideParams>,
+    /// Optional multi-profile zones-fitness orchestration for `/v1/optimize`.
+    pub profile_pool: Option<ProfilePoolParams>,
     /// Include SVG artifact in response. Optional, defaults to true.
     pub include_svg: Option<bool>,
     /// Optional portfolio/anytime orchestration settings.
@@ -166,6 +168,19 @@ pub struct GaOverrideParams {
     pub fill_penalty: Option<f64>,
 }
 
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
+pub struct ProfilePoolParams {
+    /// Enable profile-pool mode. Optional, defaults to true when `profile_pool` object is provided.
+    pub enabled: Option<bool>,
+    /// Zone-penalty profiles to evaluate. Optional, defaults to [0.3, 0.5].
+    pub zone_penalties: Option<Vec<f64>>,
+    /// Fill penalty used for every profile. Optional, defaults to ga_override/default 0.1.
+    pub fill_penalty: Option<f64>,
+    /// Maximum lead-utilisation drop allowed before a lower-zone candidate
+    /// is rejected, except breakthrough layouts with <=4 zones.
+    pub max_lead_drop_pp: Option<f64>,
+}
+
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy)]
 pub struct Trim {
     pub left: f64,
@@ -263,6 +278,9 @@ pub struct Summary {
     pub alns: Option<AlnsTelemetry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub candidate_selection: Option<CandidateSelectionTelemetry>,
+    /// V17b multi-profile zones-fitness orchestration telemetry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_pool: Option<ProfilePoolTelemetry>,
     /// Fault-aware retry telemetry.  Populated only when
     /// `params.retry_strategy = smart` and at least one recovery attempt
     /// was made.
@@ -290,6 +308,20 @@ pub struct PartitionTelemetry {
     /// Empty when partition was not applied.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub densest_zones: Vec<u32>,
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone)]
+pub struct ProfilePoolTelemetry {
+    pub profiles_requested: Vec<f64>,
+    pub candidates_total: u32,
+    pub candidates_completed: u32,
+    pub candidates_timed_out: u32,
+    pub candidates_failed: u32,
+    pub winner_zone_penalty: f64,
+    pub winner_waste_regions: u32,
+    pub winner_lead_util_pct: f64,
+    pub winner_max_corner_mm2: f64,
+    pub max_lead_drop_pp: f64,
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone)]

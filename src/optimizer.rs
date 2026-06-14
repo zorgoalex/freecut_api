@@ -12,9 +12,10 @@ use cut_optimizer_2d::{
 use crate::config::AppConfig;
 use crate::models::{
     AlnsOperatorTelemetry, AlnsTelemetry, Artifacts, BeamTelemetry, CandidateSelectionTelemetry,
-    ErrorResponse, GaProfile, LayoutMode, Objective, OptimizeRequest, OptimizeResponse,
-    PartitionTelemetry, PatternDirection, Placement, PortfolioTelemetry, RestartPolicyTelemetry,
-    RetryStrategy, RetryTelemetry, SlaProfile, Solution, Summary, Trim, UnplacedItem,
+    ErrorResponse, GaOverrideParams, GaProfile, LayoutMode, Objective, OptimizeRequest,
+    OptimizeResponse, PartitionTelemetry, PatternDirection, Placement, PortfolioTelemetry,
+    ProfilePoolTelemetry, RestartPolicyTelemetry, RetryStrategy, RetryTelemetry, SlaProfile,
+    Solution, Summary, Trim, UnplacedItem,
 };
 use crate::validation::item_fits_any_stock_public;
 
@@ -232,6 +233,16 @@ async fn optimize_request_internal(
     let layout_mode = req.params.layout_mode.unwrap_or(LayoutMode::Guillotine);
     let include_svg = req.params.include_svg.unwrap_or(true);
     let used_seed = req.params.seed.unwrap_or_else(generate_seed);
+    if matches!(mode, SolveMode::Default)
+        && req
+            .params
+            .profile_pool
+            .as_ref()
+            .map(|pool| pool.enabled.unwrap_or(true))
+            .unwrap_or(false)
+    {
+        return optimize_profile_pool(req, config).await;
+    }
     let prepared = prepare_input(&req)?;
 
     let time_limit_ms = req
@@ -280,6 +291,7 @@ async fn optimize_request_internal(
                 beam: None,
                 alns: None,
                 candidate_selection: None,
+                profile_pool: None,
                 retry: None,
                 partition: None,
             },
@@ -474,6 +486,7 @@ fn build_response_from_outcome(
         beam: run_outcome.beam,
         alns: run_outcome.alns,
         candidate_selection: run_outcome.candidate_selection,
+        profile_pool: None,
         retry: None,
         partition,
     };
@@ -496,6 +509,246 @@ fn build_response_from_outcome(
         solutions,
         unplaced_items,
         artifacts: Artifacts { svg },
+    }
+}
+
+struct ProfilePoolCandidate {
+    response: OptimizeResponse,
+    zone_penalty: f64,
+    waste_regions: u32,
+    lead_util_pct: f64,
+    max_corner_mm2: f64,
+}
+
+async fn optimize_profile_pool(
+    req: OptimizeRequest,
+    config: &AppConfig,
+) -> Result<OptimizeResponse, OptimizeError> {
+    let started_at = Instant::now();
+    let pool_cfg = req
+        .params
+        .profile_pool
+        .as_ref()
+        .expect("optimize_profile_pool called without profile_pool params");
+    let profiles = pool_cfg
+        .zone_penalties
+        .clone()
+        .unwrap_or_else(|| vec![0.3, 0.5]);
+    let fill_penalty = pool_cfg
+        .fill_penalty
+        .or_else(|| {
+            req.params
+                .ga_override
+                .as_ref()
+                .and_then(|ga| ga.fill_penalty)
+        })
+        .unwrap_or(0.1);
+    let max_lead_drop_pp = pool_cfg.max_lead_drop_pp.unwrap_or(0.4);
+
+    let mut candidates: Vec<ProfilePoolCandidate> = Vec::new();
+    let mut timed_out = 0_u32;
+    let mut failed = 0_u32;
+    let mut last_error: Option<OptimizeError> = None;
+
+    for &zone_penalty in &profiles {
+        let mut profile_req = req.clone();
+        profile_req.params.profile_pool = None;
+        let mut ga_override = profile_req
+            .params
+            .ga_override
+            .clone()
+            .unwrap_or(GaOverrideParams {
+                epochs: None,
+                breed_factor: None,
+                survival_factor: None,
+                top_k_candidates: None,
+                zone_penalty: None,
+                fill_penalty: None,
+            });
+        ga_override.zone_penalty = Some(zone_penalty);
+        ga_override.fill_penalty = Some(fill_penalty);
+        profile_req.params.ga_override = Some(ga_override);
+
+        match Box::pin(optimize_request_internal(
+            profile_req,
+            config,
+            SolveMode::Default,
+        ))
+        .await
+        {
+            Ok(response) => {
+                let gap_mm = req.params.kerf_mm + req.params.spacing_mm;
+                candidates.push(ProfilePoolCandidate {
+                    waste_regions: response_waste_regions(&response, gap_mm),
+                    lead_util_pct: response_lead_util_pct(&response),
+                    max_corner_mm2: response_max_corner_mm2(&response),
+                    response,
+                    zone_penalty,
+                });
+            }
+            Err(OptimizeError::Timeout) => {
+                timed_out = timed_out.saturating_add(1);
+            }
+            Err(err @ OptimizeError::Constraint { .. }) | Err(err @ OptimizeError::Internal(_)) => {
+                failed = failed.saturating_add(1);
+                last_error = Some(err);
+            }
+        }
+    }
+
+    if candidates.is_empty() {
+        if timed_out > 0 {
+            return Err(OptimizeError::Timeout);
+        }
+        return Err(last_error.unwrap_or_else(|| {
+            OptimizeError::Internal("profile_pool could not produce a valid solution".to_string())
+        }));
+    }
+
+    let best_lead = candidates
+        .iter()
+        .map(|candidate| candidate.lead_util_pct)
+        .fold(0.0_f64, f64::max);
+    let mut winner_idx: Option<usize> = None;
+    for (idx, candidate) in candidates.iter().enumerate() {
+        let eligible =
+            candidate.lead_util_pct + max_lead_drop_pp >= best_lead || candidate.waste_regions <= 4;
+        if !eligible {
+            continue;
+        }
+        if let Some(current_idx) = winner_idx {
+            if profile_pool_candidate_better(candidate, &candidates[current_idx]) {
+                winner_idx = Some(idx);
+            }
+        } else {
+            winner_idx = Some(idx);
+        }
+    }
+    let winner_idx = winner_idx.unwrap_or_else(|| {
+        candidates
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                profile_pool_candidate_order(a, b).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(idx, _)| idx)
+            .unwrap_or(0)
+    });
+
+    let completed = candidates.len() as u32;
+    let mut winner = candidates.swap_remove(winner_idx);
+    winner.response.summary.time_ms = started_at.elapsed().as_millis() as u64;
+    winner.response.summary.profile_pool = Some(ProfilePoolTelemetry {
+        profiles_requested: profiles,
+        candidates_total: completed.saturating_add(timed_out).saturating_add(failed),
+        candidates_completed: completed,
+        candidates_timed_out: timed_out,
+        candidates_failed: failed,
+        winner_zone_penalty: winner.zone_penalty,
+        winner_waste_regions: winner.waste_regions,
+        winner_lead_util_pct: winner.lead_util_pct,
+        winner_max_corner_mm2: winner.max_corner_mm2,
+        max_lead_drop_pp,
+    });
+    Ok(winner.response)
+}
+
+fn profile_pool_candidate_better(
+    candidate: &ProfilePoolCandidate,
+    best: &ProfilePoolCandidate,
+) -> bool {
+    matches!(
+        profile_pool_candidate_order(candidate, best),
+        Some(std::cmp::Ordering::Less)
+    )
+}
+
+fn profile_pool_candidate_order(
+    a: &ProfilePoolCandidate,
+    b: &ProfilePoolCandidate,
+) -> Option<std::cmp::Ordering> {
+    Some(
+        (a.response.summary.used_stock_count, a.waste_regions)
+            .cmp(&(b.response.summary.used_stock_count, b.waste_regions))
+            .then_with(|| {
+                b.lead_util_pct
+                    .partial_cmp(&a.lead_util_pct)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                b.max_corner_mm2
+                    .partial_cmp(&a.max_corner_mm2)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }),
+    )
+}
+
+fn response_lead_util_pct(resp: &OptimizeResponse) -> f64 {
+    let mut utils = per_sheet_utils(resp);
+    if utils.is_empty() {
+        return 0.0;
+    }
+    utils.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    if utils.len() == 1 {
+        utils[0]
+    } else {
+        utils[..utils.len() - 1].iter().sum::<f64>() / (utils.len() - 1) as f64
+    }
+}
+
+fn response_waste_regions(resp: &OptimizeResponse, gap_mm: f64) -> u32 {
+    let gap = mm_to_units_lossy(gap_mm);
+    response_stock_pieces(resp)
+        .iter()
+        .map(|stock| waste_region_count(stock, gap))
+        .sum()
+}
+
+fn response_max_corner_mm2(resp: &OptimizeResponse) -> f64 {
+    response_stock_pieces(resp)
+        .iter()
+        .map(corner_free_rect_area)
+        .max()
+        .map(from_area_units)
+        .unwrap_or(0.0)
+}
+
+fn response_stock_pieces(resp: &OptimizeResponse) -> Vec<cut_optimizer_2d::ResultStockPiece> {
+    resp.solutions
+        .iter()
+        .map(|solution| {
+            let usable_width = solution.width_mm - solution.trim_mm.left - solution.trim_mm.right;
+            let usable_height = solution.height_mm - solution.trim_mm.top - solution.trim_mm.bottom;
+            let cut_pieces = solution
+                .placements
+                .iter()
+                .map(|placement| cut_optimizer_2d::ResultCutPiece {
+                    external_id: None,
+                    x: mm_to_units_lossy(placement.x_mm),
+                    y: mm_to_units_lossy(placement.y_mm),
+                    width: mm_to_units_lossy(placement.width_mm),
+                    length: mm_to_units_lossy(placement.height_mm),
+                    pattern_direction: CutPatternDirection::None,
+                    is_rotated: placement.rotated,
+                })
+                .collect();
+            cut_optimizer_2d::ResultStockPiece {
+                width: mm_to_units_lossy(usable_width),
+                length: mm_to_units_lossy(usable_height),
+                pattern_direction: CutPatternDirection::None,
+                cut_pieces,
+                waste_pieces: Vec::new(),
+                price: 0,
+            }
+        })
+        .collect()
+}
+
+fn mm_to_units_lossy(value: f64) -> usize {
+    if value <= 0.0 || !value.is_finite() {
+        0
+    } else {
+        (value * SCALE).round() as usize
     }
 }
 

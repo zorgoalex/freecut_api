@@ -147,6 +147,40 @@ pub fn validate_request(
         }
     }
 
+    if let Some(pool) = &req.params.profile_pool {
+        let pool_enabled = pool.enabled.unwrap_or(true);
+        if pool_enabled {
+            if let Some(zone_penalties) = &pool.zone_penalties {
+                if zone_penalties.is_empty() || zone_penalties.len() > 8 {
+                    return Err(ValidationError::new(
+                        "profile_pool.zone_penalties must contain 1..=8 values",
+                    ));
+                }
+                for zone_penalty in zone_penalties {
+                    if !zone_penalty.is_finite() || !(0.0..=1.0).contains(zone_penalty) {
+                        return Err(ValidationError::new(
+                            "profile_pool.zone_penalties values must be finite and in range [0, 1]",
+                        ));
+                    }
+                }
+            }
+            if let Some(fill_penalty) = pool.fill_penalty {
+                if !fill_penalty.is_finite() || !(0.0..=1.0).contains(&fill_penalty) {
+                    return Err(ValidationError::new(
+                        "profile_pool.fill_penalty must be finite and in range [0, 1]",
+                    ));
+                }
+            }
+            if let Some(max_lead_drop_pp) = pool.max_lead_drop_pp {
+                if !max_lead_drop_pp.is_finite() || !(0.0..=10.0).contains(&max_lead_drop_pp) {
+                    return Err(ValidationError::new(
+                        "profile_pool.max_lead_drop_pp must be finite and in range [0, 10]",
+                    ));
+                }
+            }
+        }
+    }
+
     if let Some(portfolio) = &req.params.portfolio {
         let portfolio_enabled = portfolio.enabled.unwrap_or(true);
         if portfolio_enabled {

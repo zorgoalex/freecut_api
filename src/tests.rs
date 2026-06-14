@@ -774,6 +774,29 @@ async fn optimize_invalid_portfolio_candidate_count_returns_422() {
 }
 
 #[tokio::test]
+async fn optimize_invalid_profile_pool_returns_422() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert(
+            "profile_pool".to_string(),
+            serde_json::json!({
+                "enabled": true,
+                "zone_penalties": [0.3, 1.2],
+                "max_lead_drop_pp": 0.4
+            }),
+        );
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {json}");
+    assert_eq!(
+        json.get("error_code").and_then(Value::as_str),
+        Some("VALIDATION_ERROR")
+    );
+}
+
+#[tokio::test]
 async fn optimize_invalid_beam_width_returns_422() {
     let app = app_for_test();
     let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
@@ -877,6 +900,50 @@ async fn optimize_accepts_ga_profile_and_override() {
     let (status, json) = post_json(&app, "/v1/optimize", &body).await;
     assert_eq!(status, StatusCode::OK, "body: {json}");
     assert_eq!(json.get("status").and_then(Value::as_str), Some("ok"));
+}
+
+#[tokio::test]
+async fn optimize_profile_pool_returns_telemetry() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("time_limit_ms".to_string(), Value::from(300));
+        params.insert("restarts".to_string(), Value::from(1));
+        params.insert("include_svg".to_string(), Value::from(false));
+        params.insert("retry_strategy".to_string(), Value::from("disabled"));
+        params.insert(
+            "profile_pool".to_string(),
+            serde_json::json!({
+                "enabled": true,
+                "zone_penalties": [0.3, 0.5],
+                "fill_penalty": 0.1,
+                "max_lead_drop_pp": 0.4
+            }),
+        );
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+
+    let pool = json
+        .pointer("/summary/profile_pool")
+        .and_then(Value::as_object)
+        .expect("expected summary.profile_pool telemetry");
+    assert_eq!(
+        pool.get("candidates_total").and_then(Value::as_u64),
+        Some(2)
+    );
+    assert_eq!(
+        pool.get("profiles_requested")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(2)
+    );
+    let winner = pool
+        .get("winner_zone_penalty")
+        .and_then(Value::as_f64)
+        .expect("expected winner_zone_penalty");
+    assert!((winner - 0.3).abs() < f64::EPSILON || (winner - 0.5).abs() < f64::EPSILON);
 }
 
 #[tokio::test]
