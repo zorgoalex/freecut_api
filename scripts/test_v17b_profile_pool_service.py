@@ -12,6 +12,12 @@ import time
 import urllib.request
 
 try:
+    from PIL import Image, ImageDraw
+except Exception:
+    Image = None
+    ImageDraw = None
+
+try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
     pass
@@ -103,6 +109,75 @@ def row_from_response(seed, data):
     }
 
 
+def color_for(value):
+    state = 2166136261
+    for ch in value:
+        state ^= ord(ch)
+        state = (state * 16777619) & 0xFFFFFFFF
+    return (
+        80 + (state & 0x7F),
+        80 + ((state >> 8) & 0x7F),
+        80 + ((state >> 16) & 0x7F),
+    )
+
+
+def save_contact_sheet(rows, out_dir):
+    if Image is None:
+        print("Pillow is unavailable; contact sheet skipped", flush=True)
+        return
+    if not rows:
+        return
+
+    sheet_w = 320
+    sheet_h = 170
+    label_h = 38
+    gap = 14
+    left_label_w = 210
+    max_sheets = max(len(row.get("data", {}).get("solutions", [])) for row in rows)
+    width = left_label_w + max_sheets * sheet_w + (max_sheets + 1) * gap
+    height = label_h + len(rows) * (sheet_h + gap) + gap
+    img = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(img)
+
+    draw.text((gap, 10), "V17c profile_pool top layouts", fill=(20, 20, 20))
+    for row_idx, row in enumerate(rows):
+        y0 = label_h + row_idx * (sheet_h + gap)
+        label = (
+            f"rank {row_idx + 1}  seed {row['seed']}  "
+            f"zp {row['zone_penalty']:.2f}  zones {row['n_waste_regions']}  "
+            f"lead {row['lead_util']:.2f}%"
+        )
+        draw.text((gap, y0 + 6), label, fill=(20, 20, 20))
+        solutions = row.get("data", {}).get("solutions", [])
+        for sheet_idx, solution in enumerate(solutions):
+            x0 = left_label_w + gap + sheet_idx * (sheet_w + gap)
+            trim = solution.get("trim_mm", {})
+            usable_w = solution["width_mm"] - trim.get("left", 0) - trim.get("right", 0)
+            usable_h = solution["height_mm"] - trim.get("top", 0) - trim.get("bottom", 0)
+            scale = min((sheet_w - 8) / usable_w, (sheet_h - 24) / usable_h)
+            ox = x0 + 4
+            oy = y0 + 20
+            bw = usable_w * scale
+            bh = usable_h * scale
+            draw.rectangle([ox, oy, ox + bw, oy + bh], outline=(30, 30, 30), fill=(246, 246, 246))
+            for placement in solution.get("placements", []):
+                px = ox + placement["x_mm"] * scale
+                py = oy + placement["y_mm"] * scale
+                pw = placement["width_mm"] * scale
+                ph = placement["height_mm"] * scale
+                fill = color_for(placement.get("item_id", "item"))
+                draw.rectangle([px, py, px + pw, py + ph], fill=fill, outline=(255, 255, 255))
+            util = row.get("utils", [])
+            util_text = f"S{sheet_idx + 1}"
+            if sheet_idx < len(util):
+                util_text += f" {util[sheet_idx]:.1f}%"
+            draw.text((x0 + 4, y0 + 3), util_text, fill=(40, 40, 40))
+
+    path = os.path.join(out_dir, "layout_contact_sheet.png")
+    img.save(path)
+    print(f"Saved contact sheet to {path}", flush=True)
+
+
 def main():
     rows = []
     started = time.time()
@@ -153,6 +228,7 @@ def main():
             f"zones={row['n_waste_regions']}, lead={row['lead_util']}%, utils={row['utils']}",
             flush=True,
         )
+    save_contact_sheet(ranked[:5], OUT_DIR)
 
     with open(os.path.join(OUT_DIR, "v17b_profile_pool_service_summary.json"), "w", encoding="utf-8") as f:
         json.dump(
