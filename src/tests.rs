@@ -821,6 +821,30 @@ async fn optimize_invalid_profile_pool_seed_offsets_returns_422() {
 }
 
 #[tokio::test]
+async fn optimize_invalid_profile_pool_rescue_params_returns_422() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert(
+            "profile_pool".to_string(),
+            serde_json::json!({
+                "enabled": true,
+                "zone_penalties": [0.3, 0.5],
+                "rescue_zone_penalties": [0.4, 1.2],
+                "rescue_accept_min_max_corner_mm2": -1.0
+            }),
+        );
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {json}");
+    assert_eq!(
+        json.get("error_code").and_then(Value::as_str),
+        Some("VALIDATION_ERROR")
+    );
+}
+
+#[tokio::test]
 async fn optimize_invalid_beam_width_returns_422() {
     let app = app_for_test();
     let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
@@ -1062,6 +1086,109 @@ async fn optimize_profile_pool_adaptive_seed_rescue_returns_telemetry() {
     assert!(
         winner_seed == 12345 || winner_seed == 12345 + 1000003,
         "unexpected winner_seed: {winner_seed}"
+    );
+}
+
+#[tokio::test]
+async fn optimize_profile_pool_rescue_zone_penalties_return_telemetry() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("seed".to_string(), Value::from(12345));
+        params.insert("time_limit_ms".to_string(), Value::from(300));
+        params.insert("restarts".to_string(), Value::from(1));
+        params.insert("include_svg".to_string(), Value::from(false));
+        params.insert("retry_strategy".to_string(), Value::from("disabled"));
+        params.insert(
+            "profile_pool".to_string(),
+            serde_json::json!({
+                "enabled": true,
+                "zone_penalties": [0.3, 0.5],
+                "rescue_zone_penalties": [0.4],
+                "fill_penalty": 0.1,
+                "max_lead_drop_pp": 0.4,
+                "rescue_when_zones_gt": 0
+            }),
+        );
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+
+    let pool = json
+        .pointer("/summary/profile_pool")
+        .and_then(Value::as_object)
+        .expect("expected summary.profile_pool telemetry");
+    assert_eq!(
+        pool.get("candidates_total").and_then(Value::as_u64),
+        Some(3)
+    );
+    assert_eq!(
+        pool.get("rescue_triggered").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        pool.get("rescue_zone_penalties_requested")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        pool.get("rescue_zone_penalties_used")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
+}
+
+#[tokio::test]
+async fn optimize_profile_pool_rescue_corner_guard_rejects_rescue_winner() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("seed".to_string(), Value::from(12345));
+        params.insert("time_limit_ms".to_string(), Value::from(300));
+        params.insert("restarts".to_string(), Value::from(1));
+        params.insert("include_svg".to_string(), Value::from(false));
+        params.insert("retry_strategy".to_string(), Value::from("disabled"));
+        params.insert(
+            "profile_pool".to_string(),
+            serde_json::json!({
+                "enabled": true,
+                "zone_penalties": [0.3, 0.5],
+                "rescue_zone_penalties": [0.4],
+                "fill_penalty": 0.1,
+                "max_lead_drop_pp": 0.4,
+                "rescue_when_zones_gt": 0,
+                "rescue_accept_min_max_corner_mm2": 1_000_000_000.0
+            }),
+        );
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+
+    let pool = json
+        .pointer("/summary/profile_pool")
+        .and_then(Value::as_object)
+        .expect("expected summary.profile_pool telemetry");
+    assert_eq!(
+        pool.get("candidates_total").and_then(Value::as_u64),
+        Some(3)
+    );
+    assert_eq!(
+        pool.get("rescue_candidates_rejected_by_guard")
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        pool.get("rescue_accept_min_max_corner_mm2")
+            .and_then(Value::as_f64),
+        Some(1_000_000_000.0)
+    );
+    assert_ne!(
+        pool.get("winner_zone_penalty").and_then(Value::as_f64),
+        Some(0.4)
     );
 }
 

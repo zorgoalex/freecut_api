@@ -164,6 +164,20 @@ pub fn validate_request(
                     }
                 }
             }
+            if let Some(zone_penalties) = &pool.rescue_zone_penalties {
+                if zone_penalties.is_empty() || zone_penalties.len() > 8 {
+                    return Err(ValidationError::new(
+                        "profile_pool.rescue_zone_penalties must contain 1..=8 values",
+                    ));
+                }
+                for zone_penalty in zone_penalties {
+                    if !zone_penalty.is_finite() || !(0.0..=1.0).contains(zone_penalty) {
+                        return Err(ValidationError::new(
+                            "profile_pool.rescue_zone_penalties values must be finite and in range [0, 1]",
+                        ));
+                    }
+                }
+            }
             if let Some(fill_penalty) = pool.fill_penalty {
                 if !fill_penalty.is_finite() || !(0.0..=1.0).contains(&fill_penalty) {
                     return Err(ValidationError::new(
@@ -194,6 +208,13 @@ pub fn validate_request(
                 if !corner_threshold.is_finite() || corner_threshold < 0.0 {
                     return Err(ValidationError::new(
                         "profile_pool.rescue_when_max_corner_below_mm2 must be finite and >= 0",
+                    ));
+                }
+            }
+            if let Some(corner_threshold) = pool.rescue_accept_min_max_corner_mm2 {
+                if !corner_threshold.is_finite() || corner_threshold < 0.0 {
+                    return Err(ValidationError::new(
+                        "profile_pool.rescue_accept_min_max_corner_mm2 must be finite and >= 0",
                     ));
                 }
             }

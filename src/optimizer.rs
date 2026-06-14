@@ -516,6 +516,7 @@ struct ProfilePoolCandidate {
     response: OptimizeResponse,
     seed: u64,
     zone_penalty: f64,
+    is_rescue: bool,
     waste_regions: u32,
     lead_util_pct: f64,
     max_corner_mm2: f64,
@@ -536,6 +537,7 @@ async fn optimize_profile_pool(
         .zone_penalties
         .clone()
         .unwrap_or_else(|| vec![0.2, 0.3, 0.4, 0.5]);
+    let rescue_profiles = pool_cfg.rescue_zone_penalties.clone().unwrap_or_default();
     let fill_penalty = pool_cfg
         .fill_penalty
         .or_else(|| {
@@ -549,8 +551,9 @@ async fn optimize_profile_pool(
     let seed_offsets = pool_cfg.seed_offsets.clone().unwrap_or_default();
     let rescue_when_zones_gt = pool_cfg
         .rescue_when_zones_gt
-        .or_else(|| (!seed_offsets.is_empty()).then_some(5));
+        .or_else(|| (!seed_offsets.is_empty() || !rescue_profiles.is_empty()).then_some(5));
     let rescue_when_max_corner_below_mm2 = pool_cfg.rescue_when_max_corner_below_mm2;
+    let rescue_accept_min_max_corner_mm2 = pool_cfg.rescue_accept_min_max_corner_mm2;
 
     let mut candidates: Vec<ProfilePoolCandidate> = Vec::new();
     let mut timed_out = 0_u32;
@@ -559,7 +562,8 @@ async fn optimize_profile_pool(
 
     for &zone_penalty in &profiles {
         record_profile_pool_candidate_result(
-            run_profile_pool_candidate(&req, config, base_seed, zone_penalty, fill_penalty).await,
+            run_profile_pool_candidate(&req, config, base_seed, zone_penalty, fill_penalty, false)
+                .await,
             &mut candidates,
             &mut timed_out,
             &mut failed,
@@ -576,7 +580,7 @@ async fn optimize_profile_pool(
         }));
     }
 
-    let provisional_idx = profile_pool_winner_idx(&candidates, max_lead_drop_pp);
+    let provisional_idx = profile_pool_winner_idx(&candidates, max_lead_drop_pp, None);
     let provisional = &candidates[provisional_idx];
     let zones_rescue = rescue_when_zones_gt
         .map(|threshold| provisional.waste_regions > threshold)
@@ -584,17 +588,44 @@ async fn optimize_profile_pool(
     let corner_rescue = rescue_when_max_corner_below_mm2
         .map(|threshold| provisional.max_corner_mm2 < threshold)
         .unwrap_or(false);
-    let rescue_triggered = !seed_offsets.is_empty() && (zones_rescue || corner_rescue);
+    let rescue_triggered = (!seed_offsets.is_empty() || !rescue_profiles.is_empty())
+        && (zones_rescue || corner_rescue);
     let mut seed_offsets_used: Vec<u64> = Vec::new();
+    let mut rescue_zone_penalties_used: Vec<f64> = Vec::new();
 
     if rescue_triggered {
+        for &zone_penalty in &rescue_profiles {
+            rescue_zone_penalties_used.push(zone_penalty);
+            record_profile_pool_candidate_result(
+                run_profile_pool_candidate(
+                    &req,
+                    config,
+                    base_seed,
+                    zone_penalty,
+                    fill_penalty,
+                    true,
+                )
+                .await,
+                &mut candidates,
+                &mut timed_out,
+                &mut failed,
+                &mut last_error,
+            );
+        }
         for offset in &seed_offsets {
             let seed = base_seed.wrapping_add(*offset);
             seed_offsets_used.push(*offset);
             for &zone_penalty in &profiles {
                 record_profile_pool_candidate_result(
-                    run_profile_pool_candidate(&req, config, seed, zone_penalty, fill_penalty)
-                        .await,
+                    run_profile_pool_candidate(
+                        &req,
+                        config,
+                        seed,
+                        zone_penalty,
+                        fill_penalty,
+                        true,
+                    )
+                    .await,
                     &mut candidates,
                     &mut timed_out,
                     &mut failed,
@@ -604,21 +635,31 @@ async fn optimize_profile_pool(
         }
     }
 
-    let winner_idx = profile_pool_winner_idx(&candidates, max_lead_drop_pp);
+    let rescue_candidates_rejected_by_guard =
+        count_rescue_candidates_rejected_by_guard(&candidates, rescue_accept_min_max_corner_mm2);
+    let winner_idx = profile_pool_winner_idx(
+        &candidates,
+        max_lead_drop_pp,
+        rescue_accept_min_max_corner_mm2,
+    );
     let completed = candidates.len() as u32;
     let mut winner = candidates.swap_remove(winner_idx);
     winner.response.summary.time_ms = started_at.elapsed().as_millis() as u64;
     winner.response.summary.profile_pool = Some(ProfilePoolTelemetry {
         profiles_requested: profiles,
+        rescue_zone_penalties_requested: rescue_profiles,
         candidates_total: completed.saturating_add(timed_out).saturating_add(failed),
         candidates_completed: completed,
         candidates_timed_out: timed_out,
         candidates_failed: failed,
+        rescue_candidates_rejected_by_guard,
         seed_offsets_requested: seed_offsets,
         seed_offsets_used,
+        rescue_zone_penalties_used,
         rescue_triggered,
         rescue_when_zones_gt,
         rescue_when_max_corner_below_mm2,
+        rescue_accept_min_max_corner_mm2,
         winner_seed: winner.seed,
         winner_zone_penalty: winner.zone_penalty,
         winner_waste_regions: winner.waste_regions,
@@ -635,6 +676,7 @@ async fn run_profile_pool_candidate(
     seed: u64,
     zone_penalty: f64,
     fill_penalty: f64,
+    is_rescue: bool,
 ) -> Result<ProfilePoolCandidate, OptimizeError> {
     let mut profile_req = req.clone();
     profile_req.params.profile_pool = None;
@@ -669,6 +711,7 @@ async fn run_profile_pool_candidate(
         response,
         seed,
         zone_penalty,
+        is_rescue,
     })
 }
 
@@ -693,13 +736,54 @@ fn record_profile_pool_candidate_result(
     }
 }
 
-fn profile_pool_winner_idx(candidates: &[ProfilePoolCandidate], max_lead_drop_pp: f64) -> usize {
+fn count_rescue_candidates_rejected_by_guard(
+    candidates: &[ProfilePoolCandidate],
+    rescue_accept_min_max_corner_mm2: Option<f64>,
+) -> u32 {
+    candidates
+        .iter()
+        .filter(|candidate| {
+            profile_pool_candidate_rejected_by_rescue_guard(
+                candidate,
+                rescue_accept_min_max_corner_mm2,
+            )
+        })
+        .count() as u32
+}
+
+fn profile_pool_candidate_rejected_by_rescue_guard(
+    candidate: &ProfilePoolCandidate,
+    rescue_accept_min_max_corner_mm2: Option<f64>,
+) -> bool {
+    candidate.is_rescue
+        && rescue_accept_min_max_corner_mm2
+            .map(|threshold| candidate.max_corner_mm2 < threshold)
+            .unwrap_or(false)
+}
+
+fn profile_pool_winner_idx(
+    candidates: &[ProfilePoolCandidate],
+    max_lead_drop_pp: f64,
+    rescue_accept_min_max_corner_mm2: Option<f64>,
+) -> usize {
     let best_lead = candidates
         .iter()
+        .filter(|candidate| {
+            !profile_pool_candidate_rejected_by_rescue_guard(
+                candidate,
+                rescue_accept_min_max_corner_mm2,
+            )
+        })
         .map(|candidate| candidate.lead_util_pct)
         .fold(0.0_f64, f64::max);
     let mut winner_idx: Option<usize> = None;
     for (idx, candidate) in candidates.iter().enumerate() {
+        if profile_pool_candidate_rejected_by_rescue_guard(
+            candidate,
+            rescue_accept_min_max_corner_mm2,
+        ) {
+            continue;
+        }
         let eligible =
             candidate.lead_util_pct + max_lead_drop_pp >= best_lead || candidate.waste_regions <= 4;
         if !eligible {
@@ -717,6 +801,12 @@ fn profile_pool_winner_idx(candidates: &[ProfilePoolCandidate], max_lead_drop_pp
         candidates
             .iter()
             .enumerate()
+            .filter(|(_, candidate)| {
+                !profile_pool_candidate_rejected_by_rescue_guard(
+                    candidate,
+                    rescue_accept_min_max_corner_mm2,
+                )
+            })
             .min_by(|(_, a), (_, b)| {
                 profile_pool_candidate_order(a, b).unwrap_or(std::cmp::Ordering::Equal)
             })

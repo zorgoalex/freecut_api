@@ -174,6 +174,8 @@ pub struct ProfilePoolParams {
     pub enabled: Option<bool>,
     /// Zone-penalty profiles to evaluate. Optional, defaults to [0.2, 0.3, 0.4, 0.5].
     pub zone_penalties: Option<Vec<f64>>,
+    /// Extra zone-penalty profiles evaluated only when profile-pool rescue is triggered.
+    pub rescue_zone_penalties: Option<Vec<f64>>,
     /// Fill penalty used for every profile. Optional, defaults to ga_override/default 0.1.
     pub fill_penalty: Option<f64>,
     /// Maximum lead-utilisation drop allowed before a lower-zone candidate
@@ -188,6 +190,8 @@ pub struct ProfilePoolParams {
     /// Trigger adaptive seed rescue when the provisional winner's largest
     /// corner-free rectangle is below this area.
     pub rescue_when_max_corner_below_mm2: Option<f64>,
+    /// Reject rescue candidates whose largest corner-free rectangle is below this area.
+    pub rescue_accept_min_max_corner_mm2: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy)]
@@ -322,19 +326,26 @@ pub struct PartitionTelemetry {
 #[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct ProfilePoolTelemetry {
     pub profiles_requested: Vec<f64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rescue_zone_penalties_requested: Vec<f64>,
     pub candidates_total: u32,
     pub candidates_completed: u32,
     pub candidates_timed_out: u32,
     pub candidates_failed: u32,
+    pub rescue_candidates_rejected_by_guard: u32,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub seed_offsets_requested: Vec<u64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub seed_offsets_used: Vec<u64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rescue_zone_penalties_used: Vec<f64>,
     pub rescue_triggered: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rescue_when_zones_gt: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rescue_when_max_corner_below_mm2: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rescue_accept_min_max_corner_mm2: Option<f64>,
     pub winner_seed: u64,
     pub winner_zone_penalty: f64,
     pub winner_waste_regions: u32,

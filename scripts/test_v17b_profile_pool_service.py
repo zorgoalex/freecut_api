@@ -37,6 +37,11 @@ PROFILES = [
     for x in os.environ.get("FREECUT_PROFILE_POOL", "0.2,0.3,0.4,0.5").split(",")
     if x.strip()
 ]
+RESCUE_PROFILES = [
+    float(x.strip())
+    for x in os.environ.get("FREECUT_PROFILE_POOL_RESCUE_PROFILES", "").split(",")
+    if x.strip()
+]
 MAX_LEAD_DROP_PP = float(os.environ.get("FREECUT_PROFILE_POOL_MAX_LEAD_DROP_PP", "0.8"))
 SEED_OFFSETS = [
     int(x.strip())
@@ -45,6 +50,9 @@ SEED_OFFSETS = [
 ]
 RESCUE_ZONES_GT = os.environ.get("FREECUT_PROFILE_POOL_RESCUE_ZONES_GT")
 RESCUE_CORNER_BELOW = os.environ.get("FREECUT_PROFILE_POOL_RESCUE_CORNER_BELOW_MM2")
+RESCUE_ACCEPT_MIN_CORNER = os.environ.get(
+    "FREECUT_PROFILE_POOL_RESCUE_ACCEPT_MIN_CORNER_MM2"
+)
 
 with open(os.path.join(ROOT, "tests", "fixtures", "multisheet_varied_4sheets.json")) as f:
     base_req = json.load(f)
@@ -71,11 +79,17 @@ base_req["params"]["profile_pool"] = {
 }
 if SEED_OFFSETS:
     base_req["params"]["profile_pool"]["seed_offsets"] = SEED_OFFSETS
+if RESCUE_PROFILES:
+    base_req["params"]["profile_pool"]["rescue_zone_penalties"] = RESCUE_PROFILES
 if RESCUE_ZONES_GT not in (None, ""):
     base_req["params"]["profile_pool"]["rescue_when_zones_gt"] = int(RESCUE_ZONES_GT)
 if RESCUE_CORNER_BELOW not in (None, ""):
     base_req["params"]["profile_pool"]["rescue_when_max_corner_below_mm2"] = float(
         RESCUE_CORNER_BELOW
+    )
+if RESCUE_ACCEPT_MIN_CORNER not in (None, ""):
+    base_req["params"]["profile_pool"]["rescue_accept_min_max_corner_mm2"] = float(
+        RESCUE_ACCEPT_MIN_CORNER
     )
 
 
@@ -119,6 +133,10 @@ def row_from_response(seed, data):
         "winner_seed": pool.get("winner_seed"),
         "rescue_triggered": pool.get("rescue_triggered", False),
         "seed_offsets_used": pool.get("seed_offsets_used", []),
+        "rescue_zone_penalties_used": pool.get("rescue_zone_penalties_used", []),
+        "rescue_candidates_rejected_by_guard": pool.get(
+            "rescue_candidates_rejected_by_guard", 0
+        ),
         "utils": [round(u, 1) for u in utils],
         "candidates_completed": pool.get("candidates_completed", 0),
         "candidates_timed_out": pool.get("candidates_timed_out", 0),
@@ -129,11 +147,16 @@ def row_from_response(seed, data):
 def main():
     rows = []
     started = time.time()
-    print(f"profiles={PROFILES}, max_lead_drop_pp={MAX_LEAD_DROP_PP}", flush=True)
-    if SEED_OFFSETS:
+    print(
+        f"profiles={PROFILES}, rescue_profiles={RESCUE_PROFILES}, "
+        f"max_lead_drop_pp={MAX_LEAD_DROP_PP}",
+        flush=True,
+    )
+    if SEED_OFFSETS or RESCUE_PROFILES:
         print(
             f"seed_offsets={SEED_OFFSETS}, rescue_zones_gt={RESCUE_ZONES_GT}, "
-            f"rescue_corner_below={RESCUE_CORNER_BELOW}",
+            f"rescue_corner_below={RESCUE_CORNER_BELOW}, "
+            f"rescue_accept_min_corner={RESCUE_ACCEPT_MIN_CORNER}",
             flush=True,
         )
     seeds_to_run = SEED_LIST or list(range(1, SEEDS + 1))
@@ -150,6 +173,8 @@ def main():
             f"winner_seed={row['winner_seed']}, rescue={row['rescue_triggered']}, "
             f"lead={row['lead_util']:5.2f}%, regions={row['n_waste_regions']}, "
             f"corner={row['max_corner_mm2'] / 1e3:.0f}k, "
+            f"rescue_zp={row['rescue_zone_penalties_used']}, "
+            f"guard_rej={row['rescue_candidates_rejected_by_guard']}, "
             f"completed={row['candidates_completed']}, timeouts={row['candidates_timed_out']}",
             flush=True,
         )
@@ -189,6 +214,7 @@ def main():
         json.dump(
             {
                 "profiles": PROFILES,
+                "rescue_profiles": RESCUE_PROFILES,
                 "max_lead_drop_pp": MAX_LEAD_DROP_PP,
                 "seed_offsets": SEED_OFFSETS,
                 "rescue_when_zones_gt": (
@@ -199,6 +225,11 @@ def main():
                 "rescue_when_max_corner_below_mm2": (
                     float(RESCUE_CORNER_BELOW)
                     if RESCUE_CORNER_BELOW not in (None, "")
+                    else None
+                ),
+                "rescue_accept_min_max_corner_mm2": (
+                    float(RESCUE_ACCEPT_MIN_CORNER)
+                    if RESCUE_ACCEPT_MIN_CORNER not in (None, "")
                     else None
                 ),
                 "seeds": seeds_to_run,
