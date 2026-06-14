@@ -1096,6 +1096,14 @@ async fn optimize_profile_pool_returns_telemetry() {
                 "max_lead_drop_pp": 0.4
             }),
         );
+        params.insert(
+            "group_shift".to_string(),
+            serde_json::json!({
+                "enabled": true,
+                "min_shift_mm": 5.0,
+                "max_passes": 2
+            }),
+        );
     }
     let body = serde_json::to_string(&json).unwrap();
     let (status, json) = post_json(&app, "/v1/optimize", &body).await;
@@ -1120,6 +1128,15 @@ async fn optimize_profile_pool_returns_telemetry() {
         .and_then(Value::as_f64)
         .expect("expected winner_zone_penalty");
     assert!((winner - 0.3).abs() < f64::EPSILON || (winner - 0.5).abs() < f64::EPSILON);
+    assert!(pool
+        .get("winner_group_shift_opportunity_after_mm2")
+        .and_then(Value::as_f64)
+        .is_some());
+    assert!(pool
+        .get("winner_group_shift_opportunity_delta_mm2")
+        .and_then(Value::as_f64)
+        .is_some());
+    assert!(json.pointer("/summary/group_shift").is_some());
 }
 
 #[tokio::test]

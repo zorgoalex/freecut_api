@@ -401,6 +401,8 @@ pub struct ProfilePoolTelemetry {
     pub winner_waste_regions: u32,
     pub winner_lead_util_pct: f64,
     pub winner_max_corner_mm2: f64,
+    pub winner_group_shift_opportunity_after_mm2: f64,
+    pub winner_group_shift_opportunity_delta_mm2: f64,
     pub max_lead_drop_pp: f64,
 }
 

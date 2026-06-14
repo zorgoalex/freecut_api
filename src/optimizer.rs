@@ -563,6 +563,8 @@ struct ProfilePoolCandidate {
     waste_regions: u32,
     lead_util_pct: f64,
     max_corner_mm2: f64,
+    group_shift_opportunity_after_mm2: f64,
+    group_shift_opportunity_delta_mm2: f64,
 }
 
 fn preset_zone_penalties(preset: ProfilePoolPreset) -> Vec<f64> {
@@ -747,6 +749,8 @@ async fn optimize_profile_pool(
         winner_waste_regions: winner.waste_regions,
         winner_lead_util_pct: winner.lead_util_pct,
         winner_max_corner_mm2: winner.max_corner_mm2,
+        winner_group_shift_opportunity_after_mm2: winner.group_shift_opportunity_after_mm2,
+        winner_group_shift_opportunity_delta_mm2: winner.group_shift_opportunity_delta_mm2,
         max_lead_drop_pp,
     });
     Ok(winner.response)
@@ -790,6 +794,8 @@ async fn run_profile_pool_candidate(
         waste_regions: response_waste_regions(&response, gap_mm),
         lead_util_pct: response_lead_util_pct(&response),
         max_corner_mm2: response_max_corner_mm2(&response),
+        group_shift_opportunity_after_mm2: response_group_shift_opportunity_after_mm2(&response),
+        group_shift_opportunity_delta_mm2: response_group_shift_opportunity_delta_mm2(&response),
         response,
         seed,
         zone_penalty,
@@ -915,6 +921,16 @@ fn profile_pool_candidate_order(
         (a.response.summary.used_stock_count, a.waste_regions)
             .cmp(&(b.response.summary.used_stock_count, b.waste_regions))
             .then_with(|| {
+                a.group_shift_opportunity_after_mm2
+                    .partial_cmp(&b.group_shift_opportunity_after_mm2)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                b.group_shift_opportunity_delta_mm2
+                    .partial_cmp(&a.group_shift_opportunity_delta_mm2)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
                 b.lead_util_pct
                     .partial_cmp(&a.lead_util_pct)
                     .unwrap_or(std::cmp::Ordering::Equal)
@@ -954,6 +970,22 @@ fn response_max_corner_mm2(resp: &OptimizeResponse) -> f64 {
         .map(corner_free_rect_area)
         .max()
         .map(from_area_units)
+        .unwrap_or(0.0)
+}
+
+fn response_group_shift_opportunity_after_mm2(resp: &OptimizeResponse) -> f64 {
+    resp.summary
+        .group_shift
+        .as_ref()
+        .map(|group_shift| group_shift.corridor_opportunity_after_mm2)
+        .unwrap_or(0.0)
+}
+
+fn response_group_shift_opportunity_delta_mm2(resp: &OptimizeResponse) -> f64 {
+    resp.summary
+        .group_shift
+        .as_ref()
+        .map(|group_shift| group_shift.corridor_opportunity_delta_mm2)
         .unwrap_or(0.0)
 }
 
@@ -5527,6 +5559,72 @@ mod tests {
             rotated: false,
             pattern_direction: PatternDirection::None,
         }
+    }
+
+    fn test_profile_pool_candidate(
+        waste_regions: u32,
+        lead_util_pct: f64,
+        group_shift_opportunity_after_mm2: f64,
+        group_shift_opportunity_delta_mm2: f64,
+    ) -> ProfilePoolCandidate {
+        ProfilePoolCandidate {
+            response: OptimizeResponse {
+                status: "ok",
+                summary: Summary {
+                    objective: Objective::MinWaste,
+                    used_stock_count: 4,
+                    total_waste_area_mm2: 0.0,
+                    waste_percent: 0.0,
+                    time_ms: 0,
+                    restarts_used: 1,
+                    restarts_requested: 1,
+                    used_seed: 1,
+                    layout_mode: LayoutMode::Guillotine,
+                    timeout_reason: None,
+                    restart_policy: None,
+                    portfolio: None,
+                    beam: None,
+                    alns: None,
+                    candidate_selection: None,
+                    profile_pool: None,
+                    retry: None,
+                    partition: None,
+                    group_shift: None,
+                },
+                solutions: Vec::new(),
+                unplaced_items: Vec::new(),
+                artifacts: Artifacts {
+                    svg: None,
+                    group_shift_before_svg: None,
+                    group_shift_diff_svg: None,
+                },
+            },
+            seed: 1,
+            zone_penalty: 0.3,
+            is_rescue: false,
+            waste_regions,
+            lead_util_pct,
+            max_corner_mm2: 100_000.0,
+            group_shift_opportunity_after_mm2,
+            group_shift_opportunity_delta_mm2,
+        }
+    }
+
+    #[test]
+    fn profile_pool_tie_breaks_on_group_shift_residual_then_delta() {
+        let cleaner = test_profile_pool_candidate(5, 94.0, 10_000.0, 40_000.0);
+        let corridor_left = test_profile_pool_candidate(5, 95.0, 80_000.0, 120_000.0);
+
+        assert!(
+            profile_pool_candidate_better(&cleaner, &corridor_left),
+            "same sheets/zones should prefer lower residual group-shift opportunity"
+        );
+
+        let same_residual_more_delta = test_profile_pool_candidate(5, 94.0, 10_000.0, 80_000.0);
+        assert!(
+            profile_pool_candidate_better(&same_residual_more_delta, &cleaner),
+            "same residual should prefer the candidate where group_shift closed more opportunity"
+        );
     }
 
     #[test]
