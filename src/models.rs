@@ -172,12 +172,12 @@ pub struct GaOverrideParams {
 pub struct ProfilePoolParams {
     /// Enable profile-pool mode. Optional, defaults to true when `profile_pool` object is provided.
     pub enabled: Option<bool>,
-    /// Zone-penalty profiles to evaluate. Optional, defaults to [0.3, 0.5].
+    /// Zone-penalty profiles to evaluate. Optional, defaults to [0.2, 0.3, 0.5].
     pub zone_penalties: Option<Vec<f64>>,
     /// Fill penalty used for every profile. Optional, defaults to ga_override/default 0.1.
     pub fill_penalty: Option<f64>,
     /// Maximum lead-utilisation drop allowed before a lower-zone candidate
-    /// is rejected, except breakthrough layouts with <=4 zones.
+    /// is rejected, except breakthrough layouts with <=4 zones. Optional, defaults to 0.8.
     pub max_lead_drop_pp: Option<f64>,
     /// Extra seed offsets to evaluate adaptively when the initial profile pool
     /// still has too many waste regions or too small a reusable corner.

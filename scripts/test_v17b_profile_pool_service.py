@@ -34,10 +34,10 @@ TIME_LIMIT_MS = int(os.environ.get("FREECUT_TIME_LIMIT_MS", "10000"))
 SHEET_BUDGET_MS = int(os.environ.get("FREECUT_SHEET_BUDGET_MS", "20000"))
 PROFILES = [
     float(x.strip())
-    for x in os.environ.get("FREECUT_PROFILE_POOL", "0.3,0.5").split(",")
+    for x in os.environ.get("FREECUT_PROFILE_POOL", "0.2,0.3,0.5").split(",")
     if x.strip()
 ]
-MAX_LEAD_DROP_PP = float(os.environ.get("FREECUT_PROFILE_POOL_MAX_LEAD_DROP_PP", "0.4"))
+MAX_LEAD_DROP_PP = float(os.environ.get("FREECUT_PROFILE_POOL_MAX_LEAD_DROP_PP", "0.8"))
 SEED_OFFSETS = [
     int(x.strip())
     for x in os.environ.get("FREECUT_PROFILE_POOL_SEED_OFFSETS", "").split(",")

@@ -971,6 +971,46 @@ async fn optimize_profile_pool_returns_telemetry() {
 }
 
 #[tokio::test]
+async fn optimize_profile_pool_defaults_use_zp02_profile_and_wider_guard() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("time_limit_ms".to_string(), Value::from(300));
+        params.insert("restarts".to_string(), Value::from(1));
+        params.insert("include_svg".to_string(), Value::from(false));
+        params.insert("retry_strategy".to_string(), Value::from("disabled"));
+        params.insert(
+            "profile_pool".to_string(),
+            serde_json::json!({
+                "enabled": true
+            }),
+        );
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+
+    let pool = json
+        .pointer("/summary/profile_pool")
+        .and_then(Value::as_object)
+        .expect("expected summary.profile_pool telemetry");
+    assert_eq!(
+        pool.get("candidates_total").and_then(Value::as_u64),
+        Some(3)
+    );
+    assert_eq!(
+        pool.get("max_lead_drop_pp").and_then(Value::as_f64),
+        Some(0.8)
+    );
+    let profiles = pool
+        .get("profiles_requested")
+        .and_then(Value::as_array)
+        .expect("expected profiles_requested");
+    assert_eq!(profiles.len(), 3);
+    assert_eq!(profiles.first().and_then(Value::as_f64), Some(0.2));
+}
+
+#[tokio::test]
 async fn optimize_profile_pool_adaptive_seed_rescue_returns_telemetry() {
     let app = app_for_test();
     let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();

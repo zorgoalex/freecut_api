@@ -535,7 +535,7 @@ async fn optimize_profile_pool(
     let profiles = pool_cfg
         .zone_penalties
         .clone()
-        .unwrap_or_else(|| vec![0.3, 0.5]);
+        .unwrap_or_else(|| vec![0.2, 0.3, 0.5]);
     let fill_penalty = pool_cfg
         .fill_penalty
         .or_else(|| {
@@ -545,7 +545,7 @@ async fn optimize_profile_pool(
                 .and_then(|ga| ga.fill_penalty)
         })
         .unwrap_or(0.1);
-    let max_lead_drop_pp = pool_cfg.max_lead_drop_pp.unwrap_or(0.4);
+    let max_lead_drop_pp = pool_cfg.max_lead_drop_pp.unwrap_or(0.8);
     let seed_offsets = pool_cfg.seed_offsets.clone().unwrap_or_default();
     let rescue_when_zones_gt = pool_cfg
         .rescue_when_zones_gt
