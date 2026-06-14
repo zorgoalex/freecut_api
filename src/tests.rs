@@ -951,6 +951,68 @@ async fn optimize_accepts_ga_profile_and_override() {
 }
 
 #[tokio::test]
+async fn optimize_accepts_group_shift_and_reports_telemetry() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("time_limit_ms".to_string(), Value::from(300));
+        params.insert("restarts".to_string(), Value::from(1));
+        params.insert("include_svg".to_string(), Value::from(false));
+        params.insert("retry_strategy".to_string(), Value::from("disabled"));
+        params.insert(
+            "group_shift".to_string(),
+            serde_json::json!({
+                "enabled": true,
+                "min_shift_mm": 5.0,
+                "max_passes": 3
+            }),
+        );
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+
+    let group_shift = json
+        .pointer("/summary/group_shift")
+        .and_then(Value::as_object)
+        .expect("expected summary.group_shift telemetry");
+    assert_eq!(
+        group_shift.get("enabled").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(group_shift
+        .get("moves_applied")
+        .and_then(Value::as_u64)
+        .is_some());
+}
+
+#[tokio::test]
+async fn optimize_rejects_invalid_group_shift_min_shift() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert(
+            "group_shift".to_string(),
+            serde_json::json!({
+                "enabled": true,
+                "min_shift_mm": -1.0
+            }),
+        );
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {json}");
+    assert_eq!(
+        json.get("error_code").and_then(Value::as_str),
+        Some("VALIDATION_ERROR")
+    );
+    assert!(json
+        .get("message")
+        .and_then(Value::as_str)
+        .is_some_and(|message| message.contains("group_shift.min_shift_mm")));
+}
+
+#[tokio::test]
 async fn optimize_profile_pool_returns_telemetry() {
     let app = app_for_test();
     let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();

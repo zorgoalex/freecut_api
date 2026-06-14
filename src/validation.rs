@@ -221,6 +221,26 @@ pub fn validate_request(
         }
     }
 
+    if let Some(group_shift) = &req.params.group_shift {
+        let group_shift_enabled = group_shift.enabled.unwrap_or(true);
+        if group_shift_enabled {
+            if let Some(min_shift_mm) = group_shift.min_shift_mm {
+                if !min_shift_mm.is_finite() || min_shift_mm < 0.0 {
+                    return Err(ValidationError::new(
+                        "group_shift.min_shift_mm must be finite and >= 0",
+                    ));
+                }
+            }
+            if let Some(max_passes) = group_shift.max_passes {
+                if !(1..=16).contains(&max_passes) {
+                    return Err(ValidationError::new(
+                        "group_shift.max_passes must be in range 1..=16",
+                    ));
+                }
+            }
+        }
+    }
+
     if let Some(portfolio) = &req.params.portfolio {
         let portfolio_enabled = portfolio.enabled.unwrap_or(true);
         if portfolio_enabled {

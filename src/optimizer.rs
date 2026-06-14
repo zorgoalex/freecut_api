@@ -12,10 +12,10 @@ use cut_optimizer_2d::{
 use crate::config::AppConfig;
 use crate::models::{
     AlnsOperatorTelemetry, AlnsTelemetry, Artifacts, BeamTelemetry, CandidateSelectionTelemetry,
-    ErrorResponse, GaOverrideParams, GaProfile, LayoutMode, Objective, OptimizeRequest,
-    OptimizeResponse, PartitionTelemetry, PatternDirection, Placement, PortfolioTelemetry,
-    ProfilePoolPreset, ProfilePoolTelemetry, RestartPolicyTelemetry, RetryStrategy, RetryTelemetry,
-    SlaProfile, Solution, Summary, Trim, UnplacedItem,
+    ErrorResponse, GaOverrideParams, GaProfile, GroupShiftTelemetry, LayoutMode, Objective,
+    OptimizeRequest, OptimizeResponse, Params, PartitionTelemetry, PatternDirection, Placement,
+    PortfolioTelemetry, ProfilePoolPreset, ProfilePoolTelemetry, RestartPolicyTelemetry,
+    RetryStrategy, RetryTelemetry, SlaProfile, Solution, Summary, Trim, UnplacedItem,
 };
 use crate::validation::item_fits_any_stock_public;
 
@@ -57,6 +57,7 @@ const GA_QUALITY_SURVIVAL_FACTOR: f64 = 0.7;
 const GA_FAST_TOP_K: usize = 3;
 const GA_BALANCED_TOP_K: usize = 6;
 const GA_QUALITY_TOP_K: usize = 12;
+const GROUP_SHIFT_EPS: f64 = 1.0e-7;
 
 #[derive(Debug)]
 pub enum OptimizeError {
@@ -294,6 +295,14 @@ async fn optimize_request_internal(
                 profile_pool: None,
                 retry: None,
                 partition: None,
+                group_shift: group_shift_options(&req.params).map(|options| GroupShiftTelemetry {
+                    enabled: options.enabled,
+                    moves_applied: 0,
+                    parts_moved: 0,
+                    passes_run: 0,
+                    corridor_closed_area_mm2: 0.0,
+                    max_shift_mm: 0.0,
+                }),
             },
             solutions: vec![],
             unplaced_items: prepared.oversized_items,
@@ -457,10 +466,14 @@ fn build_response_from_outcome(
     let all_solutions = build_solutions(&run_outcome.candidate.solution, prepared);
 
     // Apply qty limits and collect unplaced items
-    let (solutions, mut unplaced_items) = apply_qty_limits(all_solutions, prepared);
+    let (mut solutions, mut unplaced_items) = apply_qty_limits(all_solutions, prepared);
 
     // Merge oversized items (items that didn't fit any stock)
     unplaced_items.extend(prepared.oversized_items.clone());
+
+    let gap_mm = req.params.kerf_mm + req.params.spacing_mm;
+    let group_shift = group_shift_options(&req.params)
+        .map(|options| apply_group_shift_postprocess(&mut solutions, gap_mm, options));
 
     // Recalculate stats for kept solutions only
     let (used_stock_count, total_stock_area, total_waste_area) =
@@ -489,10 +502,10 @@ fn build_response_from_outcome(
         profile_pool: None,
         retry: None,
         partition,
+        group_shift,
     };
 
     let svg = if include_svg {
-        let gap_mm = req.params.kerf_mm + req.params.spacing_mm;
         Some(build_svg(
             &solutions,
             &unplaced_items,
@@ -4455,6 +4468,441 @@ fn calculate_solution_stats(solutions: &[Solution]) -> (u32, f64, f64) {
     (used_stock_count, total_stock_area, total_waste_area)
 }
 
+#[derive(Debug, Clone, Copy)]
+struct GroupShiftOptions {
+    enabled: bool,
+    min_shift_mm: f64,
+    max_passes: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShiftDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(Debug, Clone)]
+struct GroupShiftMove {
+    solution_index: usize,
+    placement_indices: Vec<usize>,
+    direction: ShiftDirection,
+    shift_mm: f64,
+    corridor_closed_area_mm2: f64,
+    selected_area_mm2: f64,
+}
+
+fn group_shift_options(params: &Params) -> Option<GroupShiftOptions> {
+    let group_shift = params.group_shift.as_ref()?;
+    let enabled = group_shift.enabled.unwrap_or(true);
+    if !enabled {
+        return None;
+    }
+    Some(GroupShiftOptions {
+        enabled,
+        min_shift_mm: group_shift.min_shift_mm.unwrap_or(5.0),
+        max_passes: group_shift.max_passes.unwrap_or(4),
+    })
+}
+
+fn apply_group_shift_postprocess(
+    solutions: &mut [Solution],
+    gap_mm: f64,
+    options: GroupShiftOptions,
+) -> GroupShiftTelemetry {
+    let mut telemetry = GroupShiftTelemetry {
+        enabled: options.enabled,
+        moves_applied: 0,
+        parts_moved: 0,
+        passes_run: 0,
+        corridor_closed_area_mm2: 0.0,
+        max_shift_mm: 0.0,
+    };
+    if !options.enabled {
+        return telemetry;
+    }
+
+    for pass_idx in 0..options.max_passes {
+        telemetry.passes_run = pass_idx + 1;
+        let best_move = solutions
+            .iter()
+            .enumerate()
+            .filter_map(|(solution_index, solution)| {
+                best_group_shift_for_solution(
+                    solution,
+                    solution_index,
+                    gap_mm,
+                    options.min_shift_mm,
+                )
+            })
+            .max_by(|a, b| compare_group_shift_moves(a, b));
+
+        let Some(best_move) = best_move else {
+            break;
+        };
+        apply_group_shift_move(solutions, &best_move);
+        telemetry.moves_applied += 1;
+        telemetry.parts_moved += best_move.placement_indices.len() as u32;
+        telemetry.corridor_closed_area_mm2 += best_move.corridor_closed_area_mm2;
+        telemetry.max_shift_mm = telemetry.max_shift_mm.max(best_move.shift_mm);
+    }
+
+    telemetry
+}
+
+fn best_group_shift_for_solution(
+    solution: &Solution,
+    solution_index: usize,
+    gap_mm: f64,
+    min_shift_mm: f64,
+) -> Option<GroupShiftMove> {
+    if solution.placements.len() < 2 {
+        return None;
+    }
+
+    let mut best: Option<GroupShiftMove> = None;
+    for cut in unique_edges(solution.placements.iter().map(|placement| placement.x_mm)) {
+        let selected = selected_indices(solution, |placement| {
+            placement.x_mm >= cut - GROUP_SHIFT_EPS
+        });
+        consider_group_shift_candidate(
+            solution,
+            solution_index,
+            gap_mm,
+            min_shift_mm,
+            ShiftDirection::Left,
+            selected,
+            &mut best,
+        );
+    }
+    for cut in unique_edges(
+        solution
+            .placements
+            .iter()
+            .map(|placement| placement.x_mm + placement.width_mm),
+    ) {
+        let selected = selected_indices(solution, |placement| {
+            placement.x_mm + placement.width_mm <= cut + GROUP_SHIFT_EPS
+        });
+        consider_group_shift_candidate(
+            solution,
+            solution_index,
+            gap_mm,
+            min_shift_mm,
+            ShiftDirection::Right,
+            selected,
+            &mut best,
+        );
+    }
+    for cut in unique_edges(solution.placements.iter().map(|placement| placement.y_mm)) {
+        let selected = selected_indices(solution, |placement| {
+            placement.y_mm >= cut - GROUP_SHIFT_EPS
+        });
+        consider_group_shift_candidate(
+            solution,
+            solution_index,
+            gap_mm,
+            min_shift_mm,
+            ShiftDirection::Up,
+            selected,
+            &mut best,
+        );
+    }
+    for cut in unique_edges(
+        solution
+            .placements
+            .iter()
+            .map(|placement| placement.y_mm + placement.height_mm),
+    ) {
+        let selected = selected_indices(solution, |placement| {
+            placement.y_mm + placement.height_mm <= cut + GROUP_SHIFT_EPS
+        });
+        consider_group_shift_candidate(
+            solution,
+            solution_index,
+            gap_mm,
+            min_shift_mm,
+            ShiftDirection::Down,
+            selected,
+            &mut best,
+        );
+    }
+
+    best
+}
+
+fn selected_indices<F>(solution: &Solution, mut predicate: F) -> Vec<usize>
+where
+    F: FnMut(&Placement) -> bool,
+{
+    solution
+        .placements
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, placement)| predicate(placement).then_some(idx))
+        .collect()
+}
+
+fn unique_edges<I>(edges: I) -> Vec<f64>
+where
+    I: IntoIterator<Item = f64>,
+{
+    let mut out: Vec<f64> = edges.into_iter().filter(|edge| edge.is_finite()).collect();
+    out.sort_by(|a, b| a.total_cmp(b));
+    out.dedup_by(|a, b| (*a - *b).abs() <= GROUP_SHIFT_EPS);
+    out
+}
+
+fn consider_group_shift_candidate(
+    solution: &Solution,
+    solution_index: usize,
+    gap_mm: f64,
+    min_shift_mm: f64,
+    direction: ShiftDirection,
+    selected: Vec<usize>,
+    best: &mut Option<GroupShiftMove>,
+) {
+    if let Some(candidate) = evaluate_group_shift_candidate(
+        solution,
+        solution_index,
+        gap_mm,
+        min_shift_mm,
+        direction,
+        selected,
+    ) {
+        let replace = best
+            .as_ref()
+            .map(|current| compare_group_shift_moves(&candidate, current).is_gt())
+            .unwrap_or(true);
+        if replace {
+            *best = Some(candidate);
+        }
+    }
+}
+
+fn evaluate_group_shift_candidate(
+    solution: &Solution,
+    solution_index: usize,
+    gap_mm: f64,
+    min_shift_mm: f64,
+    direction: ShiftDirection,
+    selected: Vec<usize>,
+) -> Option<GroupShiftMove> {
+    let n = solution.placements.len();
+    if selected.is_empty() || selected.len() == n {
+        return None;
+    }
+
+    let mut selected_mask = vec![false; n];
+    for idx in &selected {
+        selected_mask[*idx] = true;
+    }
+
+    let total_area = solution.placements.iter().map(placement_area).sum::<f64>();
+    let selected_area = selected
+        .iter()
+        .map(|idx| placement_area(&solution.placements[*idx]))
+        .sum::<f64>();
+    let anchor_area = total_area - selected_area;
+    if selected_area > anchor_area + GROUP_SHIFT_EPS {
+        return None;
+    }
+
+    let usable_width = usable_width_mm(solution);
+    let usable_height = usable_height_mm(solution);
+    let mut shift_limit = match direction {
+        ShiftDirection::Left => selected
+            .iter()
+            .map(|idx| solution.placements[*idx].x_mm)
+            .fold(f64::INFINITY, f64::min),
+        ShiftDirection::Right => selected
+            .iter()
+            .map(|idx| {
+                usable_width - (solution.placements[*idx].x_mm + solution.placements[*idx].width_mm)
+            })
+            .fold(f64::INFINITY, f64::min),
+        ShiftDirection::Up => selected
+            .iter()
+            .map(|idx| solution.placements[*idx].y_mm)
+            .fold(f64::INFINITY, f64::min),
+        ShiftDirection::Down => selected
+            .iter()
+            .map(|idx| {
+                usable_height
+                    - (solution.placements[*idx].y_mm + solution.placements[*idx].height_mm)
+            })
+            .fold(f64::INFINITY, f64::min),
+    };
+    if !shift_limit.is_finite() || shift_limit <= GROUP_SHIFT_EPS {
+        return None;
+    }
+
+    let mut has_anchor_obstacle = false;
+    for selected_idx in &selected {
+        let selected_placement = &solution.placements[*selected_idx];
+        for (other_idx, other_placement) in solution.placements.iter().enumerate() {
+            if selected_mask[other_idx] {
+                continue;
+            }
+            if let Some(limit) =
+                obstacle_shift_limit(selected_placement, other_placement, direction, gap_mm)
+            {
+                has_anchor_obstacle = true;
+                shift_limit = shift_limit.min(limit);
+            }
+        }
+    }
+
+    if !has_anchor_obstacle || shift_limit + GROUP_SHIFT_EPS < min_shift_mm {
+        return None;
+    }
+
+    let shift_mm = shift_limit.max(0.0);
+    let span_mm = selected_group_perpendicular_span(solution, &selected, direction)?;
+    let corridor_closed_area_mm2 = shift_mm * span_mm;
+    if corridor_closed_area_mm2 <= GROUP_SHIFT_EPS {
+        return None;
+    }
+
+    Some(GroupShiftMove {
+        solution_index,
+        placement_indices: selected,
+        direction,
+        shift_mm,
+        corridor_closed_area_mm2,
+        selected_area_mm2: selected_area,
+    })
+}
+
+fn obstacle_shift_limit(
+    selected: &Placement,
+    obstacle: &Placement,
+    direction: ShiftDirection,
+    gap_mm: f64,
+) -> Option<f64> {
+    match direction {
+        ShiftDirection::Left => {
+            if ranges_overlap(
+                selected.y_mm,
+                selected.y_mm + selected.height_mm,
+                obstacle.y_mm,
+                obstacle.y_mm + obstacle.height_mm,
+            ) {
+                let obstacle_right = obstacle.x_mm + obstacle.width_mm + gap_mm;
+                (obstacle_right <= selected.x_mm + GROUP_SHIFT_EPS)
+                    .then_some(selected.x_mm - obstacle_right)
+            } else {
+                None
+            }
+        }
+        ShiftDirection::Right => {
+            if ranges_overlap(
+                selected.y_mm,
+                selected.y_mm + selected.height_mm,
+                obstacle.y_mm,
+                obstacle.y_mm + obstacle.height_mm,
+            ) {
+                let selected_right = selected.x_mm + selected.width_mm + gap_mm;
+                (selected_right <= obstacle.x_mm + GROUP_SHIFT_EPS)
+                    .then_some(obstacle.x_mm - selected_right)
+            } else {
+                None
+            }
+        }
+        ShiftDirection::Up => {
+            if ranges_overlap(
+                selected.x_mm,
+                selected.x_mm + selected.width_mm,
+                obstacle.x_mm,
+                obstacle.x_mm + obstacle.width_mm,
+            ) {
+                let obstacle_bottom = obstacle.y_mm + obstacle.height_mm + gap_mm;
+                (obstacle_bottom <= selected.y_mm + GROUP_SHIFT_EPS)
+                    .then_some(selected.y_mm - obstacle_bottom)
+            } else {
+                None
+            }
+        }
+        ShiftDirection::Down => {
+            if ranges_overlap(
+                selected.x_mm,
+                selected.x_mm + selected.width_mm,
+                obstacle.x_mm,
+                obstacle.x_mm + obstacle.width_mm,
+            ) {
+                let selected_bottom = selected.y_mm + selected.height_mm + gap_mm;
+                (selected_bottom <= obstacle.y_mm + GROUP_SHIFT_EPS)
+                    .then_some(obstacle.y_mm - selected_bottom)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn selected_group_perpendicular_span(
+    solution: &Solution,
+    selected: &[usize],
+    direction: ShiftDirection,
+) -> Option<f64> {
+    let (min_a, max_b) =
+        selected
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(min_a, max_b), idx| {
+                let placement = &solution.placements[*idx];
+                match direction {
+                    ShiftDirection::Left | ShiftDirection::Right => (
+                        min_a.min(placement.y_mm),
+                        max_b.max(placement.y_mm + placement.height_mm),
+                    ),
+                    ShiftDirection::Up | ShiftDirection::Down => (
+                        min_a.min(placement.x_mm),
+                        max_b.max(placement.x_mm + placement.width_mm),
+                    ),
+                }
+            });
+    let span = max_b - min_a;
+    (span > GROUP_SHIFT_EPS).then_some(span)
+}
+
+fn apply_group_shift_move(solutions: &mut [Solution], group_shift_move: &GroupShiftMove) {
+    let solution = &mut solutions[group_shift_move.solution_index];
+    for idx in &group_shift_move.placement_indices {
+        let placement = &mut solution.placements[*idx];
+        match group_shift_move.direction {
+            ShiftDirection::Left => placement.x_mm -= group_shift_move.shift_mm,
+            ShiftDirection::Right => placement.x_mm += group_shift_move.shift_mm,
+            ShiftDirection::Up => placement.y_mm -= group_shift_move.shift_mm,
+            ShiftDirection::Down => placement.y_mm += group_shift_move.shift_mm,
+        }
+    }
+}
+
+fn compare_group_shift_moves(a: &GroupShiftMove, b: &GroupShiftMove) -> std::cmp::Ordering {
+    a.corridor_closed_area_mm2
+        .total_cmp(&b.corridor_closed_area_mm2)
+        .then_with(|| a.shift_mm.total_cmp(&b.shift_mm))
+        .then_with(|| b.selected_area_mm2.total_cmp(&a.selected_area_mm2))
+        .then_with(|| b.placement_indices.len().cmp(&a.placement_indices.len()))
+}
+
+fn usable_width_mm(solution: &Solution) -> f64 {
+    (solution.width_mm - solution.trim_mm.left - solution.trim_mm.right).max(0.0)
+}
+
+fn usable_height_mm(solution: &Solution) -> f64 {
+    (solution.height_mm - solution.trim_mm.top - solution.trim_mm.bottom).max(0.0)
+}
+
+fn placement_area(placement: &Placement) -> f64 {
+    placement.width_mm * placement.height_mm
+}
+
+fn ranges_overlap(a_min: f64, a_max: f64, b_min: f64, b_max: f64) -> bool {
+    a_min < b_max - GROUP_SHIFT_EPS && a_max > b_min + GROUP_SHIFT_EPS
+}
+
 fn build_solutions(
     solution: &cut_optimizer_2d::Solution,
     prepared: &PreparedInput,
@@ -4875,6 +5323,86 @@ fn error_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_solution(placements: Vec<Placement>) -> Solution {
+        Solution {
+            stock_id: "sheet".to_string(),
+            index: 0,
+            width_mm: 300.0,
+            height_mm: 200.0,
+            trim_mm: Trim {
+                left: 0.0,
+                right: 0.0,
+                top: 0.0,
+                bottom: 0.0,
+            },
+            placements,
+        }
+    }
+
+    fn test_placement(id: &str, x_mm: f64, y_mm: f64, width_mm: f64, height_mm: f64) -> Placement {
+        Placement {
+            item_id: id.to_string(),
+            instance: 1,
+            x_mm,
+            y_mm,
+            width_mm,
+            height_mm,
+            rotated: false,
+            pattern_direction: PatternDirection::None,
+        }
+    }
+
+    #[test]
+    fn group_shift_moves_side_parts_as_one_group_toward_anchor_cluster() {
+        let mut solutions = vec![test_solution(vec![
+            test_placement("anchor_top", 0.0, 0.0, 100.0, 80.0),
+            test_placement("anchor_bottom", 0.0, 90.0, 100.0, 80.0),
+            test_placement("side_top", 180.0, 0.0, 50.0, 70.0),
+            test_placement("side_bottom", 180.0, 80.0, 50.0, 70.0),
+        ])];
+
+        let telemetry = apply_group_shift_postprocess(
+            &mut solutions,
+            10.0,
+            GroupShiftOptions {
+                enabled: true,
+                min_shift_mm: 5.0,
+                max_passes: 4,
+            },
+        );
+
+        assert_eq!(telemetry.moves_applied, 1);
+        assert_eq!(telemetry.parts_moved, 2);
+        assert_eq!(telemetry.max_shift_mm, 70.0);
+        assert_eq!(telemetry.corridor_closed_area_mm2, 10_500.0);
+        assert_eq!(solutions[0].placements[2].x_mm, 110.0);
+        assert_eq!(solutions[0].placements[3].x_mm, 110.0);
+        assert_eq!(solutions[0].placements[0].x_mm, 0.0);
+        assert_eq!(solutions[0].placements[1].x_mm, 0.0);
+    }
+
+    #[test]
+    fn group_shift_disabled_leaves_coordinates_unchanged() {
+        let mut solutions = vec![test_solution(vec![
+            test_placement("anchor", 0.0, 0.0, 100.0, 80.0),
+            test_placement("side", 180.0, 0.0, 50.0, 70.0),
+        ])];
+
+        let telemetry = apply_group_shift_postprocess(
+            &mut solutions,
+            10.0,
+            GroupShiftOptions {
+                enabled: false,
+                min_shift_mm: 5.0,
+                max_passes: 4,
+            },
+        );
+
+        assert_eq!(telemetry.moves_applied, 0);
+        assert_eq!(telemetry.parts_moved, 0);
+        assert_eq!(solutions[0].placements[1].x_mm, 180.0);
+    }
 
     #[test]
     fn derive_restarts_and_slice_respects_min_slice() {

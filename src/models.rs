@@ -57,6 +57,9 @@ pub struct Params {
     /// smeared across all sheets.  Falls back to the regular pipeline when
     /// peeling would use more sheets.
     pub partition: Option<PartitionParams>,
+    /// Optional post-process compaction that shifts peripheral side groups
+    /// toward the denser anchor cluster after optimization.
+    pub group_shift: Option<GroupShiftParams>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
@@ -66,6 +69,17 @@ pub struct PartitionParams {
     /// Time budget per peeling iteration (ms). Optional, defaults to
     /// `time_limit_ms / planned_sheet_count`.
     pub sheet_budget_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
+pub struct GroupShiftParams {
+    /// Enable group-shift postprocess. Optional, defaults to true when
+    /// `group_shift` object is provided.
+    pub enabled: Option<bool>,
+    /// Ignore moves smaller than this many millimeters. Optional, defaults to 5.0.
+    pub min_shift_mm: Option<f64>,
+    /// Maximum accepted side-group shifts. Optional, defaults to 4.
+    pub max_passes: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]
@@ -316,6 +330,10 @@ pub struct Summary {
     /// enabled, including the fallback case.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub partition: Option<PartitionTelemetry>,
+    /// V29 side-group postprocess telemetry. Populated when
+    /// `params.group_shift` is enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_shift: Option<GroupShiftTelemetry>,
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
@@ -334,6 +352,16 @@ pub struct PartitionTelemetry {
     /// Empty when partition was not applied.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub densest_zones: Vec<u32>,
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone)]
+pub struct GroupShiftTelemetry {
+    pub enabled: bool,
+    pub moves_applied: u32,
+    pub parts_moved: u32,
+    pub passes_run: u32,
+    pub corridor_closed_area_mm2: f64,
+    pub max_shift_mm: f64,
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
