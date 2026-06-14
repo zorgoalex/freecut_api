@@ -14,8 +14,8 @@ use crate::models::{
     AlnsOperatorTelemetry, AlnsTelemetry, Artifacts, BeamTelemetry, CandidateSelectionTelemetry,
     ErrorResponse, GaOverrideParams, GaProfile, LayoutMode, Objective, OptimizeRequest,
     OptimizeResponse, PartitionTelemetry, PatternDirection, Placement, PortfolioTelemetry,
-    ProfilePoolTelemetry, RestartPolicyTelemetry, RetryStrategy, RetryTelemetry, SlaProfile,
-    Solution, Summary, Trim, UnplacedItem,
+    ProfilePoolPreset, ProfilePoolTelemetry, RestartPolicyTelemetry, RetryStrategy, RetryTelemetry,
+    SlaProfile, Solution, Summary, Trim, UnplacedItem,
 };
 use crate::validation::item_fits_any_stock_public;
 
@@ -522,6 +522,35 @@ struct ProfilePoolCandidate {
     max_corner_mm2: f64,
 }
 
+fn preset_zone_penalties(preset: ProfilePoolPreset) -> Vec<f64> {
+    match preset {
+        ProfilePoolPreset::Cheap | ProfilePoolPreset::BalancedQuality => vec![0.2, 0.3, 0.5],
+        ProfilePoolPreset::Aggressive => vec![0.2, 0.3, 0.4, 0.5],
+    }
+}
+
+fn preset_rescue_zone_penalties(preset: ProfilePoolPreset) -> Vec<f64> {
+    match preset {
+        ProfilePoolPreset::Cheap | ProfilePoolPreset::BalancedQuality => vec![0.4],
+        ProfilePoolPreset::Aggressive => Vec::new(),
+    }
+}
+
+fn preset_rescue_when_zones_gt(preset: ProfilePoolPreset) -> Option<u32> {
+    match preset {
+        ProfilePoolPreset::Cheap => Some(5),
+        ProfilePoolPreset::BalancedQuality => Some(4),
+        ProfilePoolPreset::Aggressive => None,
+    }
+}
+
+fn preset_rescue_accept_min_max_corner_mm2(preset: ProfilePoolPreset) -> Option<f64> {
+    match preset {
+        ProfilePoolPreset::BalancedQuality => Some(300_000.0),
+        ProfilePoolPreset::Cheap | ProfilePoolPreset::Aggressive => None,
+    }
+}
+
 async fn optimize_profile_pool(
     req: OptimizeRequest,
     config: &AppConfig,
@@ -533,11 +562,17 @@ async fn optimize_profile_pool(
         .profile_pool
         .as_ref()
         .expect("optimize_profile_pool called without profile_pool params");
+    let preset = pool_cfg.preset;
     let profiles = pool_cfg
         .zone_penalties
         .clone()
+        .or_else(|| preset.map(preset_zone_penalties))
         .unwrap_or_else(|| vec![0.2, 0.3, 0.4, 0.5]);
-    let rescue_profiles = pool_cfg.rescue_zone_penalties.clone().unwrap_or_default();
+    let rescue_profiles = pool_cfg
+        .rescue_zone_penalties
+        .clone()
+        .or_else(|| preset.map(preset_rescue_zone_penalties))
+        .unwrap_or_default();
     let fill_penalty = pool_cfg
         .fill_penalty
         .or_else(|| {
@@ -551,9 +586,12 @@ async fn optimize_profile_pool(
     let seed_offsets = pool_cfg.seed_offsets.clone().unwrap_or_default();
     let rescue_when_zones_gt = pool_cfg
         .rescue_when_zones_gt
+        .or_else(|| preset.and_then(preset_rescue_when_zones_gt))
         .or_else(|| (!seed_offsets.is_empty() || !rescue_profiles.is_empty()).then_some(5));
     let rescue_when_max_corner_below_mm2 = pool_cfg.rescue_when_max_corner_below_mm2;
-    let rescue_accept_min_max_corner_mm2 = pool_cfg.rescue_accept_min_max_corner_mm2;
+    let rescue_accept_min_max_corner_mm2 = pool_cfg
+        .rescue_accept_min_max_corner_mm2
+        .or_else(|| preset.and_then(preset_rescue_accept_min_max_corner_mm2));
 
     let mut candidates: Vec<ProfilePoolCandidate> = Vec::new();
     let mut timed_out = 0_u32;
@@ -646,6 +684,7 @@ async fn optimize_profile_pool(
     let mut winner = candidates.swap_remove(winner_idx);
     winner.response.summary.time_ms = started_at.elapsed().as_millis() as u64;
     winner.response.summary.profile_pool = Some(ProfilePoolTelemetry {
+        preset,
         profiles_requested: profiles,
         rescue_zone_penalties_requested: rescue_profiles,
         candidates_total: completed.saturating_add(timed_out).saturating_add(failed),

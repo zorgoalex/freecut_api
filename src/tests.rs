@@ -1036,6 +1036,189 @@ async fn optimize_profile_pool_defaults_use_zp02_zp04_profiles_and_wider_guard()
 }
 
 #[tokio::test]
+async fn optimize_profile_pool_cheap_preset_expands_to_gt5_rescue() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("time_limit_ms".to_string(), Value::from(300));
+        params.insert("restarts".to_string(), Value::from(1));
+        params.insert("include_svg".to_string(), Value::from(false));
+        params.insert("retry_strategy".to_string(), Value::from("disabled"));
+        params.insert(
+            "profile_pool".to_string(),
+            serde_json::json!({
+                "enabled": true,
+                "preset": "cheap"
+            }),
+        );
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+
+    let pool = json
+        .pointer("/summary/profile_pool")
+        .and_then(Value::as_object)
+        .expect("expected summary.profile_pool telemetry");
+    assert_eq!(pool.get("preset").and_then(Value::as_str), Some("cheap"));
+    let profiles = pool
+        .get("profiles_requested")
+        .and_then(Value::as_array)
+        .expect("expected profiles_requested");
+    assert_eq!(
+        profiles
+            .iter()
+            .filter_map(Value::as_f64)
+            .collect::<Vec<_>>(),
+        vec![0.2, 0.3, 0.5]
+    );
+    assert_eq!(
+        pool.get("rescue_zone_penalties_requested")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Value::as_f64).collect::<Vec<_>>()),
+        Some(vec![0.4])
+    );
+    assert_eq!(
+        pool.get("rescue_when_zones_gt").and_then(Value::as_u64),
+        Some(5)
+    );
+}
+
+#[tokio::test]
+async fn optimize_profile_pool_balanced_quality_preset_expands_to_corner_guarded_rescue() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("time_limit_ms".to_string(), Value::from(300));
+        params.insert("restarts".to_string(), Value::from(1));
+        params.insert("include_svg".to_string(), Value::from(false));
+        params.insert("retry_strategy".to_string(), Value::from("disabled"));
+        params.insert(
+            "profile_pool".to_string(),
+            serde_json::json!({
+                "enabled": true,
+                "preset": "balanced_quality"
+            }),
+        );
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+
+    let pool = json
+        .pointer("/summary/profile_pool")
+        .and_then(Value::as_object)
+        .expect("expected summary.profile_pool telemetry");
+    assert_eq!(
+        pool.get("preset").and_then(Value::as_str),
+        Some("balanced_quality")
+    );
+    assert_eq!(
+        pool.get("profiles_requested")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Value::as_f64).collect::<Vec<_>>()),
+        Some(vec![0.2, 0.3, 0.5])
+    );
+    assert_eq!(
+        pool.get("rescue_zone_penalties_requested")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Value::as_f64).collect::<Vec<_>>()),
+        Some(vec![0.4])
+    );
+    assert_eq!(
+        pool.get("rescue_when_zones_gt").and_then(Value::as_u64),
+        Some(4)
+    );
+    assert_eq!(
+        pool.get("rescue_accept_min_max_corner_mm2")
+            .and_then(Value::as_f64),
+        Some(300_000.0)
+    );
+}
+
+#[tokio::test]
+async fn optimize_profile_pool_aggressive_preset_expands_to_v22_full_pool() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("time_limit_ms".to_string(), Value::from(300));
+        params.insert("restarts".to_string(), Value::from(1));
+        params.insert("include_svg".to_string(), Value::from(false));
+        params.insert("retry_strategy".to_string(), Value::from("disabled"));
+        params.insert(
+            "profile_pool".to_string(),
+            serde_json::json!({
+                "enabled": true,
+                "preset": "aggressive"
+            }),
+        );
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+
+    let pool = json
+        .pointer("/summary/profile_pool")
+        .and_then(Value::as_object)
+        .expect("expected summary.profile_pool telemetry");
+    assert_eq!(
+        pool.get("preset").and_then(Value::as_str),
+        Some("aggressive")
+    );
+    assert_eq!(
+        pool.get("profiles_requested")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Value::as_f64).collect::<Vec<_>>()),
+        Some(vec![0.2, 0.3, 0.4, 0.5])
+    );
+    assert!(
+        pool.get("rescue_zone_penalties_requested").is_none(),
+        "aggressive preset should not use delayed rescue profiles"
+    );
+}
+
+#[tokio::test]
+async fn optimize_profile_pool_preset_allows_explicit_profile_override() {
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("time_limit_ms".to_string(), Value::from(300));
+        params.insert("restarts".to_string(), Value::from(1));
+        params.insert("include_svg".to_string(), Value::from(false));
+        params.insert("retry_strategy".to_string(), Value::from("disabled"));
+        params.insert(
+            "profile_pool".to_string(),
+            serde_json::json!({
+                "enabled": true,
+                "preset": "cheap",
+                "zone_penalties": [0.3]
+            }),
+        );
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+
+    let pool = json
+        .pointer("/summary/profile_pool")
+        .and_then(Value::as_object)
+        .expect("expected summary.profile_pool telemetry");
+    assert_eq!(pool.get("preset").and_then(Value::as_str), Some("cheap"));
+    assert_eq!(
+        pool.get("profiles_requested")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Value::as_f64).collect::<Vec<_>>()),
+        Some(vec![0.3])
+    );
+    assert_eq!(
+        pool.get("rescue_zone_penalties_requested")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Value::as_f64).collect::<Vec<_>>()),
+        Some(vec![0.4])
+    );
+}
+
+#[tokio::test]
 async fn optimize_profile_pool_adaptive_seed_rescue_returns_telemetry() {
     let app = app_for_test();
     let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();

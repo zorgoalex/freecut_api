@@ -172,6 +172,8 @@ pub struct GaOverrideParams {
 pub struct ProfilePoolParams {
     /// Enable profile-pool mode. Optional, defaults to true when `profile_pool` object is provided.
     pub enabled: Option<bool>,
+    /// Named profile-pool preset. Explicit fields below override preset defaults.
+    pub preset: Option<ProfilePoolPreset>,
     /// Zone-penalty profiles to evaluate. Optional, defaults to [0.2, 0.3, 0.4, 0.5].
     pub zone_penalties: Option<Vec<f64>>,
     /// Extra zone-penalty profiles evaluated only when profile-pool rescue is triggered.
@@ -192,6 +194,17 @@ pub struct ProfilePoolParams {
     pub rescue_when_max_corner_below_mm2: Option<f64>,
     /// Reject rescue candidates whose largest corner-free rectangle is below this area.
     pub rescue_accept_min_max_corner_mm2: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfilePoolPreset {
+    /// V26 cheap/default mode: V20 base pool plus delayed zp=0.4 only for >5 zones.
+    Cheap,
+    /// V26 balanced mode: delayed zp=0.4 for 5+ zones with reusable-corner guard.
+    BalancedQuality,
+    /// V22 aggressive mode: always run [0.2, 0.3, 0.4, 0.5].
+    Aggressive,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy)]
@@ -325,6 +338,8 @@ pub struct PartitionTelemetry {
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct ProfilePoolTelemetry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preset: Option<ProfilePoolPreset>,
     pub profiles_requested: Vec<f64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rescue_zone_penalties_requested: Vec<f64>,
