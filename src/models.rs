@@ -32,6 +32,8 @@ pub struct Params {
     pub ga_profile: Option<GaProfile>,
     /// Optional GA parameter override for advanced tuning.
     pub ga_override: Option<GaOverrideParams>,
+    /// Optional multi-profile zones-fitness orchestration for `/v1/optimize`.
+    pub profile_pool: Option<ProfilePoolParams>,
     /// Include SVG artifact in response. Optional, defaults to true.
     pub include_svg: Option<bool>,
     /// Optional portfolio/anytime orchestration settings.
@@ -55,6 +57,9 @@ pub struct Params {
     /// smeared across all sheets.  Falls back to the regular pipeline when
     /// peeling would use more sheets.
     pub partition: Option<PartitionParams>,
+    /// Optional post-process compaction that shifts peripheral side groups
+    /// toward the denser anchor cluster after optimization.
+    pub group_shift: Option<GroupShiftParams>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
@@ -64,6 +69,20 @@ pub struct PartitionParams {
     /// Time budget per peeling iteration (ms). Optional, defaults to
     /// `time_limit_ms / planned_sheet_count`.
     pub sheet_budget_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
+pub struct GroupShiftParams {
+    /// Enable group-shift postprocess. Optional, defaults to true when
+    /// `group_shift` object is provided.
+    pub enabled: Option<bool>,
+    /// Emit before/diff SVG artifacts for paired visual analysis. Optional,
+    /// defaults to false.
+    pub debug_artifacts: Option<bool>,
+    /// Ignore moves smaller than this many millimeters. Optional, defaults to 5.0.
+    pub min_shift_mm: Option<f64>,
+    /// Maximum accepted side-group shifts. Optional, defaults to 4.
+    pub max_passes: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +179,49 @@ pub struct GaOverrideParams {
     pub survival_factor: Option<f64>,
     /// Top-K population candidates to evaluate by business scorer in range 1..=64.
     pub top_k_candidates: Option<u32>,
+    /// V15/V17 zones-aware GA fitness penalty. Optional, defaults to service env/default.
+    pub zone_penalty: Option<f64>,
+    /// V15/V17 largest-waste-component fill penalty. Optional, defaults to service env/default.
+    pub fill_penalty: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
+pub struct ProfilePoolParams {
+    /// Enable profile-pool mode. Optional, defaults to true when `profile_pool` object is provided.
+    pub enabled: Option<bool>,
+    /// Named profile-pool preset. Explicit fields below override preset defaults.
+    pub preset: Option<ProfilePoolPreset>,
+    /// Zone-penalty profiles to evaluate. Optional, defaults to [0.2, 0.3, 0.4, 0.5].
+    pub zone_penalties: Option<Vec<f64>>,
+    /// Extra zone-penalty profiles evaluated only when profile-pool rescue is triggered.
+    pub rescue_zone_penalties: Option<Vec<f64>>,
+    /// Fill penalty used for every profile. Optional, defaults to ga_override/default 0.1.
+    pub fill_penalty: Option<f64>,
+    /// Maximum lead-utilisation drop allowed before a lower-zone candidate
+    /// is rejected, except breakthrough layouts with <=4 zones. Optional, defaults to 0.8.
+    pub max_lead_drop_pp: Option<f64>,
+    /// Extra seed offsets to evaluate adaptively when the initial profile pool
+    /// still has too many waste regions or too small a reusable corner.
+    pub seed_offsets: Option<Vec<u64>>,
+    /// Trigger adaptive seed rescue when the provisional winner has more than
+    /// this many waste regions. Optional, defaults to 5 when seed_offsets exist.
+    pub rescue_when_zones_gt: Option<u32>,
+    /// Trigger adaptive seed rescue when the provisional winner's largest
+    /// corner-free rectangle is below this area.
+    pub rescue_when_max_corner_below_mm2: Option<f64>,
+    /// Reject rescue candidates whose largest corner-free rectangle is below this area.
+    pub rescue_accept_min_max_corner_mm2: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfilePoolPreset {
+    /// V26 cheap/default mode: V20 base pool plus delayed zp=0.4 only for >5 zones.
+    Cheap,
+    /// V26 balanced mode: delayed zp=0.4 for 5+ zones with reusable-corner guard.
+    BalancedQuality,
+    /// V22 aggressive mode: always run [0.2, 0.3, 0.4, 0.5].
+    Aggressive,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy)]
@@ -259,6 +321,9 @@ pub struct Summary {
     pub alns: Option<AlnsTelemetry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub candidate_selection: Option<CandidateSelectionTelemetry>,
+    /// V17b multi-profile zones-fitness orchestration telemetry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_pool: Option<ProfilePoolTelemetry>,
     /// Fault-aware retry telemetry.  Populated only when
     /// `params.retry_strategy = smart` and at least one recovery attempt
     /// was made.
@@ -268,6 +333,10 @@ pub struct Summary {
     /// enabled, including the fallback case.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub partition: Option<PartitionTelemetry>,
+    /// V29 side-group postprocess telemetry. Populated when
+    /// `params.group_shift` is enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_shift: Option<GroupShiftTelemetry>,
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
@@ -286,6 +355,55 @@ pub struct PartitionTelemetry {
     /// Empty when partition was not applied.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub densest_zones: Vec<u32>,
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone)]
+pub struct GroupShiftTelemetry {
+    pub enabled: bool,
+    pub time_ms: u64,
+    pub moves_applied: u32,
+    pub parts_moved: u32,
+    pub passes_run: u32,
+    pub corridor_closed_area_mm2: f64,
+    pub corridor_opportunity_before_mm2: f64,
+    pub corridor_opportunity_after_mm2: f64,
+    pub corridor_opportunity_delta_mm2: f64,
+    pub max_shift_mm: f64,
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone)]
+pub struct ProfilePoolTelemetry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preset: Option<ProfilePoolPreset>,
+    pub profiles_requested: Vec<f64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rescue_zone_penalties_requested: Vec<f64>,
+    pub candidates_total: u32,
+    pub candidates_completed: u32,
+    pub candidates_timed_out: u32,
+    pub candidates_failed: u32,
+    pub rescue_candidates_rejected_by_guard: u32,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub seed_offsets_requested: Vec<u64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub seed_offsets_used: Vec<u64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rescue_zone_penalties_used: Vec<f64>,
+    pub rescue_triggered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rescue_when_zones_gt: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rescue_when_max_corner_below_mm2: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rescue_accept_min_max_corner_mm2: Option<f64>,
+    pub winner_seed: u64,
+    pub winner_zone_penalty: f64,
+    pub winner_waste_regions: u32,
+    pub winner_lead_util_pct: f64,
+    pub winner_max_corner_mm2: f64,
+    pub winner_group_shift_opportunity_after_mm2: f64,
+    pub winner_group_shift_opportunity_delta_mm2: f64,
+    pub max_lead_drop_pp: f64,
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
@@ -421,7 +539,7 @@ pub struct CandidateSelectionTelemetry {
     pub winner_corner_free_area_mm2: f64,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct Solution {
     pub stock_id: String,
     pub index: u32,
@@ -431,7 +549,7 @@ pub struct Solution {
     pub placements: Vec<Placement>,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct Placement {
     pub item_id: String,
     pub instance: u32,
@@ -447,6 +565,10 @@ pub struct Placement {
 pub struct Artifacts {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub svg: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_shift_before_svg: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_shift_diff_svg: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

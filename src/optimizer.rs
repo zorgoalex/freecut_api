@@ -5,13 +5,16 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use cut_optimizer_2d::{CutPiece, Optimizer, PatternDirection as CutPatternDirection, StockPiece};
+use cut_optimizer_2d::{
+    CutPiece, GaFitnessConfig, Optimizer, PatternDirection as CutPatternDirection, StockPiece,
+};
 
 use crate::config::AppConfig;
 use crate::models::{
     AlnsOperatorTelemetry, AlnsTelemetry, Artifacts, BeamTelemetry, CandidateSelectionTelemetry,
-    ErrorResponse, GaProfile, LayoutMode, Objective, OptimizeRequest, OptimizeResponse,
-    PartitionTelemetry, PatternDirection, Placement, PortfolioTelemetry, RestartPolicyTelemetry,
+    ErrorResponse, GaOverrideParams, GaProfile, GroupShiftTelemetry, LayoutMode, Objective,
+    OptimizeRequest, OptimizeResponse, Params, PartitionTelemetry, PatternDirection, Placement,
+    PortfolioTelemetry, ProfilePoolPreset, ProfilePoolTelemetry, RestartPolicyTelemetry,
     RetryStrategy, RetryTelemetry, SlaProfile, Solution, Summary, Trim, UnplacedItem,
 };
 use crate::validation::item_fits_any_stock_public;
@@ -54,6 +57,7 @@ const GA_QUALITY_SURVIVAL_FACTOR: f64 = 0.7;
 const GA_FAST_TOP_K: usize = 3;
 const GA_BALANCED_TOP_K: usize = 6;
 const GA_QUALITY_TOP_K: usize = 12;
+const GROUP_SHIFT_EPS: f64 = 1.0e-7;
 
 #[derive(Debug)]
 pub enum OptimizeError {
@@ -230,6 +234,16 @@ async fn optimize_request_internal(
     let layout_mode = req.params.layout_mode.unwrap_or(LayoutMode::Guillotine);
     let include_svg = req.params.include_svg.unwrap_or(true);
     let used_seed = req.params.seed.unwrap_or_else(generate_seed);
+    if matches!(mode, SolveMode::Default)
+        && req
+            .params
+            .profile_pool
+            .as_ref()
+            .map(|pool| pool.enabled.unwrap_or(true))
+            .unwrap_or(false)
+    {
+        return optimize_profile_pool(req, config, used_seed).await;
+    }
     let prepared = prepare_input(&req)?;
 
     let time_limit_ms = req
@@ -251,7 +265,12 @@ async fn optimize_request_internal(
     if prepared.cut_pieces.is_empty() {
         let time_ms = start.elapsed().as_millis() as u64;
         let svg = if include_svg {
-            Some(build_svg(&[], &prepared.oversized_items, &prepared.trim, 0.0))
+            Some(build_svg(
+                &[],
+                &prepared.oversized_items,
+                &prepared.trim,
+                0.0,
+            ))
         } else {
             None
         };
@@ -273,12 +292,29 @@ async fn optimize_request_internal(
                 beam: None,
                 alns: None,
                 candidate_selection: None,
+                profile_pool: None,
                 retry: None,
                 partition: None,
+                group_shift: group_shift_options(&req.params).map(|options| GroupShiftTelemetry {
+                    enabled: options.enabled,
+                    time_ms: 0,
+                    moves_applied: 0,
+                    parts_moved: 0,
+                    passes_run: 0,
+                    corridor_closed_area_mm2: 0.0,
+                    corridor_opportunity_before_mm2: 0.0,
+                    corridor_opportunity_after_mm2: 0.0,
+                    corridor_opportunity_delta_mm2: 0.0,
+                    max_shift_mm: 0.0,
+                }),
             },
             solutions: vec![],
             unplaced_items: prepared.oversized_items,
-            artifacts: Artifacts { svg },
+            artifacts: Artifacts {
+                svg,
+                group_shift_before_svg: None,
+                group_shift_diff_svg: None,
+            },
         });
     }
 
@@ -291,8 +327,7 @@ async fn optimize_request_internal(
         if let Some(partition_cfg) = &req.params.partition {
             if partition_cfg.enabled.unwrap_or(true) {
                 let (outcome, telemetry) =
-                    run_partitioned(&req, &prepared, layout_mode, used_seed, time_limit_ms)
-                        .await?;
+                    run_partitioned(&req, &prepared, layout_mode, used_seed, time_limit_ms).await?;
                 partitioned_outcome = outcome;
                 partition_telemetry = Some(telemetry);
             }
@@ -439,10 +474,26 @@ fn build_response_from_outcome(
     let all_solutions = build_solutions(&run_outcome.candidate.solution, prepared);
 
     // Apply qty limits and collect unplaced items
-    let (solutions, mut unplaced_items) = apply_qty_limits(all_solutions, prepared);
+    let (mut solutions, mut unplaced_items) = apply_qty_limits(all_solutions, prepared);
 
     // Merge oversized items (items that didn't fit any stock)
     unplaced_items.extend(prepared.oversized_items.clone());
+
+    let gap_mm = req.params.kerf_mm + req.params.spacing_mm;
+    let group_shift_options = group_shift_options(&req.params);
+    let group_shift_debug_artifacts = include_svg
+        && group_shift_options
+            .as_ref()
+            .is_some_and(|options| options.enabled)
+        && req
+            .params
+            .group_shift
+            .as_ref()
+            .and_then(|group_shift| group_shift.debug_artifacts)
+            .unwrap_or(false);
+    let group_shift_before_solutions = group_shift_debug_artifacts.then(|| solutions.clone());
+    let group_shift = group_shift_options
+        .map(|options| apply_group_shift_postprocess(&mut solutions, gap_mm, options));
 
     // Recalculate stats for kept solutions only
     let (used_stock_count, total_stock_area, total_waste_area) =
@@ -468,23 +519,512 @@ fn build_response_from_outcome(
         beam: run_outcome.beam,
         alns: run_outcome.alns,
         candidate_selection: run_outcome.candidate_selection,
+        profile_pool: None,
         retry: None,
         partition,
+        group_shift,
     };
 
     let svg = if include_svg {
-        let gap_mm = req.params.kerf_mm + req.params.spacing_mm;
-        Some(build_svg(&solutions, &unplaced_items, &prepared.trim, gap_mm))
+        Some(build_svg(
+            &solutions,
+            &unplaced_items,
+            &prepared.trim,
+            gap_mm,
+        ))
     } else {
         None
     };
+    let group_shift_before_svg = group_shift_before_solutions
+        .as_ref()
+        .map(|before| build_svg(before, &unplaced_items, &prepared.trim, gap_mm));
+    let group_shift_diff_svg = group_shift_before_solutions
+        .as_ref()
+        .map(|before| build_group_shift_diff_svg(before, &solutions, &prepared.trim));
 
     OptimizeResponse {
         status: "ok",
         summary,
         solutions,
         unplaced_items,
-        artifacts: Artifacts { svg },
+        artifacts: Artifacts {
+            svg,
+            group_shift_before_svg,
+            group_shift_diff_svg,
+        },
+    }
+}
+
+struct ProfilePoolCandidate {
+    response: OptimizeResponse,
+    seed: u64,
+    zone_penalty: f64,
+    is_rescue: bool,
+    waste_regions: u32,
+    lead_util_pct: f64,
+    max_corner_mm2: f64,
+    group_shift_opportunity_after_mm2: f64,
+    group_shift_opportunity_delta_mm2: f64,
+}
+
+fn preset_zone_penalties(preset: ProfilePoolPreset) -> Vec<f64> {
+    match preset {
+        ProfilePoolPreset::Cheap | ProfilePoolPreset::BalancedQuality => vec![0.2, 0.3, 0.5],
+        ProfilePoolPreset::Aggressive => vec![0.2, 0.3, 0.4, 0.5],
+    }
+}
+
+fn preset_rescue_zone_penalties(preset: ProfilePoolPreset) -> Vec<f64> {
+    match preset {
+        ProfilePoolPreset::Cheap | ProfilePoolPreset::BalancedQuality => vec![0.4],
+        ProfilePoolPreset::Aggressive => Vec::new(),
+    }
+}
+
+fn preset_rescue_when_zones_gt(preset: ProfilePoolPreset) -> Option<u32> {
+    match preset {
+        ProfilePoolPreset::Cheap => Some(5),
+        ProfilePoolPreset::BalancedQuality => Some(4),
+        ProfilePoolPreset::Aggressive => None,
+    }
+}
+
+fn preset_rescue_accept_min_max_corner_mm2(preset: ProfilePoolPreset) -> Option<f64> {
+    match preset {
+        ProfilePoolPreset::BalancedQuality => Some(300_000.0),
+        ProfilePoolPreset::Cheap | ProfilePoolPreset::Aggressive => None,
+    }
+}
+
+async fn optimize_profile_pool(
+    req: OptimizeRequest,
+    config: &AppConfig,
+    base_seed: u64,
+) -> Result<OptimizeResponse, OptimizeError> {
+    let started_at = Instant::now();
+    let pool_cfg = req
+        .params
+        .profile_pool
+        .as_ref()
+        .expect("optimize_profile_pool called without profile_pool params");
+    let preset = pool_cfg.preset;
+    let profiles = pool_cfg
+        .zone_penalties
+        .clone()
+        .or_else(|| preset.map(preset_zone_penalties))
+        .unwrap_or_else(|| vec![0.2, 0.3, 0.4, 0.5]);
+    let rescue_profiles = pool_cfg
+        .rescue_zone_penalties
+        .clone()
+        .or_else(|| preset.map(preset_rescue_zone_penalties))
+        .unwrap_or_default();
+    let fill_penalty = pool_cfg
+        .fill_penalty
+        .or_else(|| {
+            req.params
+                .ga_override
+                .as_ref()
+                .and_then(|ga| ga.fill_penalty)
+        })
+        .unwrap_or(0.1);
+    let max_lead_drop_pp = pool_cfg.max_lead_drop_pp.unwrap_or(0.8);
+    let seed_offsets = pool_cfg.seed_offsets.clone().unwrap_or_default();
+    let rescue_when_zones_gt = pool_cfg
+        .rescue_when_zones_gt
+        .or_else(|| preset.and_then(preset_rescue_when_zones_gt))
+        .or_else(|| (!seed_offsets.is_empty() || !rescue_profiles.is_empty()).then_some(5));
+    let rescue_when_max_corner_below_mm2 = pool_cfg.rescue_when_max_corner_below_mm2;
+    let rescue_accept_min_max_corner_mm2 = pool_cfg
+        .rescue_accept_min_max_corner_mm2
+        .or_else(|| preset.and_then(preset_rescue_accept_min_max_corner_mm2));
+
+    let mut candidates: Vec<ProfilePoolCandidate> = Vec::new();
+    let mut timed_out = 0_u32;
+    let mut failed = 0_u32;
+    let mut last_error: Option<OptimizeError> = None;
+
+    for &zone_penalty in &profiles {
+        record_profile_pool_candidate_result(
+            run_profile_pool_candidate(&req, config, base_seed, zone_penalty, fill_penalty, false)
+                .await,
+            &mut candidates,
+            &mut timed_out,
+            &mut failed,
+            &mut last_error,
+        );
+    }
+
+    if candidates.is_empty() {
+        if timed_out > 0 {
+            return Err(OptimizeError::Timeout);
+        }
+        return Err(last_error.unwrap_or_else(|| {
+            OptimizeError::Internal("profile_pool could not produce a valid solution".to_string())
+        }));
+    }
+
+    let provisional_idx = profile_pool_winner_idx(&candidates, max_lead_drop_pp, None);
+    let provisional = &candidates[provisional_idx];
+    let zones_rescue = rescue_when_zones_gt
+        .map(|threshold| provisional.waste_regions > threshold)
+        .unwrap_or(false);
+    let corner_rescue = rescue_when_max_corner_below_mm2
+        .map(|threshold| provisional.max_corner_mm2 < threshold)
+        .unwrap_or(false);
+    let rescue_triggered = (!seed_offsets.is_empty() || !rescue_profiles.is_empty())
+        && (zones_rescue || corner_rescue);
+    let mut seed_offsets_used: Vec<u64> = Vec::new();
+    let mut rescue_zone_penalties_used: Vec<f64> = Vec::new();
+
+    if rescue_triggered {
+        for &zone_penalty in &rescue_profiles {
+            rescue_zone_penalties_used.push(zone_penalty);
+            record_profile_pool_candidate_result(
+                run_profile_pool_candidate(
+                    &req,
+                    config,
+                    base_seed,
+                    zone_penalty,
+                    fill_penalty,
+                    true,
+                )
+                .await,
+                &mut candidates,
+                &mut timed_out,
+                &mut failed,
+                &mut last_error,
+            );
+        }
+        for offset in &seed_offsets {
+            let seed = base_seed.wrapping_add(*offset);
+            seed_offsets_used.push(*offset);
+            for &zone_penalty in &profiles {
+                record_profile_pool_candidate_result(
+                    run_profile_pool_candidate(
+                        &req,
+                        config,
+                        seed,
+                        zone_penalty,
+                        fill_penalty,
+                        true,
+                    )
+                    .await,
+                    &mut candidates,
+                    &mut timed_out,
+                    &mut failed,
+                    &mut last_error,
+                );
+            }
+        }
+    }
+
+    let rescue_candidates_rejected_by_guard =
+        count_rescue_candidates_rejected_by_guard(&candidates, rescue_accept_min_max_corner_mm2);
+    let winner_idx = profile_pool_winner_idx(
+        &candidates,
+        max_lead_drop_pp,
+        rescue_accept_min_max_corner_mm2,
+    );
+    let completed = candidates.len() as u32;
+    let mut winner = candidates.swap_remove(winner_idx);
+    winner.response.summary.time_ms = started_at.elapsed().as_millis() as u64;
+    winner.response.summary.profile_pool = Some(ProfilePoolTelemetry {
+        preset,
+        profiles_requested: profiles,
+        rescue_zone_penalties_requested: rescue_profiles,
+        candidates_total: completed.saturating_add(timed_out).saturating_add(failed),
+        candidates_completed: completed,
+        candidates_timed_out: timed_out,
+        candidates_failed: failed,
+        rescue_candidates_rejected_by_guard,
+        seed_offsets_requested: seed_offsets,
+        seed_offsets_used,
+        rescue_zone_penalties_used,
+        rescue_triggered,
+        rescue_when_zones_gt,
+        rescue_when_max_corner_below_mm2,
+        rescue_accept_min_max_corner_mm2,
+        winner_seed: winner.seed,
+        winner_zone_penalty: winner.zone_penalty,
+        winner_waste_regions: winner.waste_regions,
+        winner_lead_util_pct: winner.lead_util_pct,
+        winner_max_corner_mm2: winner.max_corner_mm2,
+        winner_group_shift_opportunity_after_mm2: winner.group_shift_opportunity_after_mm2,
+        winner_group_shift_opportunity_delta_mm2: winner.group_shift_opportunity_delta_mm2,
+        max_lead_drop_pp,
+    });
+    Ok(winner.response)
+}
+
+async fn run_profile_pool_candidate(
+    req: &OptimizeRequest,
+    config: &AppConfig,
+    seed: u64,
+    zone_penalty: f64,
+    fill_penalty: f64,
+    is_rescue: bool,
+) -> Result<ProfilePoolCandidate, OptimizeError> {
+    let mut profile_req = req.clone();
+    profile_req.params.profile_pool = None;
+    profile_req.params.seed = Some(seed);
+    let mut ga_override = profile_req
+        .params
+        .ga_override
+        .clone()
+        .unwrap_or(GaOverrideParams {
+            epochs: None,
+            breed_factor: None,
+            survival_factor: None,
+            top_k_candidates: None,
+            zone_penalty: None,
+            fill_penalty: None,
+        });
+    ga_override.zone_penalty = Some(zone_penalty);
+    ga_override.fill_penalty = Some(fill_penalty);
+    profile_req.params.ga_override = Some(ga_override);
+
+    let response = Box::pin(optimize_request_internal(
+        profile_req,
+        config,
+        SolveMode::Default,
+    ))
+    .await?;
+    let gap_mm = req.params.kerf_mm + req.params.spacing_mm;
+    Ok(ProfilePoolCandidate {
+        waste_regions: response_waste_regions(&response, gap_mm),
+        lead_util_pct: response_lead_util_pct(&response),
+        max_corner_mm2: response_max_corner_mm2(&response),
+        group_shift_opportunity_after_mm2: response_group_shift_opportunity_after_mm2(&response),
+        group_shift_opportunity_delta_mm2: response_group_shift_opportunity_delta_mm2(&response),
+        response,
+        seed,
+        zone_penalty,
+        is_rescue,
+    })
+}
+
+fn record_profile_pool_candidate_result(
+    result: Result<ProfilePoolCandidate, OptimizeError>,
+    candidates: &mut Vec<ProfilePoolCandidate>,
+    timed_out: &mut u32,
+    failed: &mut u32,
+    last_error: &mut Option<OptimizeError>,
+) {
+    match result {
+        Ok(candidate) => {
+            candidates.push(candidate);
+        }
+        Err(OptimizeError::Timeout) => {
+            *timed_out = timed_out.saturating_add(1);
+        }
+        Err(err @ OptimizeError::Constraint { .. }) | Err(err @ OptimizeError::Internal(_)) => {
+            *failed = failed.saturating_add(1);
+            *last_error = Some(err);
+        }
+    }
+}
+
+fn count_rescue_candidates_rejected_by_guard(
+    candidates: &[ProfilePoolCandidate],
+    rescue_accept_min_max_corner_mm2: Option<f64>,
+) -> u32 {
+    candidates
+        .iter()
+        .filter(|candidate| {
+            profile_pool_candidate_rejected_by_rescue_guard(
+                candidate,
+                rescue_accept_min_max_corner_mm2,
+            )
+        })
+        .count() as u32
+}
+
+fn profile_pool_candidate_rejected_by_rescue_guard(
+    candidate: &ProfilePoolCandidate,
+    rescue_accept_min_max_corner_mm2: Option<f64>,
+) -> bool {
+    candidate.is_rescue
+        && rescue_accept_min_max_corner_mm2
+            .map(|threshold| candidate.max_corner_mm2 < threshold)
+            .unwrap_or(false)
+}
+
+fn profile_pool_winner_idx(
+    candidates: &[ProfilePoolCandidate],
+    max_lead_drop_pp: f64,
+    rescue_accept_min_max_corner_mm2: Option<f64>,
+) -> usize {
+    let best_lead = candidates
+        .iter()
+        .filter(|candidate| {
+            !profile_pool_candidate_rejected_by_rescue_guard(
+                candidate,
+                rescue_accept_min_max_corner_mm2,
+            )
+        })
+        .map(|candidate| candidate.lead_util_pct)
+        .fold(0.0_f64, f64::max);
+    let mut winner_idx: Option<usize> = None;
+    for (idx, candidate) in candidates.iter().enumerate() {
+        if profile_pool_candidate_rejected_by_rescue_guard(
+            candidate,
+            rescue_accept_min_max_corner_mm2,
+        ) {
+            continue;
+        }
+        let eligible =
+            candidate.lead_util_pct + max_lead_drop_pp >= best_lead || candidate.waste_regions <= 4;
+        if !eligible {
+            continue;
+        }
+        if let Some(current_idx) = winner_idx {
+            if profile_pool_candidate_better(candidate, &candidates[current_idx]) {
+                winner_idx = Some(idx);
+            }
+        } else {
+            winner_idx = Some(idx);
+        }
+    }
+    winner_idx.unwrap_or_else(|| {
+        candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| {
+                !profile_pool_candidate_rejected_by_rescue_guard(
+                    candidate,
+                    rescue_accept_min_max_corner_mm2,
+                )
+            })
+            .min_by(|(_, a), (_, b)| {
+                profile_pool_candidate_order(a, b).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(idx, _)| idx)
+            .unwrap_or(0)
+    })
+}
+
+fn profile_pool_candidate_better(
+    candidate: &ProfilePoolCandidate,
+    best: &ProfilePoolCandidate,
+) -> bool {
+    matches!(
+        profile_pool_candidate_order(candidate, best),
+        Some(std::cmp::Ordering::Less)
+    )
+}
+
+fn profile_pool_candidate_order(
+    a: &ProfilePoolCandidate,
+    b: &ProfilePoolCandidate,
+) -> Option<std::cmp::Ordering> {
+    Some(
+        (a.response.summary.used_stock_count, a.waste_regions)
+            .cmp(&(b.response.summary.used_stock_count, b.waste_regions))
+            .then_with(|| {
+                a.group_shift_opportunity_after_mm2
+                    .partial_cmp(&b.group_shift_opportunity_after_mm2)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                b.group_shift_opportunity_delta_mm2
+                    .partial_cmp(&a.group_shift_opportunity_delta_mm2)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                b.lead_util_pct
+                    .partial_cmp(&a.lead_util_pct)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                b.max_corner_mm2
+                    .partial_cmp(&a.max_corner_mm2)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }),
+    )
+}
+
+fn response_lead_util_pct(resp: &OptimizeResponse) -> f64 {
+    let mut utils = per_sheet_utils(resp);
+    if utils.is_empty() {
+        return 0.0;
+    }
+    utils.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    if utils.len() == 1 {
+        utils[0]
+    } else {
+        utils[..utils.len() - 1].iter().sum::<f64>() / (utils.len() - 1) as f64
+    }
+}
+
+fn response_waste_regions(resp: &OptimizeResponse, gap_mm: f64) -> u32 {
+    let gap = mm_to_units_lossy(gap_mm);
+    response_stock_pieces(resp)
+        .iter()
+        .map(|stock| waste_region_count(stock, gap))
+        .sum()
+}
+
+fn response_max_corner_mm2(resp: &OptimizeResponse) -> f64 {
+    response_stock_pieces(resp)
+        .iter()
+        .map(corner_free_rect_area)
+        .max()
+        .map(from_area_units)
+        .unwrap_or(0.0)
+}
+
+fn response_group_shift_opportunity_after_mm2(resp: &OptimizeResponse) -> f64 {
+    resp.summary
+        .group_shift
+        .as_ref()
+        .map(|group_shift| group_shift.corridor_opportunity_after_mm2)
+        .unwrap_or(0.0)
+}
+
+fn response_group_shift_opportunity_delta_mm2(resp: &OptimizeResponse) -> f64 {
+    resp.summary
+        .group_shift
+        .as_ref()
+        .map(|group_shift| group_shift.corridor_opportunity_delta_mm2)
+        .unwrap_or(0.0)
+}
+
+fn response_stock_pieces(resp: &OptimizeResponse) -> Vec<cut_optimizer_2d::ResultStockPiece> {
+    resp.solutions
+        .iter()
+        .map(|solution| {
+            let usable_width = solution.width_mm - solution.trim_mm.left - solution.trim_mm.right;
+            let usable_height = solution.height_mm - solution.trim_mm.top - solution.trim_mm.bottom;
+            let cut_pieces = solution
+                .placements
+                .iter()
+                .map(|placement| cut_optimizer_2d::ResultCutPiece {
+                    external_id: None,
+                    x: mm_to_units_lossy(placement.x_mm),
+                    y: mm_to_units_lossy(placement.y_mm),
+                    width: mm_to_units_lossy(placement.width_mm),
+                    length: mm_to_units_lossy(placement.height_mm),
+                    pattern_direction: CutPatternDirection::None,
+                    is_rotated: placement.rotated,
+                })
+                .collect();
+            cut_optimizer_2d::ResultStockPiece {
+                width: mm_to_units_lossy(usable_width),
+                length: mm_to_units_lossy(usable_height),
+                pattern_direction: CutPatternDirection::None,
+                cut_pieces,
+                waste_pieces: Vec::new(),
+                price: 0,
+            }
+        })
+        .collect()
+}
+
+fn mm_to_units_lossy(value: f64) -> usize {
+    if value <= 0.0 || !value.is_finite() {
+        0
+    } else {
+        (value * SCALE).round() as usize
     }
 }
 
@@ -562,14 +1102,8 @@ fn assess_failure(resp: &OptimizeResponse) -> Option<FailureMode> {
         return Some(FailureMode::NoSolution);
     }
     let n_sheets = resp.summary.used_stock_count as u32;
-    let min_util = utils
-        .iter()
-        .copied()
-        .fold(f64::INFINITY, f64::min);
-    let max_util = utils
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
+    let min_util = utils.iter().copied().fold(f64::INFINITY, f64::min);
+    let max_util = utils.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let range = max_util - min_util;
 
     // "Too many sheets" is the worst case — it means we failed to find a
@@ -596,7 +1130,11 @@ fn assess_failure(resp: &OptimizeResponse) -> Option<FailureMode> {
     None
 }
 
-fn choose_strategy(failure: &FailureMode, retry_idx: usize, rebalance_enabled: bool) -> &'static str {
+fn choose_strategy(
+    failure: &FailureMode,
+    retry_idx: usize,
+    rebalance_enabled: bool,
+) -> &'static str {
     match failure {
         FailureMode::NoSolution => "different_seed",
         FailureMode::Imbalanced { .. } | FailureMode::Lumpy { .. } => {
@@ -1296,8 +1834,7 @@ fn peel_candidate_better(
         if !feasible {
             return false;
         }
-        let candidate_zones =
-            densest_sheet_waste_regions(&candidate.solution.stock_pieces, gap);
+        let candidate_zones = densest_sheet_waste_regions(&candidate.solution.stock_pieces, gap);
         let candidate_effective =
             densest_util - (candidate_zones.saturating_sub(1) as f64) * ZONES_PENALTY_PP;
         match best {
@@ -1309,8 +1846,7 @@ fn peel_candidate_better(
                     .iter()
                     .map(stock_piece_util_pct)
                     .fold(0.0_f64, f64::max);
-                let best_zones =
-                    densest_sheet_waste_regions(&best.solution.stock_pieces, gap);
+                let best_zones = densest_sheet_waste_regions(&best.solution.stock_pieces, gap);
                 let best_effective =
                     best_densest_util - (best_zones.saturating_sub(1) as f64) * ZONES_PENALTY_PP;
                 if (candidate_effective - best_effective).abs() < 0.01 {
@@ -1439,9 +1975,8 @@ async fn run_partitioned(
                 break;
             }
             let this_budget = attempt_budget_ms.min((budget - peel_elapsed.min(budget)).max(200));
-            let seed = base_seed.wrapping_add(
-                ((peel_idx << 8) + attempt_idx + 1).wrapping_mul(SEED_STRIDE),
-            );
+            let seed = base_seed
+                .wrapping_add(((peel_idx << 8) + attempt_idx + 1).wrapping_mul(SEED_STRIDE));
             // V11: alternate guillotine/nested in peel attempts for non-last
             // iterations.  Nested is not constrained by guillotine cuts and
             // can pack the densest sheet more tightly, potentially raising
@@ -1514,16 +2049,11 @@ async fn run_partitioned(
         }
 
         // Freeze the densest sheet as-is and drop its parts from the pool.
-        let Some(densest) = candidate
-            .solution
-            .stock_pieces
-            .into_iter()
-            .max_by(|a, b| {
-                stock_piece_util_pct(a)
-                    .partial_cmp(&stock_piece_util_pct(b))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-        else {
+        let Some(densest) = candidate.solution.stock_pieces.into_iter().max_by(|a, b| {
+            stock_piece_util_pct(a)
+                .partial_cmp(&stock_piece_util_pct(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) else {
             return Ok((None, fallback(format!("peel_{}_empty", peel_idx))));
         };
         if densest.cut_pieces.is_empty() {
@@ -1677,10 +2207,7 @@ async fn rebalance_attempt(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    let time_limit_ms = req
-        .params
-        .time_limit_ms
-        .unwrap_or(10_000);
+    let time_limit_ms = req.params.time_limit_ms.unwrap_or(10_000);
     let pack_budget_ms = (time_limit_ms / 8).clamp(500, 2_000);
     let total_budget_ms = time_limit_ms.saturating_mul(2).max(2_000);
     let base_seed = req
@@ -1702,8 +2229,7 @@ async fn rebalance_attempt(
     let mut moved = 0_usize;
     let mut packs_tried = 0_usize;
     for piece in donor_pieces {
-        if packs_tried >= MAX_PACK_TRIALS
-            || started.elapsed().as_millis() as u64 >= total_budget_ms
+        if packs_tried >= MAX_PACK_TRIALS || started.elapsed().as_millis() as u64 >= total_budget_ms
         {
             break;
         }
@@ -1714,8 +2240,7 @@ async fn rebalance_attempt(
             let mut trial = sheets[r].clone();
             trial.push(piece);
             packs_tried += 1;
-            let seed =
-                base_seed.wrapping_add((packs_tried as u64).wrapping_mul(SEED_STRIDE));
+            let seed = base_seed.wrapping_add((packs_tried as u64).wrapping_mul(SEED_STRIDE));
             if let Some((candidate, _)) =
                 pack_group_single_sheet(req, &prepared, &trial, layout_mode, seed, pack_budget_ms)
                     .await?
@@ -1749,8 +2274,7 @@ async fn rebalance_attempt(
         let candidate = match packed.remove(&idx) {
             Some(c) => c,
             None => {
-                let seed = base_seed
-                    .wrapping_add(((1_000 + idx) as u64).wrapping_mul(SEED_STRIDE));
+                let seed = base_seed.wrapping_add(((1_000 + idx) as u64).wrapping_mul(SEED_STRIDE));
                 match pack_group_single_sheet(
                     req,
                     &prepared,
@@ -1876,6 +2400,17 @@ fn resolve_ga_runtime(req: &OptimizeRequest) -> GaRuntime {
     runtime
 }
 
+fn resolve_ga_fitness_config(req: &OptimizeRequest) -> Option<GaFitnessConfig> {
+    let override_cfg = req.params.ga_override.as_ref()?;
+    match (override_cfg.zone_penalty, override_cfg.fill_penalty) {
+        (None, None) => None,
+        (zone_penalty, fill_penalty) => Some(GaFitnessConfig {
+            zone_penalty: zone_penalty.unwrap_or(0.3),
+            fill_penalty: fill_penalty.unwrap_or(0.1),
+        }),
+    }
+}
+
 fn pick_best_candidate(
     set: cut_optimizer_2d::SolutionSet,
     objective: &Objective,
@@ -1928,8 +2463,9 @@ fn pick_best_candidate(
                     Some(current)
                 }
                 CandidateCompare::WorseByTieCornerFree => {
-                    counters.candidates_rejected_tie_corner_free =
-                        counters.candidates_rejected_tie_corner_free.saturating_add(1);
+                    counters.candidates_rejected_tie_corner_free = counters
+                        .candidates_rejected_tie_corner_free
+                        .saturating_add(1);
                     Some(current)
                 }
                 CandidateCompare::Equal => {
@@ -1955,10 +2491,10 @@ async fn run_restarts_with_budget(
     restart_plan: Option<&RestartPlan>,
 ) -> Result<RunOutcome, OptimizeError> {
     let ga_runtime = resolve_ga_runtime(req);
+    let ga_fitness_config = resolve_ga_fitness_config(req);
     // V9.1: kerf+spacing gap in vendor units, used to compact every candidate
     // before ranking (see pick_best_candidate).
-    let kerf_gap_units =
-        ((req.params.kerf_mm + req.params.spacing_mm) * SCALE).round() as usize;
+    let kerf_gap_units = ((req.params.kerf_mm + req.params.spacing_mm) * SCALE).round() as usize;
     let mut best: Option<Candidate> = None;
     let mut selection_counters = CandidateSelectionCounters {
         top_k_requested: u32::try_from(ga_runtime.top_k).unwrap_or(u32::MAX),
@@ -2004,6 +2540,7 @@ async fn run_restarts_with_budget(
         let cut_width = prepared.cut_width;
         let restart_idx = i;
         let ga_runtime = ga_runtime;
+        let ga_fitness_config = ga_fitness_config;
 
         let mut handle = tokio::task::spawn_blocking(move || {
             let diversified_stock = diversify_stock_order(&stock_templates, seed, restart_idx);
@@ -2017,11 +2554,16 @@ async fn run_restarts_with_budget(
                 .set_ga_survival_factor(ga_runtime.survival_factor)
                 .add_stock_pieces(diversified_stock.into_iter())
                 .add_cut_pieces(diversified_cut.into_iter());
-            let ga_set = match mode {
+            let run_optimizer = || match mode {
                 LayoutMode::Nested => optimizer.optimize_nested_top_k(ga_runtime.top_k, |_| {}),
                 LayoutMode::Guillotine => {
                     optimizer.optimize_guillotine_top_k(ga_runtime.top_k, |_| {})
                 }
+            };
+            let ga_set = if let Some(config) = ga_fitness_config {
+                cut_optimizer_2d::with_ga_fitness_config(config, run_optimizer)
+            } else {
+                run_optimizer()
             };
             // V4 heuristic seeding: also run a pure First-Fit-Decreasing
             // heuristic and prepend it to the candidate pool.  The
@@ -2170,6 +2712,7 @@ async fn run_restarts_with_budget(
             let cut_width = prepared.cut_width;
             let restart_idx = planned_restarts;
             let ga_runtime = ga_runtime;
+            let ga_fitness_config = ga_fitness_config;
             let mut rescue_handle = tokio::task::spawn_blocking(move || {
                 let diversified_stock =
                     diversify_stock_order(&stock_templates, rescue_seed, restart_idx);
@@ -2183,11 +2726,16 @@ async fn run_restarts_with_budget(
                     .set_ga_survival_factor(ga_runtime.survival_factor)
                     .add_stock_pieces(diversified_stock.into_iter())
                     .add_cut_pieces(diversified_cut.into_iter());
-                match mode {
+                let run_optimizer = || match mode {
                     LayoutMode::Nested => optimizer.optimize_nested_top_k(ga_runtime.top_k, |_| {}),
                     LayoutMode::Guillotine => {
                         optimizer.optimize_guillotine_top_k(ga_runtime.top_k, |_| {})
                     }
+                };
+                if let Some(config) = ga_fitness_config {
+                    cut_optimizer_2d::with_ga_fitness_config(config, run_optimizer)
+                } else {
+                    run_optimizer()
                 }
             });
 
@@ -3982,6 +4530,652 @@ fn calculate_solution_stats(solutions: &[Solution]) -> (u32, f64, f64) {
     (used_stock_count, total_stock_area, total_waste_area)
 }
 
+#[derive(Debug, Clone, Copy)]
+struct GroupShiftOptions {
+    enabled: bool,
+    min_shift_mm: f64,
+    max_passes: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShiftDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(Debug, Clone)]
+struct GroupShiftMove {
+    solution_index: usize,
+    placement_indices: Vec<usize>,
+    direction: ShiftDirection,
+    shift_mm: f64,
+    corridor_closed_area_mm2: f64,
+    selected_area_mm2: f64,
+}
+
+fn group_shift_options(params: &Params) -> Option<GroupShiftOptions> {
+    let group_shift = params.group_shift.as_ref()?;
+    let enabled = group_shift.enabled.unwrap_or(true);
+    if !enabled {
+        return None;
+    }
+    Some(GroupShiftOptions {
+        enabled,
+        min_shift_mm: group_shift.min_shift_mm.unwrap_or(5.0),
+        max_passes: group_shift.max_passes.unwrap_or(4),
+    })
+}
+
+fn apply_group_shift_postprocess(
+    solutions: &mut [Solution],
+    gap_mm: f64,
+    options: GroupShiftOptions,
+) -> GroupShiftTelemetry {
+    let started = Instant::now();
+    let mut telemetry = GroupShiftTelemetry {
+        enabled: options.enabled,
+        time_ms: 0,
+        moves_applied: 0,
+        parts_moved: 0,
+        passes_run: 0,
+        corridor_closed_area_mm2: 0.0,
+        corridor_opportunity_before_mm2: 0.0,
+        corridor_opportunity_after_mm2: 0.0,
+        corridor_opportunity_delta_mm2: 0.0,
+        max_shift_mm: 0.0,
+    };
+    if !options.enabled {
+        telemetry.time_ms = started.elapsed().as_millis() as u64;
+        return telemetry;
+    }
+
+    telemetry.corridor_opportunity_before_mm2 =
+        group_shift_opportunity_score(solutions, gap_mm, options.min_shift_mm);
+
+    for pass_idx in 0..options.max_passes {
+        telemetry.passes_run = pass_idx + 1;
+        let best_move = solutions
+            .iter()
+            .enumerate()
+            .filter_map(|(solution_index, solution)| {
+                best_group_shift_for_solution(
+                    solution,
+                    solution_index,
+                    gap_mm,
+                    options.min_shift_mm,
+                )
+            })
+            .max_by(|a, b| compare_group_shift_moves(a, b));
+
+        let Some(best_move) = best_move else {
+            break;
+        };
+        apply_group_shift_move(solutions, &best_move);
+        telemetry.moves_applied += 1;
+        telemetry.parts_moved += best_move.placement_indices.len() as u32;
+        telemetry.corridor_closed_area_mm2 += best_move.corridor_closed_area_mm2;
+        telemetry.max_shift_mm = telemetry.max_shift_mm.max(best_move.shift_mm);
+    }
+
+    telemetry.corridor_opportunity_after_mm2 = normalize_group_shift_metric(
+        group_shift_opportunity_score(solutions, gap_mm, options.min_shift_mm),
+    );
+    telemetry.corridor_opportunity_delta_mm2 = normalize_group_shift_metric(
+        telemetry.corridor_opportunity_before_mm2 - telemetry.corridor_opportunity_after_mm2,
+    );
+    telemetry.time_ms = started.elapsed().as_millis() as u64;
+    telemetry
+}
+
+fn normalize_group_shift_metric(value: f64) -> f64 {
+    if value.abs() <= GROUP_SHIFT_EPS {
+        0.0
+    } else {
+        value
+    }
+}
+
+fn group_shift_opportunity_score(solutions: &[Solution], gap_mm: f64, min_shift_mm: f64) -> f64 {
+    solutions
+        .iter()
+        .enumerate()
+        .filter_map(|(solution_index, solution)| {
+            best_group_shift_for_solution(solution, solution_index, gap_mm, min_shift_mm)
+        })
+        .map(|group_shift_move| group_shift_move.corridor_closed_area_mm2)
+        .sum()
+}
+
+fn best_group_shift_for_solution(
+    solution: &Solution,
+    solution_index: usize,
+    gap_mm: f64,
+    min_shift_mm: f64,
+) -> Option<GroupShiftMove> {
+    if solution.placements.len() < 2 {
+        return None;
+    }
+
+    let components = placement_components(solution, gap_mm);
+    let anchor_component_idx = largest_component_index(solution, &components);
+    let anchor_mask = (components.len() > 1).then(|| {
+        let mut mask = vec![false; solution.placements.len()];
+        for idx in &components[anchor_component_idx] {
+            mask[*idx] = true;
+        }
+        mask
+    });
+
+    let mut best: Option<GroupShiftMove> = None;
+    for cut in unique_edges(solution.placements.iter().map(|placement| placement.x_mm)) {
+        let selected = selected_indices(solution, |placement| {
+            placement.x_mm >= cut - GROUP_SHIFT_EPS
+        });
+        consider_group_shift_candidate(
+            solution,
+            solution_index,
+            gap_mm,
+            min_shift_mm,
+            ShiftDirection::Left,
+            selected,
+            anchor_mask.as_deref(),
+            &mut best,
+        );
+    }
+    for cut in unique_edges(
+        solution
+            .placements
+            .iter()
+            .map(|placement| placement.x_mm + placement.width_mm),
+    ) {
+        let selected = selected_indices(solution, |placement| {
+            placement.x_mm + placement.width_mm <= cut + GROUP_SHIFT_EPS
+        });
+        consider_group_shift_candidate(
+            solution,
+            solution_index,
+            gap_mm,
+            min_shift_mm,
+            ShiftDirection::Right,
+            selected,
+            anchor_mask.as_deref(),
+            &mut best,
+        );
+    }
+    for cut in unique_edges(solution.placements.iter().map(|placement| placement.y_mm)) {
+        let selected = selected_indices(solution, |placement| {
+            placement.y_mm >= cut - GROUP_SHIFT_EPS
+        });
+        consider_group_shift_candidate(
+            solution,
+            solution_index,
+            gap_mm,
+            min_shift_mm,
+            ShiftDirection::Up,
+            selected,
+            anchor_mask.as_deref(),
+            &mut best,
+        );
+    }
+    for cut in unique_edges(
+        solution
+            .placements
+            .iter()
+            .map(|placement| placement.y_mm + placement.height_mm),
+    ) {
+        let selected = selected_indices(solution, |placement| {
+            placement.y_mm + placement.height_mm <= cut + GROUP_SHIFT_EPS
+        });
+        consider_group_shift_candidate(
+            solution,
+            solution_index,
+            gap_mm,
+            min_shift_mm,
+            ShiftDirection::Down,
+            selected,
+            anchor_mask.as_deref(),
+            &mut best,
+        );
+    }
+
+    if let Some(anchor_mask) = anchor_mask.as_deref() {
+        for (component_idx, component) in components.iter().enumerate() {
+            if component_idx == anchor_component_idx {
+                continue;
+            }
+            for direction in component_anchor_shift_directions(
+                solution,
+                component,
+                &components[anchor_component_idx],
+            ) {
+                consider_group_shift_candidate(
+                    solution,
+                    solution_index,
+                    gap_mm,
+                    min_shift_mm,
+                    direction,
+                    component.clone(),
+                    Some(anchor_mask),
+                    &mut best,
+                );
+            }
+        }
+    }
+
+    best
+}
+
+fn selected_indices<F>(solution: &Solution, mut predicate: F) -> Vec<usize>
+where
+    F: FnMut(&Placement) -> bool,
+{
+    solution
+        .placements
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, placement)| predicate(placement).then_some(idx))
+        .collect()
+}
+
+fn unique_edges<I>(edges: I) -> Vec<f64>
+where
+    I: IntoIterator<Item = f64>,
+{
+    let mut out: Vec<f64> = edges.into_iter().filter(|edge| edge.is_finite()).collect();
+    out.sort_by(|a, b| a.total_cmp(b));
+    out.dedup_by(|a, b| (*a - *b).abs() <= GROUP_SHIFT_EPS);
+    out
+}
+
+fn placement_components(solution: &Solution, gap_mm: f64) -> Vec<Vec<usize>> {
+    let n = solution.placements.len();
+    let mut visited = vec![false; n];
+    let mut components = Vec::new();
+    for start in 0..n {
+        if visited[start] {
+            continue;
+        }
+        let mut stack = vec![start];
+        let mut component = Vec::new();
+        visited[start] = true;
+        while let Some(idx) = stack.pop() {
+            component.push(idx);
+            for next in 0..n {
+                if visited[next] {
+                    continue;
+                }
+                if placements_near_component_gap(
+                    &solution.placements[idx],
+                    &solution.placements[next],
+                    gap_mm,
+                ) {
+                    visited[next] = true;
+                    stack.push(next);
+                }
+            }
+        }
+        component.sort_unstable();
+        components.push(component);
+    }
+    components
+}
+
+fn largest_component_index(solution: &Solution, components: &[Vec<usize>]) -> usize {
+    components
+        .iter()
+        .enumerate()
+        .max_by(|(idx_a, a), (idx_b, b)| {
+            component_area(solution, a)
+                .total_cmp(&component_area(solution, b))
+                .then_with(|| idx_b.cmp(idx_a))
+        })
+        .map(|(idx, _)| idx)
+        .unwrap_or(0)
+}
+
+fn component_area(solution: &Solution, component: &[usize]) -> f64 {
+    component
+        .iter()
+        .map(|idx| placement_area(&solution.placements[*idx]))
+        .sum()
+}
+
+fn placements_near_component_gap(a: &Placement, b: &Placement, gap_mm: f64) -> bool {
+    let horizontal_gap = axis_gap(a.x_mm, a.x_mm + a.width_mm, b.x_mm, b.x_mm + b.width_mm);
+    let vertical_gap = axis_gap(a.y_mm, a.y_mm + a.height_mm, b.y_mm, b.y_mm + b.height_mm);
+    (horizontal_gap <= gap_mm + GROUP_SHIFT_EPS && vertical_gap <= GROUP_SHIFT_EPS)
+        || (vertical_gap <= gap_mm + GROUP_SHIFT_EPS && horizontal_gap <= GROUP_SHIFT_EPS)
+}
+
+fn axis_gap(a_min: f64, a_max: f64, b_min: f64, b_max: f64) -> f64 {
+    if a_max < b_min {
+        b_min - a_max
+    } else if b_max < a_min {
+        a_min - b_max
+    } else {
+        0.0
+    }
+}
+
+fn component_anchor_shift_directions(
+    solution: &Solution,
+    component: &[usize],
+    anchor_component: &[usize],
+) -> Vec<ShiftDirection> {
+    let (component_cx, component_cy) = component_center(solution, component);
+    let (anchor_cx, anchor_cy) = component_center(solution, anchor_component);
+    let dx = anchor_cx - component_cx;
+    let dy = anchor_cy - component_cy;
+    let horizontal = if dx < -GROUP_SHIFT_EPS {
+        Some(ShiftDirection::Left)
+    } else if dx > GROUP_SHIFT_EPS {
+        Some(ShiftDirection::Right)
+    } else {
+        None
+    };
+    let vertical = if dy < -GROUP_SHIFT_EPS {
+        Some(ShiftDirection::Up)
+    } else if dy > GROUP_SHIFT_EPS {
+        Some(ShiftDirection::Down)
+    } else {
+        None
+    };
+
+    let mut directions = Vec::with_capacity(2);
+    if dx.abs() >= dy.abs() {
+        if let Some(direction) = horizontal {
+            directions.push(direction);
+        }
+        if let Some(direction) = vertical {
+            directions.push(direction);
+        }
+    } else {
+        if let Some(direction) = vertical {
+            directions.push(direction);
+        }
+        if let Some(direction) = horizontal {
+            directions.push(direction);
+        }
+    }
+    directions
+}
+
+fn component_center(solution: &Solution, component: &[usize]) -> (f64, f64) {
+    let (min_x, min_y, max_x, max_y) = component.iter().fold(
+        (
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ),
+        |(min_x, min_y, max_x, max_y), idx| {
+            let placement = &solution.placements[*idx];
+            (
+                min_x.min(placement.x_mm),
+                min_y.min(placement.y_mm),
+                max_x.max(placement.x_mm + placement.width_mm),
+                max_y.max(placement.y_mm + placement.height_mm),
+            )
+        },
+    );
+    ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+}
+
+fn consider_group_shift_candidate(
+    solution: &Solution,
+    solution_index: usize,
+    gap_mm: f64,
+    min_shift_mm: f64,
+    direction: ShiftDirection,
+    selected: Vec<usize>,
+    anchor_mask: Option<&[bool]>,
+    best: &mut Option<GroupShiftMove>,
+) {
+    if anchor_mask.is_some_and(|mask| selected.iter().any(|idx| mask[*idx])) {
+        return;
+    }
+    if let Some(candidate) = evaluate_group_shift_candidate(
+        solution,
+        solution_index,
+        gap_mm,
+        min_shift_mm,
+        direction,
+        selected,
+    ) {
+        let replace = best
+            .as_ref()
+            .map(|current| compare_group_shift_moves(&candidate, current).is_gt())
+            .unwrap_or(true);
+        if replace {
+            *best = Some(candidate);
+        }
+    }
+}
+
+fn evaluate_group_shift_candidate(
+    solution: &Solution,
+    solution_index: usize,
+    gap_mm: f64,
+    min_shift_mm: f64,
+    direction: ShiftDirection,
+    selected: Vec<usize>,
+) -> Option<GroupShiftMove> {
+    let n = solution.placements.len();
+    if selected.is_empty() || selected.len() == n {
+        return None;
+    }
+
+    let mut selected_mask = vec![false; n];
+    for idx in &selected {
+        selected_mask[*idx] = true;
+    }
+
+    let total_area = solution.placements.iter().map(placement_area).sum::<f64>();
+    let selected_area = selected
+        .iter()
+        .map(|idx| placement_area(&solution.placements[*idx]))
+        .sum::<f64>();
+    let anchor_area = total_area - selected_area;
+    if selected_area > anchor_area + GROUP_SHIFT_EPS {
+        return None;
+    }
+
+    let usable_width = usable_width_mm(solution);
+    let usable_height = usable_height_mm(solution);
+    let mut shift_limit = match direction {
+        ShiftDirection::Left => selected
+            .iter()
+            .map(|idx| solution.placements[*idx].x_mm)
+            .fold(f64::INFINITY, f64::min),
+        ShiftDirection::Right => selected
+            .iter()
+            .map(|idx| {
+                usable_width - (solution.placements[*idx].x_mm + solution.placements[*idx].width_mm)
+            })
+            .fold(f64::INFINITY, f64::min),
+        ShiftDirection::Up => selected
+            .iter()
+            .map(|idx| solution.placements[*idx].y_mm)
+            .fold(f64::INFINITY, f64::min),
+        ShiftDirection::Down => selected
+            .iter()
+            .map(|idx| {
+                usable_height
+                    - (solution.placements[*idx].y_mm + solution.placements[*idx].height_mm)
+            })
+            .fold(f64::INFINITY, f64::min),
+    };
+    if !shift_limit.is_finite() || shift_limit <= GROUP_SHIFT_EPS {
+        return None;
+    }
+
+    let mut has_anchor_obstacle = false;
+    for selected_idx in &selected {
+        let selected_placement = &solution.placements[*selected_idx];
+        for (other_idx, other_placement) in solution.placements.iter().enumerate() {
+            if selected_mask[other_idx] {
+                continue;
+            }
+            if let Some(limit) =
+                obstacle_shift_limit(selected_placement, other_placement, direction, gap_mm)
+            {
+                has_anchor_obstacle = true;
+                shift_limit = shift_limit.min(limit);
+            }
+        }
+    }
+
+    if !has_anchor_obstacle || shift_limit + GROUP_SHIFT_EPS < min_shift_mm {
+        return None;
+    }
+
+    let shift_mm = shift_limit.max(0.0);
+    let span_mm = selected_group_perpendicular_span(solution, &selected, direction)?;
+    let corridor_closed_area_mm2 = shift_mm * span_mm;
+    if corridor_closed_area_mm2 <= GROUP_SHIFT_EPS {
+        return None;
+    }
+
+    Some(GroupShiftMove {
+        solution_index,
+        placement_indices: selected,
+        direction,
+        shift_mm,
+        corridor_closed_area_mm2,
+        selected_area_mm2: selected_area,
+    })
+}
+
+fn obstacle_shift_limit(
+    selected: &Placement,
+    obstacle: &Placement,
+    direction: ShiftDirection,
+    gap_mm: f64,
+) -> Option<f64> {
+    match direction {
+        ShiftDirection::Left => {
+            if ranges_overlap(
+                selected.y_mm,
+                selected.y_mm + selected.height_mm,
+                obstacle.y_mm,
+                obstacle.y_mm + obstacle.height_mm,
+            ) {
+                let obstacle_right = obstacle.x_mm + obstacle.width_mm + gap_mm;
+                (obstacle_right <= selected.x_mm + GROUP_SHIFT_EPS)
+                    .then_some(selected.x_mm - obstacle_right)
+            } else {
+                None
+            }
+        }
+        ShiftDirection::Right => {
+            if ranges_overlap(
+                selected.y_mm,
+                selected.y_mm + selected.height_mm,
+                obstacle.y_mm,
+                obstacle.y_mm + obstacle.height_mm,
+            ) {
+                let selected_right = selected.x_mm + selected.width_mm + gap_mm;
+                (selected_right <= obstacle.x_mm + GROUP_SHIFT_EPS)
+                    .then_some(obstacle.x_mm - selected_right)
+            } else {
+                None
+            }
+        }
+        ShiftDirection::Up => {
+            if ranges_overlap(
+                selected.x_mm,
+                selected.x_mm + selected.width_mm,
+                obstacle.x_mm,
+                obstacle.x_mm + obstacle.width_mm,
+            ) {
+                let obstacle_bottom = obstacle.y_mm + obstacle.height_mm + gap_mm;
+                (obstacle_bottom <= selected.y_mm + GROUP_SHIFT_EPS)
+                    .then_some(selected.y_mm - obstacle_bottom)
+            } else {
+                None
+            }
+        }
+        ShiftDirection::Down => {
+            if ranges_overlap(
+                selected.x_mm,
+                selected.x_mm + selected.width_mm,
+                obstacle.x_mm,
+                obstacle.x_mm + obstacle.width_mm,
+            ) {
+                let selected_bottom = selected.y_mm + selected.height_mm + gap_mm;
+                (selected_bottom <= obstacle.y_mm + GROUP_SHIFT_EPS)
+                    .then_some(obstacle.y_mm - selected_bottom)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn selected_group_perpendicular_span(
+    solution: &Solution,
+    selected: &[usize],
+    direction: ShiftDirection,
+) -> Option<f64> {
+    let (min_a, max_b) =
+        selected
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(min_a, max_b), idx| {
+                let placement = &solution.placements[*idx];
+                match direction {
+                    ShiftDirection::Left | ShiftDirection::Right => (
+                        min_a.min(placement.y_mm),
+                        max_b.max(placement.y_mm + placement.height_mm),
+                    ),
+                    ShiftDirection::Up | ShiftDirection::Down => (
+                        min_a.min(placement.x_mm),
+                        max_b.max(placement.x_mm + placement.width_mm),
+                    ),
+                }
+            });
+    let span = max_b - min_a;
+    (span > GROUP_SHIFT_EPS).then_some(span)
+}
+
+fn apply_group_shift_move(solutions: &mut [Solution], group_shift_move: &GroupShiftMove) {
+    let solution = &mut solutions[group_shift_move.solution_index];
+    for idx in &group_shift_move.placement_indices {
+        let placement = &mut solution.placements[*idx];
+        match group_shift_move.direction {
+            ShiftDirection::Left => placement.x_mm -= group_shift_move.shift_mm,
+            ShiftDirection::Right => placement.x_mm += group_shift_move.shift_mm,
+            ShiftDirection::Up => placement.y_mm -= group_shift_move.shift_mm,
+            ShiftDirection::Down => placement.y_mm += group_shift_move.shift_mm,
+        }
+    }
+}
+
+fn compare_group_shift_moves(a: &GroupShiftMove, b: &GroupShiftMove) -> std::cmp::Ordering {
+    a.corridor_closed_area_mm2
+        .total_cmp(&b.corridor_closed_area_mm2)
+        .then_with(|| a.shift_mm.total_cmp(&b.shift_mm))
+        .then_with(|| b.selected_area_mm2.total_cmp(&a.selected_area_mm2))
+        .then_with(|| b.placement_indices.len().cmp(&a.placement_indices.len()))
+}
+
+fn usable_width_mm(solution: &Solution) -> f64 {
+    (solution.width_mm - solution.trim_mm.left - solution.trim_mm.right).max(0.0)
+}
+
+fn usable_height_mm(solution: &Solution) -> f64 {
+    (solution.height_mm - solution.trim_mm.top - solution.trim_mm.bottom).max(0.0)
+}
+
+fn placement_area(placement: &Placement) -> f64 {
+    placement.width_mm * placement.height_mm
+}
+
+fn ranges_overlap(a_min: f64, a_max: f64, b_min: f64, b_max: f64) -> bool {
+    a_min < b_max - GROUP_SHIFT_EPS && a_max > b_min + GROUP_SHIFT_EPS
+}
+
 fn build_solutions(
     solution: &cut_optimizer_2d::Solution,
     prepared: &PreparedInput,
@@ -4069,7 +5263,12 @@ fn build_placement(
     })
 }
 
-fn build_svg(solutions: &[Solution], unplaced_items: &[UnplacedItem], trim: &Trim, kerf_gap_mm: f64) -> String {
+fn build_svg(
+    solutions: &[Solution],
+    unplaced_items: &[UnplacedItem],
+    trim: &Trim,
+    kerf_gap_mm: f64,
+) -> String {
     const SHEET_GAP: f64 = 50.0; // Gap between sheets in SVG
     const UNPLACED_SECTION_GAP: f64 = 80.0; // Gap before unplaced items section
     const UNPLACED_ITEM_GAP: f64 = 30.0; // Gap between unplaced items
@@ -4329,6 +5528,117 @@ fn build_svg(solutions: &[Solution], unplaced_items: &[UnplacedItem], trim: &Tri
     svg
 }
 
+fn build_group_shift_diff_svg(
+    before_solutions: &[Solution],
+    after_solutions: &[Solution],
+    trim: &Trim,
+) -> String {
+    const SHEET_GAP: f64 = 50.0;
+
+    let mut max_width = 0.0_f64;
+    let mut total_height = 0.0_f64;
+    for (i, solution) in before_solutions.iter().enumerate() {
+        max_width = max_width.max(solution.width_mm);
+        total_height += solution.height_mm;
+        if i > 0 {
+            total_height += SHEET_GAP;
+        }
+    }
+    if max_width == 0.0 {
+        max_width = 500.0;
+    }
+    if total_height == 0.0 {
+        total_height = 200.0;
+    }
+
+    let min_x = -trim.left;
+    let min_y = -trim.top;
+    let mut svg = String::new();
+    svg.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" ");
+    svg.push_str(&format!(
+        "viewBox=\"{} {} {} {}\">",
+        fmt_mm(min_x),
+        fmt_mm(min_y),
+        fmt_mm(max_width),
+        fmt_mm(total_height)
+    ));
+    svg.push_str("<title>Group shift diff: red before, green after</title>");
+
+    let mut y_offset = 0.0_f64;
+    for (sheet_idx, before_solution) in before_solutions.iter().enumerate() {
+        let sheet_x = -trim.left;
+        let sheet_y = -trim.top + y_offset;
+        svg.push_str(&format!(
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#f5f5f5\" stroke=\"#333\" stroke-width=\"1\"/>",
+            fmt_mm(sheet_x),
+            fmt_mm(sheet_y),
+            fmt_mm(before_solution.width_mm),
+            fmt_mm(before_solution.height_mm)
+        ));
+
+        let Some(after_solution) = after_solutions.get(sheet_idx) else {
+            y_offset += before_solution.height_mm + SHEET_GAP;
+            continue;
+        };
+        let after_by_key: HashMap<(&str, u32), &Placement> = after_solution
+            .placements
+            .iter()
+            .map(|placement| ((placement.item_id.as_str(), placement.instance), placement))
+            .collect();
+
+        for before in &before_solution.placements {
+            let Some(after) = after_by_key.get(&(before.item_id.as_str(), before.instance)) else {
+                continue;
+            };
+            if !placement_geometry_changed(before, after) {
+                continue;
+            }
+            let before_x = before.x_mm;
+            let before_y = before.y_mm + y_offset;
+            let after_x = after.x_mm;
+            let after_y = after.y_mm + y_offset;
+            let before_cx = before_x + before.width_mm / 2.0;
+            let before_cy = before_y + before.height_mm / 2.0;
+            let after_cx = after_x + after.width_mm / 2.0;
+            let after_cy = after_y + after.height_mm / 2.0;
+
+            svg.push_str(&format!(
+                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#ff4d4d\" fill-opacity=\"0.10\" stroke=\"#c52222\" stroke-width=\"6\" stroke-dasharray=\"24 18\"/>",
+                fmt_mm(before_x),
+                fmt_mm(before_y),
+                fmt_mm(before.width_mm),
+                fmt_mm(before.height_mm)
+            ));
+            svg.push_str(&format!(
+                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#2fbd5a\" fill-opacity=\"0.12\" stroke=\"#12833a\" stroke-width=\"6\"/>",
+                fmt_mm(after_x),
+                fmt_mm(after_y),
+                fmt_mm(after.width_mm),
+                fmt_mm(after.height_mm)
+            ));
+            svg.push_str(&format!(
+                "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#ff9800\" stroke-width=\"8\" stroke-linecap=\"round\"/>",
+                fmt_mm(before_cx),
+                fmt_mm(before_cy),
+                fmt_mm(after_cx),
+                fmt_mm(after_cy)
+            ));
+        }
+
+        y_offset += before_solution.height_mm + SHEET_GAP;
+    }
+
+    svg.push_str("</svg>");
+    svg
+}
+
+fn placement_geometry_changed(before: &Placement, after: &Placement) -> bool {
+    (before.x_mm - after.x_mm).abs() > GROUP_SHIFT_EPS
+        || (before.y_mm - after.y_mm).abs() > GROUP_SHIFT_EPS
+        || (before.width_mm - after.width_mm).abs() > GROUP_SHIFT_EPS
+        || (before.height_mm - after.height_mm).abs() > GROUP_SHIFT_EPS
+}
+
 fn fmt_mm(value: f64) -> String {
     format!("{:.3}", value)
 }
@@ -4397,6 +5707,186 @@ fn error_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_solution(placements: Vec<Placement>) -> Solution {
+        Solution {
+            stock_id: "sheet".to_string(),
+            index: 0,
+            width_mm: 300.0,
+            height_mm: 200.0,
+            trim_mm: Trim {
+                left: 0.0,
+                right: 0.0,
+                top: 0.0,
+                bottom: 0.0,
+            },
+            placements,
+        }
+    }
+
+    fn test_placement(id: &str, x_mm: f64, y_mm: f64, width_mm: f64, height_mm: f64) -> Placement {
+        Placement {
+            item_id: id.to_string(),
+            instance: 1,
+            x_mm,
+            y_mm,
+            width_mm,
+            height_mm,
+            rotated: false,
+            pattern_direction: PatternDirection::None,
+        }
+    }
+
+    fn test_profile_pool_candidate(
+        waste_regions: u32,
+        lead_util_pct: f64,
+        group_shift_opportunity_after_mm2: f64,
+        group_shift_opportunity_delta_mm2: f64,
+    ) -> ProfilePoolCandidate {
+        ProfilePoolCandidate {
+            response: OptimizeResponse {
+                status: "ok",
+                summary: Summary {
+                    objective: Objective::MinWaste,
+                    used_stock_count: 4,
+                    total_waste_area_mm2: 0.0,
+                    waste_percent: 0.0,
+                    time_ms: 0,
+                    restarts_used: 1,
+                    restarts_requested: 1,
+                    used_seed: 1,
+                    layout_mode: LayoutMode::Guillotine,
+                    timeout_reason: None,
+                    restart_policy: None,
+                    portfolio: None,
+                    beam: None,
+                    alns: None,
+                    candidate_selection: None,
+                    profile_pool: None,
+                    retry: None,
+                    partition: None,
+                    group_shift: None,
+                },
+                solutions: Vec::new(),
+                unplaced_items: Vec::new(),
+                artifacts: Artifacts {
+                    svg: None,
+                    group_shift_before_svg: None,
+                    group_shift_diff_svg: None,
+                },
+            },
+            seed: 1,
+            zone_penalty: 0.3,
+            is_rescue: false,
+            waste_regions,
+            lead_util_pct,
+            max_corner_mm2: 100_000.0,
+            group_shift_opportunity_after_mm2,
+            group_shift_opportunity_delta_mm2,
+        }
+    }
+
+    #[test]
+    fn profile_pool_tie_breaks_on_group_shift_residual_then_delta() {
+        let cleaner = test_profile_pool_candidate(5, 94.0, 10_000.0, 40_000.0);
+        let corridor_left = test_profile_pool_candidate(5, 95.0, 80_000.0, 120_000.0);
+
+        assert!(
+            profile_pool_candidate_better(&cleaner, &corridor_left),
+            "same sheets/zones should prefer lower residual group-shift opportunity"
+        );
+
+        let same_residual_more_delta = test_profile_pool_candidate(5, 94.0, 10_000.0, 80_000.0);
+        assert!(
+            profile_pool_candidate_better(&same_residual_more_delta, &cleaner),
+            "same residual should prefer the candidate where group_shift closed more opportunity"
+        );
+    }
+
+    #[test]
+    fn group_shift_moves_side_parts_as_one_group_toward_anchor_cluster() {
+        let mut solutions = vec![test_solution(vec![
+            test_placement("anchor_top", 0.0, 0.0, 100.0, 80.0),
+            test_placement("anchor_bottom", 0.0, 90.0, 100.0, 80.0),
+            test_placement("side_top", 180.0, 0.0, 50.0, 70.0),
+            test_placement("side_bottom", 180.0, 80.0, 50.0, 70.0),
+        ])];
+
+        let telemetry = apply_group_shift_postprocess(
+            &mut solutions,
+            10.0,
+            GroupShiftOptions {
+                enabled: true,
+                min_shift_mm: 5.0,
+                max_passes: 4,
+            },
+        );
+
+        assert_eq!(telemetry.moves_applied, 1);
+        assert_eq!(telemetry.parts_moved, 2);
+        assert_eq!(telemetry.max_shift_mm, 70.0);
+        assert_eq!(telemetry.corridor_closed_area_mm2, 10_500.0);
+        assert_eq!(telemetry.corridor_opportunity_before_mm2, 10_500.0);
+        assert_eq!(telemetry.corridor_opportunity_after_mm2, 0.0);
+        assert_eq!(telemetry.corridor_opportunity_delta_mm2, 10_500.0);
+        assert!(telemetry.time_ms < 1_000);
+        assert_eq!(solutions[0].placements[2].x_mm, 110.0);
+        assert_eq!(solutions[0].placements[3].x_mm, 110.0);
+        assert_eq!(solutions[0].placements[0].x_mm, 0.0);
+        assert_eq!(solutions[0].placements[1].x_mm, 0.0);
+    }
+
+    #[test]
+    fn group_shift_disabled_leaves_coordinates_unchanged() {
+        let mut solutions = vec![test_solution(vec![
+            test_placement("anchor", 0.0, 0.0, 100.0, 80.0),
+            test_placement("side", 180.0, 0.0, 50.0, 70.0),
+        ])];
+
+        let telemetry = apply_group_shift_postprocess(
+            &mut solutions,
+            10.0,
+            GroupShiftOptions {
+                enabled: false,
+                min_shift_mm: 5.0,
+                max_passes: 4,
+            },
+        );
+
+        assert_eq!(telemetry.moves_applied, 0);
+        assert_eq!(telemetry.parts_moved, 0);
+        assert_eq!(telemetry.corridor_opportunity_before_mm2, 0.0);
+        assert_eq!(telemetry.corridor_opportunity_after_mm2, 0.0);
+        assert_eq!(telemetry.corridor_opportunity_delta_mm2, 0.0);
+        assert!(telemetry.time_ms < 1_000);
+        assert_eq!(solutions[0].placements[1].x_mm, 180.0);
+    }
+
+    #[test]
+    fn group_shift_moves_disconnected_component_without_dragging_same_side_obstacle() {
+        let mut solutions = vec![test_solution(vec![
+            test_placement("anchor", 0.0, 0.0, 100.0, 100.0),
+            test_placement("side_top", 180.0, 0.0, 40.0, 40.0),
+            test_placement("side_bottom", 180.0, 50.0, 40.0, 40.0),
+            test_placement("same_side_obstacle", 180.0, 130.0, 150.0, 60.0),
+        ])];
+
+        let telemetry = apply_group_shift_postprocess(
+            &mut solutions,
+            10.0,
+            GroupShiftOptions {
+                enabled: true,
+                min_shift_mm: 5.0,
+                max_passes: 4,
+            },
+        );
+
+        assert_eq!(telemetry.moves_applied, 1);
+        assert_eq!(telemetry.parts_moved, 2);
+        assert_eq!(solutions[0].placements[1].x_mm, 110.0);
+        assert_eq!(solutions[0].placements[2].x_mm, 110.0);
+        assert_eq!(solutions[0].placements[3].x_mm, 180.0);
+    }
 
     #[test]
     fn derive_restarts_and_slice_respects_min_slice() {

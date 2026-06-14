@@ -131,6 +131,114 @@ pub fn validate_request(
                 ));
             }
         }
+        if let Some(zone_penalty) = ga.zone_penalty {
+            if !zone_penalty.is_finite() || !(0.0..=1.0).contains(&zone_penalty) {
+                return Err(ValidationError::new(
+                    "ga_override.zone_penalty must be finite and in range [0, 1]",
+                ));
+            }
+        }
+        if let Some(fill_penalty) = ga.fill_penalty {
+            if !fill_penalty.is_finite() || !(0.0..=1.0).contains(&fill_penalty) {
+                return Err(ValidationError::new(
+                    "ga_override.fill_penalty must be finite and in range [0, 1]",
+                ));
+            }
+        }
+    }
+
+    if let Some(pool) = &req.params.profile_pool {
+        let pool_enabled = pool.enabled.unwrap_or(true);
+        if pool_enabled {
+            if let Some(zone_penalties) = &pool.zone_penalties {
+                if zone_penalties.is_empty() || zone_penalties.len() > 8 {
+                    return Err(ValidationError::new(
+                        "profile_pool.zone_penalties must contain 1..=8 values",
+                    ));
+                }
+                for zone_penalty in zone_penalties {
+                    if !zone_penalty.is_finite() || !(0.0..=1.0).contains(zone_penalty) {
+                        return Err(ValidationError::new(
+                            "profile_pool.zone_penalties values must be finite and in range [0, 1]",
+                        ));
+                    }
+                }
+            }
+            if let Some(zone_penalties) = &pool.rescue_zone_penalties {
+                if zone_penalties.is_empty() || zone_penalties.len() > 8 {
+                    return Err(ValidationError::new(
+                        "profile_pool.rescue_zone_penalties must contain 1..=8 values",
+                    ));
+                }
+                for zone_penalty in zone_penalties {
+                    if !zone_penalty.is_finite() || !(0.0..=1.0).contains(zone_penalty) {
+                        return Err(ValidationError::new(
+                            "profile_pool.rescue_zone_penalties values must be finite and in range [0, 1]",
+                        ));
+                    }
+                }
+            }
+            if let Some(fill_penalty) = pool.fill_penalty {
+                if !fill_penalty.is_finite() || !(0.0..=1.0).contains(&fill_penalty) {
+                    return Err(ValidationError::new(
+                        "profile_pool.fill_penalty must be finite and in range [0, 1]",
+                    ));
+                }
+            }
+            if let Some(max_lead_drop_pp) = pool.max_lead_drop_pp {
+                if !max_lead_drop_pp.is_finite() || !(0.0..=10.0).contains(&max_lead_drop_pp) {
+                    return Err(ValidationError::new(
+                        "profile_pool.max_lead_drop_pp must be finite and in range [0, 10]",
+                    ));
+                }
+            }
+            if let Some(seed_offsets) = &pool.seed_offsets {
+                if seed_offsets.is_empty() || seed_offsets.len() > 8 {
+                    return Err(ValidationError::new(
+                        "profile_pool.seed_offsets must contain 1..=8 positive values",
+                    ));
+                }
+                if seed_offsets.iter().any(|offset| *offset == 0) {
+                    return Err(ValidationError::new(
+                        "profile_pool.seed_offsets values must be positive",
+                    ));
+                }
+            }
+            if let Some(corner_threshold) = pool.rescue_when_max_corner_below_mm2 {
+                if !corner_threshold.is_finite() || corner_threshold < 0.0 {
+                    return Err(ValidationError::new(
+                        "profile_pool.rescue_when_max_corner_below_mm2 must be finite and >= 0",
+                    ));
+                }
+            }
+            if let Some(corner_threshold) = pool.rescue_accept_min_max_corner_mm2 {
+                if !corner_threshold.is_finite() || corner_threshold < 0.0 {
+                    return Err(ValidationError::new(
+                        "profile_pool.rescue_accept_min_max_corner_mm2 must be finite and >= 0",
+                    ));
+                }
+            }
+        }
+    }
+
+    if let Some(group_shift) = &req.params.group_shift {
+        let group_shift_enabled = group_shift.enabled.unwrap_or(true);
+        if group_shift_enabled {
+            if let Some(min_shift_mm) = group_shift.min_shift_mm {
+                if !min_shift_mm.is_finite() || min_shift_mm < 0.0 {
+                    return Err(ValidationError::new(
+                        "group_shift.min_shift_mm must be finite and >= 0",
+                    ));
+                }
+            }
+            if let Some(max_passes) = group_shift.max_passes {
+                if !(1..=16).contains(&max_passes) {
+                    return Err(ValidationError::new(
+                        "group_shift.max_passes must be in range 1..=16",
+                    ));
+                }
+            }
+        }
     }
 
     if let Some(portfolio) = &req.params.portfolio {

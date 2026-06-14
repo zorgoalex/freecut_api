@@ -3,10 +3,10 @@ use utoipa::OpenApi;
 use crate::models::VersionResponse;
 use crate::models::{
     AlnsOperatorTelemetry, AlnsParams, AlnsTelemetry, Artifacts, BeamParams, BeamTelemetry,
-    CandidateSelectionTelemetry, ErrorResponse, GaOverrideParams, GaProfile, Item, LayoutMode,
-    Objective, OptimizeRequest, OptimizeResponse, Params, PatternDirection, Placement,
-    PortfolioParams, PortfolioTelemetry, RestartPolicyTelemetry, Rotation, SlaProfile, Solution,
-    StockItem, Summary, Trim, Units,
+    CandidateSelectionTelemetry, ErrorResponse, GaOverrideParams, GaProfile, GroupShiftParams,
+    GroupShiftTelemetry, Item, LayoutMode, Objective, OptimizeRequest, OptimizeResponse, Params,
+    PatternDirection, Placement, PortfolioParams, PortfolioTelemetry, RestartPolicyTelemetry,
+    Rotation, SlaProfile, Solution, StockItem, Summary, Trim, Units,
 };
 
 #[derive(OpenApi)]
@@ -31,6 +31,7 @@ use crate::models::{
             SlaProfile,
             GaProfile,
             GaOverrideParams,
+            GroupShiftParams,
             Trim,
             StockItem,
             Item,
@@ -45,6 +46,7 @@ use crate::models::{
             AlnsTelemetry,
             AlnsOperatorTelemetry,
             CandidateSelectionTelemetry,
+            GroupShiftTelemetry,
             Solution,
             Placement,
             Artifacts,

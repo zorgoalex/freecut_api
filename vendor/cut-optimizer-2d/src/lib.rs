@@ -385,7 +385,40 @@ impl Fit {
 //   FREECUT_GA_FILL_PENALTY  (default 0.1) — largest-component fill penalty
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy, Debug)]
+/// Per-run overrides for zones-aware GA fitness.
+pub struct GaFitnessConfig {
+    /// Exponential penalty applied for each connected waste zone beyond the first.
+    pub zone_penalty: f64,
+    /// Exponential penalty applied when the largest waste component is small.
+    pub fill_penalty: f64,
+}
+
+thread_local! {
+    static GA_FITNESS_CONFIG: std::cell::Cell<Option<GaFitnessConfig>> = std::cell::Cell::new(None);
+}
+
+/// Execute `f` with a thread-local zones-aware GA fitness configuration.
+///
+/// This is used by service-level callers that run multiple optimizer profiles
+/// in the same process. The override is scoped to the current thread, which
+/// matches the optimizer's `spawn_blocking` execution model.
+pub fn with_ga_fitness_config<T, F>(config: GaFitnessConfig, f: F) -> T
+where
+    F: FnOnce() -> T,
+{
+    GA_FITNESS_CONFIG.with(|cell| {
+        let previous = cell.replace(Some(config));
+        let result = f();
+        cell.set(previous);
+        result
+    })
+}
+
 fn ga_zone_penalty() -> f64 {
+    if let Some(config) = GA_FITNESS_CONFIG.with(|cell| cell.get()) {
+        return config.zone_penalty;
+    }
     static VAL: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
     *VAL.get_or_init(|| {
         std::env::var("FREECUT_GA_ZONE_PENALTY")
@@ -396,6 +429,9 @@ fn ga_zone_penalty() -> f64 {
 }
 
 fn ga_fill_penalty() -> f64 {
+    if let Some(config) = GA_FITNESS_CONFIG.with(|cell| cell.get()) {
+        return config.fill_penalty;
+    }
     static VAL: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
     *VAL.get_or_init(|| {
         std::env::var("FREECUT_GA_FILL_PENALTY")
