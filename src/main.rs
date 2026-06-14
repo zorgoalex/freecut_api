@@ -6,6 +6,8 @@ use axum::{
     Json, Router,
 };
 use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
@@ -19,12 +21,13 @@ mod validation;
 use config::AppConfig;
 use models::{ErrorResponse, OptimizeRequest, VersionResponse};
 use openapi::ApiDoc;
-use optimizer::optimize_request;
+use optimizer::{optimize_request, optimize_request_alns, optimize_request_beam};
 use validation::{validate_request, ValidationLimits};
 
 #[derive(Clone)]
 struct AppState {
     config: AppConfig,
+    optimize_semaphore: Arc<Semaphore>,
 }
 
 #[tokio::main]
@@ -39,6 +42,7 @@ async fn main() {
     tracing::info!(
         default_time_limit_ms = config.default_time_limit_ms,
         default_restarts = config.default_restarts,
+        max_concurrent_optimize = config.max_concurrent_optimize,
         "defaults loaded"
     );
     let app = build_app(config.clone());
@@ -53,7 +57,10 @@ async fn main() {
 }
 
 fn build_app(config: AppConfig) -> Router {
-    let app_state = AppState { config: config.clone() };
+    let app_state = AppState {
+        optimize_semaphore: Arc::new(Semaphore::new(config.max_concurrent_optimize.max(1))),
+        config: config.clone(),
+    };
     let openapi = ApiDoc::openapi();
 
     Router::new()
@@ -61,6 +68,8 @@ fn build_app(config: AppConfig) -> Router {
         .route("/health/ready", get(health_ready))
         .route("/version", get(version))
         .route("/v1/optimize", post(optimize))
+        .route("/v1/optimize/beam", post(optimize_beam))
+        .route("/v1/optimize/alns", post(optimize_alns))
         .merge(SwaggerUi::new("/docs").url("/openapi.json", openapi))
         .with_state(app_state)
         .layer(DefaultBodyLimit::max(config.max_body_bytes))
@@ -113,6 +122,7 @@ pub(crate) async fn version() -> Json<VersionResponse> {
     responses(
         (status = 200, description = "Optimization result", body = models::OptimizeResponse),
         (status = 400, description = "Invalid JSON", body = ErrorResponse),
+        (status = 429, description = "Too many concurrent optimize requests", body = ErrorResponse),
         (status = 422, description = "Validation error", body = ErrorResponse),
         (status = 408, description = "Optimization timeout", body = ErrorResponse),
         (status = 500, description = "Internal error", body = ErrorResponse)
@@ -122,6 +132,63 @@ pub(crate) async fn optimize(
     State(state): State<AppState>,
     payload: Result<Json<OptimizeRequest>, JsonRejection>,
 ) -> impl IntoResponse {
+    optimize_common(state, payload, OptimizeFlavor::Default).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/optimize/beam",
+    tag = "optimize",
+    request_body = OptimizeRequest,
+    responses(
+        (status = 200, description = "Beam optimization result", body = models::OptimizeResponse),
+        (status = 400, description = "Invalid JSON", body = ErrorResponse),
+        (status = 429, description = "Too many concurrent optimize requests", body = ErrorResponse),
+        (status = 422, description = "Validation error", body = ErrorResponse),
+        (status = 408, description = "Optimization timeout", body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse)
+    )
+)]
+pub(crate) async fn optimize_beam(
+    State(state): State<AppState>,
+    payload: Result<Json<OptimizeRequest>, JsonRejection>,
+) -> impl IntoResponse {
+    optimize_common(state, payload, OptimizeFlavor::Beam).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/optimize/alns",
+    tag = "optimize",
+    request_body = OptimizeRequest,
+    responses(
+        (status = 200, description = "ALNS/LNS optimization result", body = models::OptimizeResponse),
+        (status = 400, description = "Invalid JSON", body = ErrorResponse),
+        (status = 429, description = "Too many concurrent optimize requests", body = ErrorResponse),
+        (status = 422, description = "Validation error", body = ErrorResponse),
+        (status = 408, description = "Optimization timeout", body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse)
+    )
+)]
+pub(crate) async fn optimize_alns(
+    State(state): State<AppState>,
+    payload: Result<Json<OptimizeRequest>, JsonRejection>,
+) -> impl IntoResponse {
+    optimize_common(state, payload, OptimizeFlavor::Alns).await
+}
+
+#[derive(Clone, Copy)]
+enum OptimizeFlavor {
+    Default,
+    Beam,
+    Alns,
+}
+
+async fn optimize_common(
+    state: AppState,
+    payload: Result<Json<OptimizeRequest>, JsonRejection>,
+    flavor: OptimizeFlavor,
+) -> Response {
     let req = match payload {
         Ok(Json(req)) => req,
         Err(rejection) => return json_rejection(rejection),
@@ -136,7 +203,31 @@ pub(crate) async fn optimize(
         return err.into_response();
     }
 
-    match optimize_request(req, &state.config).await {
+    let _permit = match state.optimize_semaphore.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(ErrorResponse {
+                    status: "error",
+                    error_code: "OVERLOADED",
+                    message: "too many concurrent optimize requests".to_string(),
+                    details: Some(serde_json::json!({
+                        "max_concurrent_optimize": state.config.max_concurrent_optimize
+                    })),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let result = match flavor {
+        OptimizeFlavor::Default => optimize_request(req, &state.config).await,
+        OptimizeFlavor::Beam => optimize_request_beam(req, &state.config).await,
+        OptimizeFlavor::Alns => optimize_request_alns(req, &state.config).await,
+    };
+
+    match result {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(err) => err.into_response(),
     }

@@ -190,8 +190,6 @@ dependencies = [
 [[package]]
 name = "cut-optimizer-2d"
 version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b7c91abf8192921255742a75fdd5c99d2f4c73768f8154e236608e59f0d9775"
 dependencies = [
  "fnv",
  "rand 0.8.5",
@@ -1651,8 +1649,15 @@ dependencies = [
  "serde_json",
  "url",
  "utoipa",
+ "utoipa-swagger-ui-vendored",
  "zip",
 ]
+
+[[package]]
+name = "utoipa-swagger-ui-vendored"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2eebbbfe4093922c2b6734d7c679ebfebd704a0d7e56dfcb0d05818ce28977d"
 
 [[package]]
 name = "valuable"

@@ -1,0 +1,13 @@
+Implement Stage 5 from ai_docs/Quick_Refact_Freecut.md:
+- fix stock identity collision when usable sizes are equal but stock_id/qty differ;
+- preserve business semantics in API response;
+- add regression test for qty_limit and stock_id correctness.
+
+Scope:
+- prioritize correctness of mapping and unplaced_items reason;
+- keep existing geometric behavior unchanged.
+
+Output in final message:
+- changed files list;
+- collision scenario proof (before/after);
+- cargo test result.

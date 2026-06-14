@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -44,7 +46,10 @@ impl IntoResponse for ValidationError {
     }
 }
 
-pub fn validate_request(req: &OptimizeRequest, limits: &ValidationLimits) -> Result<(), ValidationError> {
+pub fn validate_request(
+    req: &OptimizeRequest,
+    limits: &ValidationLimits,
+) -> Result<(), ValidationError> {
     match req.units {
         crate::models::Units::Mm => {}
     }
@@ -56,9 +61,21 @@ pub fn validate_request(req: &OptimizeRequest, limits: &ValidationLimits) -> Res
         return Err(ValidationError::new("items must have at least one entry"));
     }
     if req.stock.len() > limits.max_stock_types {
-        return Err(ValidationError::new("stock exceeds max allowed types").with_details(
-            serde_json::json!({"max_stock_types": limits.max_stock_types}),
-        ));
+        return Err(ValidationError::new("stock exceeds max allowed types")
+            .with_details(serde_json::json!({"max_stock_types": limits.max_stock_types})));
+    }
+    let mut seen_stock_ids: HashSet<String> = HashSet::new();
+    let mut duplicate_stock_ids: Vec<String> = Vec::new();
+    for stock in &req.stock {
+        if !seen_stock_ids.insert(stock.id.clone()) {
+            duplicate_stock_ids.push(stock.id.clone());
+        }
+    }
+    if !duplicate_stock_ids.is_empty() {
+        duplicate_stock_ids.sort();
+        duplicate_stock_ids.dedup();
+        return Err(ValidationError::new("stock ids must be unique")
+            .with_details(serde_json::json!({"duplicate_stock_ids": duplicate_stock_ids})));
     }
 
     if req.params.kerf_mm < 0.0 || req.params.spacing_mm < 0.0 {
@@ -85,6 +102,140 @@ pub fn validate_request(req: &OptimizeRequest, limits: &ValidationLimits) -> Res
         }
     }
 
+    if let Some(ga) = &req.params.ga_override {
+        if let Some(epochs) = ga.epochs {
+            if !(1..=2000).contains(&epochs) {
+                return Err(ValidationError::new(
+                    "ga_override.epochs must be in range 1..=2000",
+                ));
+            }
+        }
+        if let Some(breed_factor) = ga.breed_factor {
+            if !breed_factor.is_finite() || breed_factor <= 0.0 || breed_factor > 1.0 {
+                return Err(ValidationError::new(
+                    "ga_override.breed_factor must be finite and in range (0, 1]",
+                ));
+            }
+        }
+        if let Some(survival_factor) = ga.survival_factor {
+            if !survival_factor.is_finite() || !(0.0..=1.0).contains(&survival_factor) {
+                return Err(ValidationError::new(
+                    "ga_override.survival_factor must be finite and in range [0, 1]",
+                ));
+            }
+        }
+        if let Some(top_k) = ga.top_k_candidates {
+            if !(1..=64).contains(&top_k) {
+                return Err(ValidationError::new(
+                    "ga_override.top_k_candidates must be in range 1..=64",
+                ));
+            }
+        }
+    }
+
+    if let Some(portfolio) = &req.params.portfolio {
+        let portfolio_enabled = portfolio.enabled.unwrap_or(true);
+        if portfolio_enabled {
+            if let Some(deadline_ms) = portfolio.deadline_ms {
+                if deadline_ms < 100 {
+                    return Err(ValidationError::new("portfolio.deadline_ms must be >= 100"));
+                }
+            }
+            if let Some(candidate_count) = portfolio.candidate_count {
+                if candidate_count < 1 || candidate_count > 16 {
+                    return Err(ValidationError::new(
+                        "portfolio.candidate_count must be in range 1..=16",
+                    ));
+                }
+            }
+        }
+    }
+
+    if let Some(beam) = &req.params.beam {
+        let beam_enabled = beam.enabled.unwrap_or(true);
+        if beam_enabled {
+            if let Some(deadline_ms) = beam.deadline_ms {
+                if deadline_ms < 100 {
+                    return Err(ValidationError::new("beam.deadline_ms must be >= 100"));
+                }
+            }
+            if let Some(beam_width) = beam.beam_width {
+                if beam_width < 1 || beam_width > 8 {
+                    return Err(ValidationError::new(
+                        "beam.beam_width must be in range 1..=8",
+                    ));
+                }
+            }
+            if let Some(beam_depth) = beam.beam_depth {
+                if beam_depth < 1 || beam_depth > 8 {
+                    return Err(ValidationError::new(
+                        "beam.beam_depth must be in range 1..=8",
+                    ));
+                }
+            }
+            if let Some(branch_factor) = beam.branch_factor {
+                if branch_factor < 1 || branch_factor > 8 {
+                    return Err(ValidationError::new(
+                        "beam.branch_factor must be in range 1..=8",
+                    ));
+                }
+            }
+        }
+    }
+
+    if let Some(alns) = &req.params.alns {
+        let alns_enabled = alns.enabled.unwrap_or(true);
+        if alns_enabled {
+            if let Some(deadline_ms) = alns.deadline_ms {
+                if deadline_ms < 100 {
+                    return Err(ValidationError::new("alns.deadline_ms must be >= 100"));
+                }
+            }
+            if let Some(iterations) = alns.iterations {
+                if iterations < 1 || iterations > 512 {
+                    return Err(ValidationError::new(
+                        "alns.iterations must be in range 1..=512",
+                    ));
+                }
+            }
+            if let Some(segment_size) = alns.segment_size {
+                if segment_size < 1 || segment_size > 64 {
+                    return Err(ValidationError::new(
+                        "alns.segment_size must be in range 1..=64",
+                    ));
+                }
+            }
+            if let Some(temperature_start) = alns.temperature_start {
+                if !temperature_start.is_finite() || temperature_start <= 0.0 {
+                    return Err(ValidationError::new(
+                        "alns.temperature_start must be finite and > 0",
+                    ));
+                }
+            }
+            if let Some(temperature_end) = alns.temperature_end {
+                if !temperature_end.is_finite() || temperature_end <= 0.0 {
+                    return Err(ValidationError::new(
+                        "alns.temperature_end must be finite and > 0",
+                    ));
+                }
+            }
+            if let (Some(ts), Some(te)) = (alns.temperature_start, alns.temperature_end) {
+                if te > ts {
+                    return Err(ValidationError::new(
+                        "alns.temperature_end must be <= alns.temperature_start",
+                    ));
+                }
+            }
+            if let Some(reaction_factor) = alns.reaction_factor {
+                if !reaction_factor.is_finite() || reaction_factor <= 0.0 || reaction_factor > 1.0 {
+                    return Err(ValidationError::new(
+                        "alns.reaction_factor must be finite and in range (0, 1]",
+                    ));
+                }
+            }
+        }
+    }
+
     for stock in &req.stock {
         validate_stock(stock)?;
         validate_trim_against_stock(&req.params.trim_mm, stock)?;
@@ -104,23 +255,31 @@ pub fn validate_request(req: &OptimizeRequest, limits: &ValidationLimits) -> Res
 
     for item in &req.items {
         validate_item(item)?;
-        if !item_fits_any_stock(item, &req.params.trim_mm, &req.stock) {
-            return Err(ValidationError::new("item does not fit any stock with trim").with_details(
-                serde_json::json!({"item_id": item.id}),
-            ));
-        }
+        // Note: items that don't fit are handled in optimizer (returned as unplaced_items)
+        // We don't reject the whole request here
     }
 
     Ok(())
+}
+
+/// Check if an item fits any stock (considering trim, gap, and rotation)
+/// gap_mm = kerf_mm + spacing_mm (space needed around the item for cutting)
+pub fn item_fits_any_stock_public(
+    item: &Item,
+    trim: &Trim,
+    gap_mm: f64,
+    stock: &[StockItem],
+) -> bool {
+    stock
+        .iter()
+        .any(|sheet| item_fits_stock_with_gap(item, trim, gap_mm, sheet))
 }
 
 fn validate_stock(stock: &StockItem) -> Result<(), ValidationError> {
     if stock.width_mm <= 0.0 || stock.height_mm <= 0.0 {
         return Err(ValidationError::new("stock dimensions must be > 0"));
     }
-    if stock.qty < 1 {
-        return Err(ValidationError::new("stock qty must be >= 1"));
-    }
+    // qty: None or 0 means unlimited sheets, which is valid
     Ok(())
 }
 
@@ -138,28 +297,39 @@ fn validate_trim_against_stock(trim: &Trim, stock: &StockItem) -> Result<(), Val
     let usable_w = stock.width_mm - trim.left - trim.right;
     let usable_h = stock.height_mm - trim.top - trim.bottom;
     if usable_w <= 0.0 || usable_h <= 0.0 {
-        return Err(ValidationError::new("trim exceeds stock dimensions").with_details(
-            serde_json::json!({"stock_id": stock.id}),
-        ));
+        return Err(ValidationError::new("trim exceeds stock dimensions")
+            .with_details(serde_json::json!({"stock_id": stock.id})));
     }
     Ok(())
 }
 
-fn item_fits_any_stock(item: &Item, trim: &Trim, stock: &[StockItem]) -> bool {
-    stock.iter().any(|sheet| item_fits_stock(item, trim, sheet))
-}
-
-fn item_fits_stock(item: &Item, trim: &Trim, stock: &StockItem) -> bool {
+/// Check if item fits stock considering trim, gap (kerf+spacing), and rotation
+fn item_fits_stock_with_gap(item: &Item, trim: &Trim, gap_mm: f64, stock: &StockItem) -> bool {
     let usable_w = stock.width_mm - trim.left - trim.right;
     let usable_h = stock.height_mm - trim.top - trim.bottom;
     if usable_w <= 0.0 || usable_h <= 0.0 {
         return false;
     }
 
-    if item.width_mm <= usable_w && item.height_mm <= usable_h {
+    // Item needs gap for the cut on each side that's not against sheet edge
+    // For single item check, we account for gap on right and bottom (item placed top-left)
+    let item_w_with_gap = item.width_mm + gap_mm;
+    let item_h_with_gap = item.height_mm + gap_mm;
+
+    if item_w_with_gap <= usable_w && item_h_with_gap <= usable_h {
         return true;
     }
 
-    let can_rotate = item.rotation == Rotation::Allow90 && item.pattern_direction == crate::models::PatternDirection::None;
-    can_rotate && item.height_mm <= usable_w && item.width_mm <= usable_h
+    // Check rotated orientation
+    let can_rotate = item.rotation == Rotation::Allow90
+        && item.pattern_direction == crate::models::PatternDirection::None;
+    if can_rotate {
+        let rotated_w_with_gap = item.height_mm + gap_mm;
+        let rotated_h_with_gap = item.width_mm + gap_mm;
+        if rotated_w_with_gap <= usable_w && rotated_h_with_gap <= usable_h {
+            return true;
+        }
+    }
+
+    false
 }

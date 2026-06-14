@@ -5,34 +5,57 @@ import time
 import os
 import math
 import csv
+from collections import deque
+import subprocess
 
-# Configuration
-API_URL = "http://localhost:8088/v1/optimize"
-INPUT_FILE = "ai_docs/test_11items_optimize_request.json"
-CANDIDATES_DIR = "ai_docs/candidate_layouts"
-LOG_FILE = "ai_docs/optimization_log.csv"
-NUM_TESTS = 500  # Increased for better analysis
-TOP_N_CANDIDATES = 10
+def _env_float(name, default):
+    raw = os.getenv(name)
+    return float(raw) if raw is not None else default
+
+
+def _env_int(name, default):
+    raw = os.getenv(name)
+    return int(raw) if raw is not None else default
+
+
+def _env_bool(name, default):
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+# Configuration (overridable via environment variables)
+API_URL = os.getenv("FREECUT_API_URL", "http://localhost:8088/v1/optimize")
+INPUT_FILE = os.getenv("FREECUT_INPUT_FILE", "ai_docs/test_11items_optimize_request.json")
+CANDIDATES_DIR = os.getenv("FREECUT_CANDIDATES_DIR", "ai_docs/candidate_layouts")
+LOG_FILE = os.getenv("FREECUT_LOG_FILE", "ai_docs/optimization_log.csv")
+NUM_TESTS = _env_int("FREECUT_NUM_TESTS", 500)
+TOP_N_CANDIDATES = _env_int("FREECUT_TOP_N", 10)
+GRID_MM = _env_float("FREECUT_GRID_MM", 5.0)
+USE_PADDED_GAPS = _env_bool("FREECUT_USE_PADDED_GAPS", True)
+CURLIMAGE = os.getenv("FREECUT_CURLIMAGE", "curlimages/curl:8.6.0")
+USE_CURLIMAGE = _env_bool("FREECUT_USE_CURLIMAGE", False)
+EDGE_PENALTY_POW = _env_float("FREECUT_EDGE_PENALTY_POW", 1.0)
+CORRIDOR_OK_MULT = _env_float("FREECUT_CORRIDOR_OK_MULT", 3.0)
+
+# Hypothesis testing mode: seed vs time_limit
+HYPOTHESIS_MODE = _env_bool("FREECUT_HYPOTHESIS_MODE", False)
+HYPOTHESIS_SEEDS_COUNT = _env_int("FREECUT_HYPOTHESIS_SEEDS", 100)
+HYPOTHESIS_TIME_LIMITS = [5000, 10000, 20000]  # ms
+
+# Reverse test: fixed params, vary seed only
+REVERSE_TEST_MODE = _env_bool("FREECUT_REVERSE_TEST", False)
+REVERSE_TIME_LIMIT = _env_int("FREECUT_REVERSE_TIME_LIMIT", 5000)
+REVERSE_RESTARTS = _env_int("FREECUT_REVERSE_RESTARTS", 62)  # or auto: time_limit / 80
 
 def load_request_template(filepath):
     with open(filepath, 'r') as f:
         return json.load(f)
 
-def calculate_compactness_score(solutions):
-    """
-    Calculates a compactness score based on the 'internal gap area'.
-    This metric finds the bounding box of all placed items and subtracts the
-    total area of the items from the bounding box area.
-    A lower score indicates a more compact cluster of parts with fewer internal gaps.
-    """
-    if not solutions:
-        return float('inf')
-    
-    solution = solutions[0] # Assuming single sheet
-    placements = solution.get('placements', [])
-    
+def calculate_bbox_metrics(placements):
     if not placements:
-        return float('inf')
+        return None
 
     min_x = float('inf')
     min_y = float('inf')
@@ -51,15 +74,543 @@ def calculate_compactness_score(solutions):
         max_x = max(max_x, x + w)
         max_y = max(max_y, y + h)
         total_parts_area += w * h
-    
-    # Calculate bounding box area of the cluster of parts
-    bounding_box_width = max_x - min_x
-    bounding_box_height = max_y - min_y
-    bounding_box_area = bounding_box_width * bounding_box_height
 
-    # Internal gap area = Bounding Box Area - Total Parts Area
-    # This score is minimized
-    return bounding_box_area - total_parts_area
+    return {
+        'min_x': min_x,
+        'min_y': min_y,
+        'max_x': max_x,
+        'max_y': max_y,
+        'total_parts_area': total_parts_area
+    }
+
+
+def calculate_compactness_score(solutions):
+    """
+    Calculates a compactness score based on the 'internal gap area'.
+    This metric finds the bounding box of all placed items and subtracts the
+    total area of the items from the bounding box area.
+    A lower score indicates a more compact cluster of parts with fewer internal gaps.
+    """
+    if not solutions:
+        return float('inf')
+
+    total_bbox_void = 0.0
+    for solution in solutions:
+        placements = solution.get('placements', [])
+        metrics = calculate_bbox_metrics(placements)
+        if not metrics:
+            continue
+
+        bounding_box_width = metrics['max_x'] - metrics['min_x']
+        bounding_box_height = metrics['max_y'] - metrics['min_y']
+        bounding_box_area = bounding_box_width * bounding_box_height
+        total_bbox_void += bounding_box_area - metrics['total_parts_area']
+
+    return total_bbox_void
+
+
+def build_occupancy_grid(placements, usable_w, usable_h, grid_mm, pad_mm):
+    cols = max(1, int(math.ceil(usable_w / grid_mm)))
+    rows = max(1, int(math.ceil(usable_h / grid_mm)))
+    grid = [bytearray(cols) for _ in range(rows)]
+
+    for placement in placements:
+        x0 = placement['x_mm'] - pad_mm
+        y0 = placement['y_mm'] - pad_mm
+        x1 = placement['x_mm'] + placement['width_mm'] + pad_mm
+        y1 = placement['y_mm'] + placement['height_mm'] + pad_mm
+
+        if x1 <= 0 or y1 <= 0 or x0 >= usable_w or y0 >= usable_h:
+            continue
+
+        gx0 = max(0, int(math.floor(x0 / grid_mm)))
+        gy0 = max(0, int(math.floor(y0 / grid_mm)))
+        gx1 = min(cols - 1, int(math.ceil(x1 / grid_mm)) - 1)
+        gy1 = min(rows - 1, int(math.ceil(y1 / grid_mm)) - 1)
+
+        if gx1 < gx0 or gy1 < gy0:
+            continue
+
+        fill = b'\x01' * (gx1 - gx0 + 1)
+        for gy in range(gy0, gy1 + 1):
+            row = grid[gy]
+            row[gx0:gx1 + 1] = fill
+
+    return grid, rows, cols
+
+
+def flood_external_voids(grid, rows, cols):
+    q = deque()
+
+    def enqueue(r, c):
+        if grid[r][c] == 0:
+            grid[r][c] = 2
+            q.append((r, c))
+
+    for c in range(cols):
+        enqueue(0, c)
+        if rows > 1:
+            enqueue(rows - 1, c)
+    for r in range(rows):
+        enqueue(r, 0)
+        if cols > 1:
+            enqueue(r, cols - 1)
+
+    while q:
+        r, c = q.popleft()
+        if r > 0:
+            enqueue(r - 1, c)
+        if r + 1 < rows:
+            enqueue(r + 1, c)
+        if c > 0:
+            enqueue(r, c - 1)
+        if c + 1 < cols:
+            enqueue(r, c + 1)
+
+
+def compute_span_lengths(grid, rows, cols, value):
+    row_span = [[0] * cols for _ in range(rows)]
+    col_span = [[0] * cols for _ in range(rows)]
+
+    for r in range(rows):
+        c = 0
+        while c < cols:
+            if grid[r][c] != value:
+                c += 1
+                continue
+            start = c
+            while c < cols and grid[r][c] == value:
+                c += 1
+            length = c - start
+            for k in range(start, c):
+                row_span[r][k] = length
+
+    for c in range(cols):
+        r = 0
+        while r < rows:
+            if grid[r][c] != value:
+                r += 1
+                continue
+            start = r
+            while r < rows and grid[r][c] == value:
+                r += 1
+            length = r - start
+            for k in range(start, r):
+                col_span[k][c] = length
+
+    return row_span, col_span
+
+
+def distance_to_edge_mm(r, c, rows, cols, grid_mm):
+    return min(r, c, rows - 1 - r, cols - 1 - c) * grid_mm
+
+
+def calculate_internal_void_metrics(solutions, grid_mm, pad_mm=0.0, spacing_mm=0.0, corridor_ok_mult=3.0):
+    if not solutions:
+        return (float('inf'),) * 11
+
+    total_internal_area = 0.0
+    total_components = 0
+    total_exposure_penalty = 0.0
+    total_corridor_area = 0.0
+    total_corridor_weighted_area = 0.0
+    total_corridor_components = 0
+    total_row_gap_area = 0.0
+    total_col_gap_area = 0.0
+    corridor_ok_mm = max(0.0, spacing_mm * corridor_ok_mult)
+
+    # New penetration depth metrics
+    global_max_penetration = 0
+    total_penetration_volume = 0.0
+    total_penetration_weighted = 0.0
+
+    # Occupied region perimeter (compactness metric)
+    total_occupied_perimeter = 0
+
+    # Void compactness metric (perimeter of void / area of void)
+    total_void_perimeter = 0
+    total_void_cells = 0
+
+    for solution in solutions:
+        placements = solution.get('placements', [])
+        if not placements:
+            continue
+
+        trim = solution.get('trim_mm') or {}
+        usable_w = solution['width_mm'] - trim.get('left', 0.0) - trim.get('right', 0.0)
+        usable_h = solution['height_mm'] - trim.get('top', 0.0) - trim.get('bottom', 0.0)
+        if usable_w <= 0 or usable_h <= 0:
+            continue
+
+        grid, rows, cols = build_occupancy_grid(
+            placements,
+            usable_w,
+            usable_h,
+            grid_mm,
+            pad_mm
+        )
+
+        flood_external_voids(grid, rows, cols)
+        row_span, col_span = compute_span_lengths(grid, rows, cols, 2)
+
+        bbox = calculate_bbox_metrics(placements)
+        if not bbox:
+            continue
+
+        bx0 = max(0, int(math.floor(bbox['min_x'] / grid_mm)))
+        by0 = max(0, int(math.floor(bbox['min_y'] / grid_mm)))
+        bx1 = min(cols - 1, int(math.ceil(bbox['max_x'] / grid_mm)) - 1)
+        by1 = min(rows - 1, int(math.ceil(bbox['max_y'] / grid_mm)) - 1)
+
+        # Penalize exposed part edges that face empty space far from the sheet edge.
+        def corridor_width_mm(r, c):
+            if row_span[r][c] == 0 or col_span[r][c] == 0:
+                return 0.0
+            return min(row_span[r][c], col_span[r][c]) * grid_mm
+
+        def is_wide_void(r, c):
+            if grid[r][c] != 2:
+                return False
+            if corridor_ok_mm <= 0.0:
+                return True
+            return corridor_width_mm(r, c) > corridor_ok_mm
+
+        def width_factor(r, c):
+            if corridor_ok_mm <= 0.0:
+                return 1.0
+            width_mm = corridor_width_mm(r, c)
+            if width_mm <= corridor_ok_mm:
+                return 1.0
+            return width_mm / corridor_ok_mm
+
+        for r in range(rows):
+            for c in range(cols):
+                if grid[r][c] != 1:
+                    continue
+                # Neighbor checks
+                if r > 0 and is_wide_void(r - 1, c):
+                    factor = width_factor(r - 1, c)
+                    d = distance_to_edge_mm(r - 1, c, rows, cols, grid_mm)
+                    total_exposure_penalty += (d ** EDGE_PENALTY_POW) * grid_mm * factor
+                if r + 1 < rows and is_wide_void(r + 1, c):
+                    factor = width_factor(r + 1, c)
+                    d = distance_to_edge_mm(r + 1, c, rows, cols, grid_mm)
+                    total_exposure_penalty += (d ** EDGE_PENALTY_POW) * grid_mm * factor
+                if c > 0 and is_wide_void(r, c - 1):
+                    factor = width_factor(r, c - 1)
+                    d = distance_to_edge_mm(r, c - 1, rows, cols, grid_mm)
+                    total_exposure_penalty += (d ** EDGE_PENALTY_POW) * grid_mm * factor
+                if c + 1 < cols and is_wide_void(r, c + 1):
+                    factor = width_factor(r, c + 1)
+                    d = distance_to_edge_mm(r, c + 1, rows, cols, grid_mm)
+                    total_exposure_penalty += (d ** EDGE_PENALTY_POW) * grid_mm * factor
+
+        internal_cells = 0
+        for r in range(rows):
+            for c in range(cols):
+                if grid[r][c] == 0:
+                    total_components += 1
+                    q = deque([(r, c)])
+                    grid[r][c] = 3
+                    while q:
+                        cr, cc = q.popleft()
+                        internal_cells += 1
+                        if cr > 0 and grid[cr - 1][cc] == 0:
+                            grid[cr - 1][cc] = 3
+                            q.append((cr - 1, cc))
+                        if cr + 1 < rows and grid[cr + 1][cc] == 0:
+                            grid[cr + 1][cc] = 3
+                            q.append((cr + 1, cc))
+                        if cc > 0 and grid[cr][cc - 1] == 0:
+                            grid[cr][cc - 1] = 3
+                            q.append((cr, cc - 1))
+                        if cc + 1 < cols and grid[cr][cc + 1] == 0:
+                            grid[cr][cc + 1] = 3
+                            q.append((cr, cc + 1))
+
+        total_internal_area += internal_cells * (grid_mm * grid_mm)
+
+        corridor_cells = 0
+        for r in range(by0, by1 + 1):
+            for c in range(bx0, bx1 + 1):
+                if is_wide_void(r, c):
+                    total_corridor_components += 1
+                    q = deque([(r, c)])
+                    grid[r][c] = 4
+                    while q:
+                        cr, cc = q.popleft()
+                        corridor_cells += 1
+                        factor = width_factor(cr, cc)
+                        total_corridor_weighted_area += (grid_mm * grid_mm) * (factor * factor)
+                        if cr > by0 and is_wide_void(cr - 1, cc):
+                            grid[cr - 1][cc] = 4
+                            q.append((cr - 1, cc))
+                        if cr < by1 and is_wide_void(cr + 1, cc):
+                            grid[cr + 1][cc] = 4
+                            q.append((cr + 1, cc))
+                        if cc > bx0 and is_wide_void(cr, cc - 1):
+                            grid[cr][cc - 1] = 4
+                            q.append((cr, cc - 1))
+                        if cc < bx1 and is_wide_void(cr, cc + 1):
+                            grid[cr][cc + 1] = 4
+                            q.append((cr, cc + 1))
+
+        total_corridor_area += corridor_cells * (grid_mm * grid_mm)
+
+        # --- Corridor Penetration Depth (BFS from bbox edges) ---
+        # Measures how deep corridors penetrate into the cluster
+        # Note: Must check for void cells (2) OR corridor cells (4) since corridors
+        # are re-marked after flood_external_voids
+        penetration = [[float('inf')] * cols for _ in range(rows)]
+        pen_queue = deque()
+
+        def is_external_void(r, c):
+            return grid[r][c] in (2, 4)  # External void or corridor
+
+        # Seed bbox boundary cells (external voids on bbox edge start at depth 0)
+        # Top and bottom edges of bbox
+        for c in range(bx0, bx1 + 1):
+            if by0 < rows and is_external_void(by0, c):
+                if penetration[by0][c] == float('inf'):
+                    penetration[by0][c] = 0
+                    pen_queue.append((by0, c))
+            if by1 < rows and by1 != by0 and is_external_void(by1, c):
+                if penetration[by1][c] == float('inf'):
+                    penetration[by1][c] = 0
+                    pen_queue.append((by1, c))
+        # Left and right edges of bbox
+        for r in range(by0, by1 + 1):
+            if bx0 < cols and is_external_void(r, bx0):
+                if penetration[r][bx0] == float('inf'):
+                    penetration[r][bx0] = 0
+                    pen_queue.append((r, bx0))
+            if bx1 < cols and bx1 != bx0 and is_external_void(r, bx1):
+                if penetration[r][bx1] == float('inf'):
+                    penetration[r][bx1] = 0
+                    pen_queue.append((r, bx1))
+
+        # BFS to propagate depth into bbox interior
+        while pen_queue:
+            r, c = pen_queue.popleft()
+            current_depth = penetration[r][c]
+            for nr, nc in [(r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)]:
+                if by0 <= nr <= by1 and bx0 <= nc <= bx1:
+                    if is_external_void(nr, nc) and penetration[nr][nc] == float('inf'):
+                        penetration[nr][nc] = current_depth + 1
+                        pen_queue.append((nr, nc))
+
+        # Calculate penetration metrics
+        for r in range(by0, by1 + 1):
+            for c in range(bx0, bx1 + 1):
+                if is_external_void(r, c) and penetration[r][c] != float('inf'):
+                    d = penetration[r][c]
+                    if d > global_max_penetration:
+                        global_max_penetration = d
+                    total_penetration_volume += d
+                    # Weight by corridor width for combined metric
+                    w = width_factor(r, c)
+                    total_penetration_weighted += d * w
+
+        row_gap_cells = 0
+        for r in range(rows):
+            min_c = None
+            max_c = None
+            for c in range(cols):
+                if grid[r][c] == 1:
+                    if min_c is None or c < min_c:
+                        min_c = c
+                    if max_c is None or c > max_c:
+                        max_c = c
+            if min_c is None or max_c is None or max_c <= min_c:
+                continue
+            for c in range(min_c, max_c + 1):
+                if grid[r][c] != 1:
+                    row_gap_cells += 1
+
+        col_gap_cells = 0
+        for c in range(cols):
+            min_r = None
+            max_r = None
+            for r in range(rows):
+                if grid[r][c] == 1:
+                    if min_r is None or r < min_r:
+                        min_r = r
+                    if max_r is None or r > max_r:
+                        max_r = r
+            if min_r is None or max_r is None or max_r <= min_r:
+                continue
+            for r in range(min_r, max_r + 1):
+                if grid[r][c] != 1:
+                    col_gap_cells += 1
+
+        total_row_gap_area += row_gap_cells * (grid_mm * grid_mm)
+        total_col_gap_area += col_gap_cells * (grid_mm * grid_mm)
+
+        # --- Occupied Region Perimeter (Compactness Metric) ---
+        # Count boundary edges between occupied cells (1) and non-occupied cells
+        # Lower perimeter = more compact rectangular shape = better
+        perimeter_edges = 0
+        for r in range(rows):
+            for c in range(cols):
+                if grid[r][c] == 1:  # Occupied cell
+                    # Check 4 neighbors - each non-occupied neighbor adds an edge
+                    # Top neighbor
+                    if r == 0 or grid[r - 1][c] != 1:
+                        perimeter_edges += 1
+                    # Bottom neighbor
+                    if r == rows - 1 or grid[r + 1][c] != 1:
+                        perimeter_edges += 1
+                    # Left neighbor
+                    if c == 0 or grid[r][c - 1] != 1:
+                        perimeter_edges += 1
+                    # Right neighbor
+                    if c == cols - 1 or grid[r][c + 1] != 1:
+                        perimeter_edges += 1
+        total_occupied_perimeter += perimeter_edges * grid_mm
+
+        # Calculate void compactness (edges between void and parts / void cells)
+        void_cells = 0
+        void_perimeter = 0
+        for r in range(rows):
+            for c in range(cols):
+                if grid[r][c] != 1:  # Void cell (0=internal, 2=external, 3=processed, 4=corridor)
+                    void_cells += 1
+                    # Count edges adjacent to occupied cells
+                    if r > 0 and grid[r - 1][c] == 1:
+                        void_perimeter += 1
+                    if r < rows - 1 and grid[r + 1][c] == 1:
+                        void_perimeter += 1
+                    if c > 0 and grid[r][c - 1] == 1:
+                        void_perimeter += 1
+                    if c < cols - 1 and grid[r][c + 1] == 1:
+                        void_perimeter += 1
+        total_void_perimeter += void_perimeter
+        total_void_cells += void_cells
+
+    if total_internal_area == 0.0:
+        total_internal_area = 0.0
+
+    # Convert penetration metrics to mm
+    max_penetration_mm = global_max_penetration * grid_mm
+    penetration_volume_mm3 = total_penetration_volume * (grid_mm ** 3)
+    penetration_weighted = total_penetration_weighted * (grid_mm ** 2)
+
+    # Calculate void compactness (lower = more compact L-shaped void = better)
+    void_compactness = total_void_perimeter / total_void_cells if total_void_cells > 0 else 0.0
+
+    # ============================================================
+    # EDGE FILL METRIC
+    # Measures how much of each sheet edge is "filled" by parts:
+    # - For ideal L-shaped void in corner, parts fill 2-3 edges completely
+    # - Small steps (≤ smoothness_threshold) count as "filled"
+    # - Higher edge_fill = parts more tightly against sheet edges = better
+    # ============================================================
+    smoothness_threshold_cells = int(5 * (spacing_mm + pad_mm * 2) / grid_mm) + 1
+
+    # Get sheet dimensions (full grid, not just bbox)
+    sheet_rows = rows
+    sheet_cols = cols
+
+    # For each edge, count how many cells are "filled" (parts at or near edge)
+    # Top edge: count columns where topmost part is within threshold of row 0
+    # Left edge: count rows where leftmost part is within threshold of col 0
+    # Bottom edge: count columns where bottommost part is within threshold of max row
+    # Right edge: count rows where rightmost part is within threshold of max col
+
+    top_filled = 0
+    bottom_filled = 0
+    left_filled = 0
+    right_filled = 0
+
+    # Scan columns for top/bottom fill
+    for c in range(sheet_cols):
+        top_row = None
+        bottom_row = None
+        for r in range(sheet_rows):
+            if grid[r][c] == 1:
+                if top_row is None:
+                    top_row = r
+                bottom_row = r
+        if top_row is not None and top_row <= smoothness_threshold_cells:
+            top_filled += 1
+        if bottom_row is not None and bottom_row >= sheet_rows - 1 - smoothness_threshold_cells:
+            bottom_filled += 1
+
+    # Scan rows for left/right fill
+    for r in range(sheet_rows):
+        left_col = None
+        right_col = None
+        for c in range(sheet_cols):
+            if grid[r][c] == 1:
+                if left_col is None:
+                    left_col = c
+                right_col = c
+        if left_col is not None and left_col <= smoothness_threshold_cells:
+            left_filled += 1
+        if right_col is not None and right_col >= sheet_cols - 1 - smoothness_threshold_cells:
+            right_filled += 1
+
+    # Edge fill ratios (0.0 to 1.0 each)
+    top_fill_ratio = top_filled / sheet_cols if sheet_cols > 0 else 0
+    bottom_fill_ratio = bottom_filled / sheet_cols if sheet_cols > 0 else 0
+    left_fill_ratio = left_filled / sheet_rows if sheet_rows > 0 else 0
+    right_fill_ratio = right_filled / sheet_rows if sheet_rows > 0 else 0
+
+    # Sort ratios to find which edges are most filled
+    fill_ratios = sorted([top_fill_ratio, bottom_fill_ratio, left_fill_ratio, right_fill_ratio], reverse=True)
+
+    # Edge continuity score: sum of top 2-3 fill ratios
+    # For ideal L-shaped void: 2 edges ~100% filled, 1-2 edges partially filled
+    # Max = 4.0 (all edges filled), but good L-shape = ~2.5-3.0
+    edge_continuity = sum(fill_ratios)
+
+    # Count how many edges are "mostly filled" (>80%)
+    edges_mostly_filled = sum(1 for r in fill_ratios if r > 0.8)
+
+    # Total edge breaks (now represents unfilled edge cells)
+    total_edge_breaks = (
+        (sheet_cols - top_filled) +
+        (sheet_cols - bottom_filled) +
+        (sheet_rows - left_filled) +
+        (sheet_rows - right_filled)
+    )
+
+    # Corner clustering: which corner has the L-shaped void?
+    # Best layout: 3 corners filled, 1 corner empty (void)
+    corners_filled = 0
+    # Top-left: check if parts exist near (0,0)
+    tl_filled = any(grid[r][c] == 1 for r in range(min(smoothness_threshold_cells + 1, sheet_rows))
+                    for c in range(min(smoothness_threshold_cells + 1, sheet_cols)))
+    # Top-right
+    tr_filled = any(grid[r][c] == 1 for r in range(min(smoothness_threshold_cells + 1, sheet_rows))
+                    for c in range(max(0, sheet_cols - smoothness_threshold_cells - 1), sheet_cols))
+    # Bottom-left
+    bl_filled = any(grid[r][c] == 1 for r in range(max(0, sheet_rows - smoothness_threshold_cells - 1), sheet_rows)
+                    for c in range(min(smoothness_threshold_cells + 1, sheet_cols)))
+    # Bottom-right
+    br_filled = any(grid[r][c] == 1 for r in range(max(0, sheet_rows - smoothness_threshold_cells - 1), sheet_rows)
+                    for c in range(max(0, sheet_cols - smoothness_threshold_cells - 1), sheet_cols))
+
+    corners_filled = sum([tl_filled, tr_filled, bl_filled, br_filled])
+
+    return (
+        total_internal_area,
+        total_components,
+        total_exposure_penalty,
+        total_corridor_area,
+        total_corridor_components,
+        total_row_gap_area,
+        total_col_gap_area,
+        total_corridor_weighted_area,
+        max_penetration_mm,
+        penetration_volume_mm3,
+        penetration_weighted,
+        total_occupied_perimeter,
+        void_compactness,
+        edge_continuity,       # NEW: sum of straight segment ratios (max 4.0)
+        total_edge_breaks,     # NEW: total profile breaks on all 4 sides
+        corners_filled,        # NEW: how many corners have parts (0-4)
+    )
 
 
 def run_optimization(template, restarts, time_limit, seed):
@@ -72,16 +623,359 @@ def run_optimization(template, restarts, time_limit, seed):
     payload['params']['time_limit_ms'] = time_limit
     payload['params']['seed'] = seed
     
+    timeout_s = (time_limit / 1000.0) + 5
+    if USE_CURLIMAGE:
+        try:
+            payload_str = json.dumps(payload)
+            cmd = [
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "host",
+                CURLIMAGE,
+                "-s",
+                "-X",
+                "POST",
+                "-H",
+                "Content-Type: application/json",
+                "--data-binary",
+                payload_str,
+                API_URL,
+            ]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s + 5,
+                check=False,
+            )
+            if result.returncode != 0 or not result.stdout:
+                return None
+            return json.loads(result.stdout)
+        except (subprocess.SubprocessError, json.JSONDecodeError):
+            return None
+
     try:
-        response = requests.post(API_URL, json=payload, timeout=(time_limit/1000.0) + 5)
+        response = requests.post(API_URL, json=payload, timeout=timeout_s)
         if response.status_code == 200:
             return response.json()
-        else:
-            return None
+        return None
     except requests.exceptions.RequestException:
         return None
 
+def run_hypothesis_test():
+    """
+    Test hypothesis: quality depends more on seed than on time_limit/restarts.
+    Run same seeds across 3 time_limit values, compare quality distributions.
+    """
+    if not os.path.exists(INPUT_FILE):
+        print(f"Error: Input file {INPUT_FILE} not found.")
+        return
+
+    print("=" * 60)
+    print("HYPOTHESIS TEST: Seed vs Time Limit")
+    print("=" * 60)
+    print(f"Seeds count: {HYPOTHESIS_SEEDS_COUNT}")
+    print(f"Time limits: {HYPOTHESIS_TIME_LIMITS} ms")
+    print(f"Restarts = time_limit / 80 (MIN_SLICE)")
+    print("=" * 60)
+
+    template = load_request_template(INPUT_FILE)
+    spacing_mm = float(template['params'].get('spacing_mm', 0.0))
+    pad_mm = 0.0
+    if USE_PADDED_GAPS:
+        pad_mm = (template['params']['kerf_mm'] + template['params']['spacing_mm']) / 2.0
+
+    # Generate fixed seeds
+    random.seed(42)  # Reproducible seed generation
+    fixed_seeds = [random.randint(1, 10000000) for _ in range(HYPOTHESIS_SEEDS_COUNT)]
+
+    # Results storage: {time_limit: [(seed, perimeter, corridor_void, waste), ...]}
+    results = {tl: [] for tl in HYPOTHESIS_TIME_LIMITS}
+
+    log_file = LOG_FILE.replace('.csv', '_hypothesis.csv')
+    with open(log_file, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            'time_limit_ms', 'restarts', 'seed',
+            'waste_percent', 'occupied_perimeter', 'corridor_void',
+            'corridor_components', 'strip_gap', 'internal_void'
+        ])
+
+        for time_limit in HYPOTHESIS_TIME_LIMITS:
+            restarts = time_limit // 80
+            print(f"\n--- Series: time_limit={time_limit}ms, restarts={restarts} ---")
+            print(f"{'#':<4} | {'Seed':<10} | {'Perim':<8} | {'CorrVoid':<10} | {'Waste%':<7}")
+            print("-" * 50)
+
+            for idx, seed in enumerate(fixed_seeds):
+                result = run_optimization(template, restarts, time_limit, seed)
+
+                if result and result.get('status') == 'ok':
+                    (
+                        internal_void, _, _, corridor_void, corridor_components,
+                        row_gap, col_gap, _, _, _, _, occupied_perimeter, void_compactness,
+                        edge_continuity, total_edge_breaks, corners_filled,
+                    ) = calculate_internal_void_metrics(
+                        result['solutions'], GRID_MM, pad_mm,
+                        spacing_mm=spacing_mm, corridor_ok_mult=CORRIDOR_OK_MULT
+                    )
+                    waste = result['summary']['waste_percent']
+                    strip_gap = row_gap + col_gap
+
+                    results[time_limit].append({
+                        'seed': seed,
+                        'perimeter': occupied_perimeter,
+                        'corridor_void': corridor_void,
+                        'corridor_components': corridor_components,
+                        'strip_gap': strip_gap,
+                        'internal_void': internal_void,
+                        'void_compactness': void_compactness,
+                        'edge_continuity': edge_continuity,
+                        'waste': waste,
+                    })
+
+                    writer.writerow([
+                        time_limit, restarts, seed, waste,
+                        occupied_perimeter, corridor_void,
+                        corridor_components, strip_gap, internal_void
+                    ])
+
+                    print(f"{idx+1:<4} | {seed:<10} | {occupied_perimeter:<8.0f} | {corridor_void:<10.0f} | {waste:<7.2f}")
+                else:
+                    print(f"{idx+1:<4} | {seed:<10} | FAILED")
+
+    # Analyze results
+    print("\n" + "=" * 60)
+    print("ANALYSIS: Distribution Comparison")
+    print("=" * 60)
+
+    for time_limit in HYPOTHESIS_TIME_LIMITS:
+        data = results[time_limit]
+        if not data:
+            print(f"\ntime_limit={time_limit}ms: No successful runs")
+            continue
+
+        perimeters = [d['perimeter'] for d in data]
+        corridors = [d['corridor_void'] for d in data]
+
+        print(f"\ntime_limit={time_limit}ms (restarts={time_limit // 80}):")
+        print(f"  Success rate: {len(data)}/{HYPOTHESIS_SEEDS_COUNT} ({100*len(data)/HYPOTHESIS_SEEDS_COUNT:.1f}%)")
+        print(f"  Perimeter:    min={min(perimeters):.0f}, max={max(perimeters):.0f}, "
+              f"mean={sum(perimeters)/len(perimeters):.0f}, median={sorted(perimeters)[len(perimeters)//2]:.0f}")
+        print(f"  CorridorVoid: min={min(corridors):.0f}, max={max(corridors):.0f}, "
+              f"mean={sum(corridors)/len(corridors):.0f}, median={sorted(corridors)[len(corridors)//2]:.0f}")
+
+    # Cross-series comparison by seed
+    print("\n" + "=" * 60)
+    print("CROSS-SERIES COMPARISON (same seed, different time_limit)")
+    print("=" * 60)
+
+    # Build lookup by seed
+    by_seed = {}
+    for time_limit in HYPOTHESIS_TIME_LIMITS:
+        for d in results[time_limit]:
+            seed = d['seed']
+            if seed not in by_seed:
+                by_seed[seed] = {}
+            by_seed[seed][time_limit] = d
+
+    # Count how often ranking changes
+    rank_changes = 0
+    consistent_best = {tl: 0 for tl in HYPOTHESIS_TIME_LIMITS}
+
+    for seed, tl_data in by_seed.items():
+        if len(tl_data) < len(HYPOTHESIS_TIME_LIMITS):
+            continue  # Skip if not all series succeeded
+
+        # Find best time_limit for this seed (lowest perimeter)
+        best_tl = min(tl_data.keys(), key=lambda t: tl_data[t]['perimeter'])
+        consistent_best[best_tl] += 1
+
+        # Check if order varies
+        perims = [(tl, tl_data[tl]['perimeter']) for tl in HYPOTHESIS_TIME_LIMITS]
+        if perims[0][1] != perims[1][1] or perims[1][1] != perims[2][1]:
+            rank_changes += 1
+
+    total_complete = sum(1 for s, d in by_seed.items() if len(d) == len(HYPOTHESIS_TIME_LIMITS))
+    print(f"\nSeeds with all 3 series successful: {total_complete}/{HYPOTHESIS_SEEDS_COUNT}")
+    print(f"Seeds where perimeter varies by time_limit: {rank_changes}/{total_complete}")
+    print(f"\nBest time_limit per seed distribution:")
+    for tl in HYPOTHESIS_TIME_LIMITS:
+        print(f"  {tl}ms: {consistent_best[tl]} seeds ({100*consistent_best[tl]/max(1,total_complete):.1f}%)")
+
+    print(f"\nFull log saved to: {log_file}")
+
+
+def run_reverse_test():
+    """
+    Reverse test: fixed time_limit and restarts, vary only seed.
+    Shows whether different seeds produce different layouts with identical params.
+    """
+    if not os.path.exists(INPUT_FILE):
+        print(f"Error: Input file {INPUT_FILE} not found.")
+        return
+
+    time_limit = REVERSE_TIME_LIMIT
+    restarts = REVERSE_RESTARTS if REVERSE_RESTARTS > 0 else time_limit // 80
+
+    print("=" * 60)
+    print("REVERSE TEST: Fixed Params, Vary Seed Only")
+    print("=" * 60)
+    print(f"Seeds count: {HYPOTHESIS_SEEDS_COUNT}")
+    print(f"Fixed time_limit: {time_limit} ms")
+    print(f"Fixed restarts: {restarts}")
+    print("=" * 60)
+
+    template = load_request_template(INPUT_FILE)
+    spacing_mm = float(template['params'].get('spacing_mm', 0.0))
+    pad_mm = 0.0
+    if USE_PADDED_GAPS:
+        pad_mm = (template['params']['kerf_mm'] + template['params']['spacing_mm']) / 2.0
+
+    # Generate random seeds
+    random.seed(42)
+    seeds = [random.randint(1, 10000000) for _ in range(HYPOTHESIS_SEEDS_COUNT)]
+
+    results = []
+
+    log_file = LOG_FILE.replace('.csv', '_reverse_test.csv')
+    with open(log_file, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            'seed', 'time_limit_ms', 'restarts',
+            'waste_percent', 'occupied_perimeter', 'corridor_void',
+            'corridor_components', 'strip_gap', 'internal_void'
+        ])
+
+        print(f"\n{'#':<4} | {'Seed':<10} | {'Perim':<8} | {'CorrVoid':<10} | {'Comp':<5} | {'Waste%':<7}")
+        print("-" * 60)
+
+        for idx, seed in enumerate(seeds):
+            result = run_optimization(template, restarts, time_limit, seed)
+
+            if result and result.get('status') == 'ok':
+                (
+                    internal_void, _, _, corridor_void, corridor_components,
+                    row_gap, col_gap, _, _, _, _, occupied_perimeter, void_compactness,
+                    edge_continuity, total_edge_breaks, corners_filled,
+                ) = calculate_internal_void_metrics(
+                    result['solutions'], GRID_MM, pad_mm,
+                    spacing_mm=spacing_mm, corridor_ok_mult=CORRIDOR_OK_MULT
+                )
+                waste = result['summary']['waste_percent']
+                strip_gap = row_gap + col_gap
+
+                results.append({
+                    'seed': seed,
+                    'perimeter': occupied_perimeter,
+                    'corridor_void': corridor_void,
+                    'corridor_components': corridor_components,
+                    'strip_gap': strip_gap,
+                    'void_compactness': void_compactness,
+                    'edge_continuity': edge_continuity,
+                    'edge_breaks': total_edge_breaks,
+                    'corners_filled': corners_filled,
+                    'internal_void': internal_void,
+                    'waste': waste,
+                    'svg': result['artifacts']['svg'],
+                })
+
+                writer.writerow([
+                    seed, time_limit, restarts, waste,
+                    occupied_perimeter, corridor_void,
+                    corridor_components, strip_gap, internal_void,
+                    edge_continuity, total_edge_breaks, corners_filled
+                ])
+
+                print(f"{idx+1:<4} | {seed:<10} | {occupied_perimeter:<8.0f} | {corridor_void:<10.0f} | {corridor_components:<5} | {waste:<7.2f}")
+            else:
+                print(f"{idx+1:<4} | {seed:<10} | FAILED")
+
+    # Analyze results
+    print("\n" + "=" * 60)
+    print("ANALYSIS: Seed Variation with Fixed Params")
+    print("=" * 60)
+
+    if not results:
+        print("No successful runs")
+        return
+
+    perimeters = [r['perimeter'] for r in results]
+    corridors = [r['corridor_void'] for r in results]
+    components = [r['corridor_components'] for r in results]
+    wastes = [r['waste'] for r in results]
+
+    # Count unique values
+    unique_perimeters = len(set(perimeters))
+    unique_corridors = len(set(corridors))
+    unique_components = len(set(components))
+    unique_wastes = len(set(wastes))
+
+    print(f"\nTotal successful runs: {len(results)}/{HYPOTHESIS_SEEDS_COUNT}")
+    print(f"\nUnique values:")
+    print(f"  Perimeter:    {unique_perimeters} unique out of {len(results)} ({100*unique_perimeters/len(results):.1f}%)")
+    print(f"  CorridorVoid: {unique_corridors} unique out of {len(results)} ({100*unique_corridors/len(results):.1f}%)")
+    print(f"  Components:   {unique_components} unique out of {len(results)}")
+    print(f"  Waste%:       {unique_wastes} unique out of {len(results)}")
+
+    print(f"\nPerimeter distribution:")
+    print(f"  min={min(perimeters):.0f}, max={max(perimeters):.0f}")
+    print(f"  mean={sum(perimeters)/len(perimeters):.0f}, median={sorted(perimeters)[len(perimeters)//2]:.0f}")
+    print(f"  range={max(perimeters)-min(perimeters):.0f} ({100*(max(perimeters)-min(perimeters))/min(perimeters):.1f}% spread)")
+
+    print(f"\nCorridorVoid distribution:")
+    print(f"  min={min(corridors):.0f}, max={max(corridors):.0f}")
+    print(f"  mean={sum(corridors)/len(corridors):.0f}, median={sorted(corridors)[len(corridors)//2]:.0f}")
+    print(f"  range={max(corridors)-min(corridors):.0f} ({100*(max(corridors)-min(corridors))/min(corridors):.1f}% spread)")
+
+    print(f"\nComponents distribution:")
+    from collections import Counter
+    comp_counts = Counter(components)
+    for comp, count in sorted(comp_counts.items()):
+        print(f"  {comp} components: {count} layouts ({100*count/len(results):.1f}%)")
+
+    # Sort by: perimeter first, then void_compactness
+    # comp=1 is NOT always best - low perimeter is more important
+    sorted_results = sorted(results, key=lambda r: (
+        r['internal_void'],           # 1. No internal holes (critical)
+        r['perimeter'],               # 2. PERIMETER: lower = more compact (PRIMARY)
+        r['void_compactness'],        # 3. Void compactness: lower = better shape
+        r['corridor_components'],     # 4. Fewer void regions (tiebreaker)
+        r['waste'],                   # 5. Waste only as tiebreaker
+    ))
+
+    print(f"\nTop 10 best layouts (perimeter → void_compactness):")
+    for i, r in enumerate(sorted_results[:10]):
+        print(f"  {i+1}. seed={r['seed']}, perim={r['perimeter']:.0f}, vcomp={r['void_compactness']:.3f}, comp={r['corridor_components']}")
+
+    # Save top 10 SVGs
+    svg_dir = os.path.join(os.path.dirname(CANDIDATES_DIR), 'tmp', 'reverse_test_layouts')
+    os.makedirs(svg_dir, exist_ok=True)
+    # Clean old files
+    for old_file in os.listdir(svg_dir):
+        os.remove(os.path.join(svg_dir, old_file))
+
+    for i, r in enumerate(sorted_results[:10]):
+        svg_filename = f"rank_{i+1:02d}_perim_{r['perimeter']:.0f}_vcomp_{r['void_compactness']:.3f}_seed_{r['seed']}.svg"
+        svg_filepath = os.path.join(svg_dir, svg_filename)
+        with open(svg_filepath, 'w') as f:
+            f.write(r['svg'])
+
+    print(f"\nTop 10 SVGs saved to: {svg_dir}")
+    print(f"Full log saved to: {log_file}")
+
+
 def main():
+    if REVERSE_TEST_MODE:
+        run_reverse_test()
+        return
+
+    if HYPOTHESIS_MODE:
+        run_hypothesis_test()
+        return
+
     if not os.path.exists(INPUT_FILE):
         print(f"Error: Input file {INPUT_FILE} not found.")
         return
@@ -91,6 +985,8 @@ def main():
     
     print(f"Loading template from {INPUT_FILE}...")
     template = load_request_template(INPUT_FILE)
+    spacing_mm = float(template['params'].get('spacing_mm', 0.0))
+    corridor_ok_mm = spacing_mm * CORRIDOR_OK_MULT
     # stock_width and stock_height are not needed for the new compactness score, 
     # but could be useful for other metrics. Keeping them for context for now.
     # stock_width = template['stock'][0]['width_mm']
@@ -98,16 +994,39 @@ def main():
     
     top_candidates = []
     
-    log_header = ['restarts', 'time_limit_ms', 'seed', 'waste_percent', 'compactness_score']
+    log_header = [
+        'restarts',
+        'time_limit_ms',
+        'seed',
+        'waste_percent',
+        'void_compactness',
+        'compactness_score',
+        'internal_void_mm2',
+        'internal_components',
+        'corridor_void_mm2',
+        'corridor_weighted_mm2',
+        'corridor_components',
+        'row_gap_mm2',
+        'col_gap_mm2',
+        'edge_gap_sum_mm',
+        'exposure_penalty',
+        'max_penetration_mm',
+        'penetration_volume_mm3',
+        'penetration_weighted',
+        'grid_mm',
+        'pad_mm',
+        'spacing_mm',
+        'corridor_ok_mm'
+    ]
     with open(LOG_FILE, 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(log_header)
 
         print(f"Starting {NUM_TESTS} optimization tests (Mode: GUILLOTINE)...")
-        print(f"Target: Find Top {TOP_N_CANDIDATES} candidates by Waste % and Compactness Score.")
+        print(f"Target: Find Top {TOP_N_CANDIDATES} candidates by void_compactness (lower = more compact L-shaped waste)")
         print(f"Logging all runs to {LOG_FILE}")
-        print(f"{'Iter':<5} | {'Restarts':<8} | {'Time':<5} | {'Waste%':<7} | {'CompactScore':<14} | {'Status'}")
-        print("-" * 80)
+        print(f"{'Iter':<5} | {'Restarts':<8} | {'Time':<5} | {'Waste%':<7} | {'VoidComp':<10} | {'Comp':<5} | {'CorrVoid':<10} | {'Status'}")
+        print("-" * 95)
 
         for i in range(1, NUM_TESTS + 1):
             restarts = random.randint(50, 800)
@@ -122,10 +1041,76 @@ def main():
                 waste = summary['waste_percent']
                 
                 # Use the new compactness score
-                score = calculate_compactness_score(result['solutions'])
+                bbox_void = calculate_compactness_score(result['solutions'])
+                pad_mm = 0.0
+                if USE_PADDED_GAPS:
+                    pad_mm = (template['params']['kerf_mm'] + template['params']['spacing_mm']) / 2.0
+                (
+                    internal_void,
+                    internal_components,
+                    exposure_penalty,
+                    corridor_void,
+                    corridor_components,
+                    row_gap_area,
+                    col_gap_area,
+                    corridor_weighted_area,
+                    max_penetration_mm,
+                    penetration_volume_mm3,
+                    penetration_weighted,
+                    occupied_perimeter,
+                    void_compactness,
+                    edge_continuity,
+                    total_edge_breaks,
+                    corners_filled,
+                ) = calculate_internal_void_metrics(
+                    result['solutions'],
+                    GRID_MM,
+                    pad_mm,
+                    spacing_mm=spacing_mm,
+                    corridor_ok_mult=CORRIDOR_OK_MULT
+                )
+                strip_gap_area = row_gap_area + col_gap_area
+                edge_gap_sum = 0.0
+                for solution in result['solutions']:
+                    placements = solution.get('placements', [])
+                    metrics = calculate_bbox_metrics(placements)
+                    if not metrics:
+                        continue
+                    trim = solution.get('trim_mm') or {}
+                    usable_w = solution['width_mm'] - trim.get('left', 0.0) - trim.get('right', 0.0)
+                    usable_h = solution['height_mm'] - trim.get('top', 0.0) - trim.get('bottom', 0.0)
+                    edge_gap_sum += (
+                        metrics['min_x'] +
+                        metrics['min_y'] +
+                        max(0.0, usable_w - metrics['max_x']) +
+                        max(0.0, usable_h - metrics['max_y'])
+                    )
                 
                 # Log every run
-                writer.writerow([restarts, time_limit, seed, waste, score])
+                writer.writerow([
+                    restarts,
+                    time_limit,
+                    seed,
+                    waste,
+                    void_compactness,
+                    bbox_void,
+                    internal_void,
+                    internal_components,
+                    corridor_void,
+                    corridor_weighted_area,
+                    corridor_components,
+                    row_gap_area,
+                    col_gap_area,
+                    edge_gap_sum,
+                    exposure_penalty,
+                    max_penetration_mm,
+                    penetration_volume_mm3,
+                    penetration_weighted,
+                    GRID_MM,
+                    pad_mm,
+                    spacing_mm,
+                    corridor_ok_mm
+                ])
                 
                 # --- Candidate Management ---
                 candidate_data = {
@@ -133,23 +1118,48 @@ def main():
                     'time_limit_ms': time_limit,
                     'seed': seed,
                     'waste_percent': waste,
-                    'score': score,
+                    'bbox_void': bbox_void,
+                    'internal_void': internal_void,
+                    'internal_components': internal_components,
+                    'corridor_void': corridor_void,
+                    'corridor_weighted_area': corridor_weighted_area,
+                    'corridor_components': corridor_components,
+                    'row_gap_area': row_gap_area,
+                    'col_gap_area': col_gap_area,
+                    'strip_gap_area': strip_gap_area,
+                    'edge_gap_sum': edge_gap_sum,
+                    'exposure_penalty': exposure_penalty,
+                    'max_penetration_mm': max_penetration_mm,
+                    'penetration_volume_mm3': penetration_volume_mm3,
+                    'penetration_weighted': penetration_weighted,
+                    'occupied_perimeter': occupied_perimeter,
+                    'void_compactness': void_compactness,
+                    'edge_continuity': edge_continuity,
+                    'edge_breaks': total_edge_breaks,
+                    'corners_filled': corners_filled,
                     'svg': result['artifacts']['svg']
                 }
 
                 # Add to list and sort
                 top_candidates.append(candidate_data)
-                # Sort by waste (ascending), then by score (ascending)
-                top_candidates.sort(key=lambda c: (c['waste_percent'], c['score']))
+                # Sort: perimeter first, then void_compactness
+                # comp=1 is NOT always best - low perimeter is more important
+                top_candidates.sort(key=lambda c: (
+                    c['internal_void'],               # 1. No internal holes (critical)
+                    c['occupied_perimeter'],          # 2. PERIMETER: lower = more compact (PRIMARY)
+                    c['void_compactness'],            # 3. Void compactness: lower = better shape
+                    c['corridor_components'],         # 4. Fewer void regions (tiebreaker)
+                    c['waste_percent'],               # 5. Waste only as tiebreaker
+                ))
                 
                 # Trim the list if it's too long
                 if len(top_candidates) > TOP_N_CANDIDATES:
                     top_candidates.pop() # Removes the worst candidate
 
                 status_str = f"OK (Waste: {waste:.2f}%)"
-                print(f"{i:<5} | {restarts:<8} | {time_limit:<5} | {waste:<7.2f} | {score:<14.0f} | {status_str}")
+                print(f"{i:<5} | {restarts:<8} | {time_limit:<5} | {waste:<7.2f} | {void_compactness:<10.3f} | {corridor_components:<5} | {corridor_void:<10.0f} | {status_str}")
             else:
-                 print(f"{i:<5} | {restarts:<8} | {time_limit:<5} | {'-':<7} | {'-':<14} | {status_str}")
+                 print(f"{i:<5} | {restarts:<8} | {time_limit:<5} | {'-':<7} | {'-':<10} | {'-':<5} | {'-':<10} | {status_str}")
 
 
     print("\n" + "="*40)
@@ -160,20 +1170,30 @@ def main():
         print("No successful optimization runs found.")
         return
 
-    print(f"\nTop {len(top_candidates)} Candidates (Sorted by Waste, then Compactness Score):")
-    print("-" * 80)
-    print(f"{'Rank':<5} | {'Waste%':<7} | {'CompactScore':<14} | {'Restarts':<8} | {'Time':<5} | {'Seed'}")
-    print("-" * 80)
+    print(f"\nTop {len(top_candidates)} Candidates (Sorted by Waste, IntVoid, VoidCompact, Components):")
+    print("-" * 125)
+    print(f"{'Rank':<5} | {'Waste%':<7} | {'VoidComp':<10} | {'Comp':<5} | {'Perimeter':<10} | {'CorrVoid':<10} | {'Restarts':<8} | {'Time':<6} | {'Seed'}")
+    print("-" * 125)
 
     for idx, candidate in enumerate(top_candidates):
         rank = idx + 1
-        # Save SVG to file
-        svg_filename = f"rank_{rank:02d}_waste_{candidate['waste_percent']:.2f}_compactscore_{candidate['score']:.0f}.svg"
+        # Save SVG with void_compactness and components in filename
+        svg_filename = (
+            f"rank_{rank:02d}_waste_{candidate['waste_percent']:.2f}"
+            f"_vcomp_{candidate['void_compactness']:.3f}"
+            f"_comp_{candidate['corridor_components']}"
+            f".svg"
+        )
         svg_filepath = os.path.join(CANDIDATES_DIR, svg_filename)
         with open(svg_filepath, 'w') as f:
             f.write(candidate['svg'])
 
-        print(f"{rank:<5} | {candidate['waste_percent']:<7.2f} | {candidate['score']:<14.0f} | {candidate['restarts']:<8} | {candidate['time_limit_ms']:<5} | {candidate['seed']}")
+        print(
+            f"{rank:<5} | {candidate['waste_percent']:<7.2f} | "
+            f"{candidate['void_compactness']:<10.3f} | {candidate['corridor_components']:<5} | "
+            f"{candidate['occupied_perimeter']:<10.0f} | {candidate['corridor_void']:<10.0f} | "
+            f"{candidate['restarts']:<8} | {candidate['time_limit_ms']:<6} | {candidate['seed']}"
+        )
 
     print("-" * 80)
     print(f"\nSaved {len(top_candidates)} candidate SVGs to: {CANDIDATES_DIR}")
@@ -182,4 +1202,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

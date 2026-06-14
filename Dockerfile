@@ -20,7 +20,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-ENV PORT=8080 \
+ENV PORT=8088 \
     RUST_LOG=info \
     MAX_BODY_BYTES=5242880 \
     MAX_INSTANCES=5000 \
@@ -30,7 +30,7 @@ ENV PORT=8080 \
 WORKDIR /app
 COPY --from=builder /app/target/release/freecut /app/freecut
 
-EXPOSE 8080
+EXPOSE 8088
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD curl -fsS "http://localhost:${PORT}/health/live" || exit 1

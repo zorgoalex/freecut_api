@@ -66,6 +66,9 @@ no_llvm_build
 /src/tools/x/target
 # Created by `x vendor`
 /vendor
+!/vendor/
+!/vendor/cut-optimizer-2d/
+!/vendor/cut-optimizer-2d/**
 # Created by default with `src/ci/docker/run.sh`
 /obj/
 # Created by nix dev shell / .envrc
@@ -125,3 +128,4 @@ ai_docs/
 .factory/
 CLAUDE.md
 GEMINI.md
+AGENTS.md

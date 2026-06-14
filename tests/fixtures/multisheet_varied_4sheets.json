@@ -1,0 +1,43 @@
+{
+  "units": "mm",
+  "params": {
+    "kerf_mm": 6.0,
+    "spacing_mm": 0.5,
+    "trim_mm": {
+      "left": 10.0,
+      "right": 10.0,
+      "top": 10.0,
+      "bottom": 10.0
+    },
+    "time_limit_ms": 1000,
+    "restarts": 3,
+    "objective": "min_waste",
+    "seed": 12345,
+    "layout_mode": "guillotine"
+  },
+  "stock": [
+    { "id": "mdf-2800x2070", "width_mm": 2070.0, "height_mm": 2800.0, "qty": 0 }
+  ],
+  "items": [
+    { "id": "core_a", "width_mm": 1400.0, "height_mm": 950.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "core_b", "width_mm": 1300.0, "height_mm": 850.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "core_c", "width_mm": 1240.0, "height_mm": 780.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "core_d", "width_mm": 1180.0, "height_mm": 740.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "core_e", "width_mm": 1120.0, "height_mm": 820.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "core_f", "width_mm": 1040.0, "height_mm": 760.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "panel_a", "width_mm": 980.0, "height_mm": 700.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "panel_b", "width_mm": 920.0, "height_mm": 660.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "panel_c", "width_mm": 860.0, "height_mm": 620.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "panel_d", "width_mm": 800.0, "height_mm": 580.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "panel_e", "width_mm": 740.0, "height_mm": 540.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "panel_f", "width_mm": 680.0, "height_mm": 500.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "panel_g", "width_mm": 620.0, "height_mm": 460.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "strip_a", "width_mm": 1400.0, "height_mm": 180.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "strip_b", "width_mm": 1360.0, "height_mm": 150.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "strip_c", "width_mm": 1240.0, "height_mm": 130.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "strip_d", "width_mm": 980.0, "height_mm": 120.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "small_a", "width_mm": 560.0, "height_mm": 340.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "small_b", "width_mm": 480.0, "height_mm": 300.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" },
+    { "id": "small_c", "width_mm": 420.0, "height_mm": 260.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" }
+  ]
+}
