@@ -4658,6 +4658,16 @@ fn best_group_shift_for_solution(
         return None;
     }
 
+    let components = placement_components(solution, gap_mm);
+    let anchor_component_idx = largest_component_index(solution, &components);
+    let anchor_mask = (components.len() > 1).then(|| {
+        let mut mask = vec![false; solution.placements.len()];
+        for idx in &components[anchor_component_idx] {
+            mask[*idx] = true;
+        }
+        mask
+    });
+
     let mut best: Option<GroupShiftMove> = None;
     for cut in unique_edges(solution.placements.iter().map(|placement| placement.x_mm)) {
         let selected = selected_indices(solution, |placement| {
@@ -4670,6 +4680,7 @@ fn best_group_shift_for_solution(
             min_shift_mm,
             ShiftDirection::Left,
             selected,
+            anchor_mask.as_deref(),
             &mut best,
         );
     }
@@ -4689,6 +4700,7 @@ fn best_group_shift_for_solution(
             min_shift_mm,
             ShiftDirection::Right,
             selected,
+            anchor_mask.as_deref(),
             &mut best,
         );
     }
@@ -4703,6 +4715,7 @@ fn best_group_shift_for_solution(
             min_shift_mm,
             ShiftDirection::Up,
             selected,
+            anchor_mask.as_deref(),
             &mut best,
         );
     }
@@ -4722,8 +4735,33 @@ fn best_group_shift_for_solution(
             min_shift_mm,
             ShiftDirection::Down,
             selected,
+            anchor_mask.as_deref(),
             &mut best,
         );
+    }
+
+    if let Some(anchor_mask) = anchor_mask.as_deref() {
+        for (component_idx, component) in components.iter().enumerate() {
+            if component_idx == anchor_component_idx {
+                continue;
+            }
+            for direction in component_anchor_shift_directions(
+                solution,
+                component,
+                &components[anchor_component_idx],
+            ) {
+                consider_group_shift_candidate(
+                    solution,
+                    solution_index,
+                    gap_mm,
+                    min_shift_mm,
+                    direction,
+                    component.clone(),
+                    Some(anchor_mask),
+                    &mut best,
+                );
+            }
+        }
     }
 
     best
@@ -4751,6 +4789,140 @@ where
     out
 }
 
+fn placement_components(solution: &Solution, gap_mm: f64) -> Vec<Vec<usize>> {
+    let n = solution.placements.len();
+    let mut visited = vec![false; n];
+    let mut components = Vec::new();
+    for start in 0..n {
+        if visited[start] {
+            continue;
+        }
+        let mut stack = vec![start];
+        let mut component = Vec::new();
+        visited[start] = true;
+        while let Some(idx) = stack.pop() {
+            component.push(idx);
+            for next in 0..n {
+                if visited[next] {
+                    continue;
+                }
+                if placements_near_component_gap(
+                    &solution.placements[idx],
+                    &solution.placements[next],
+                    gap_mm,
+                ) {
+                    visited[next] = true;
+                    stack.push(next);
+                }
+            }
+        }
+        component.sort_unstable();
+        components.push(component);
+    }
+    components
+}
+
+fn largest_component_index(solution: &Solution, components: &[Vec<usize>]) -> usize {
+    components
+        .iter()
+        .enumerate()
+        .max_by(|(idx_a, a), (idx_b, b)| {
+            component_area(solution, a)
+                .total_cmp(&component_area(solution, b))
+                .then_with(|| idx_b.cmp(idx_a))
+        })
+        .map(|(idx, _)| idx)
+        .unwrap_or(0)
+}
+
+fn component_area(solution: &Solution, component: &[usize]) -> f64 {
+    component
+        .iter()
+        .map(|idx| placement_area(&solution.placements[*idx]))
+        .sum()
+}
+
+fn placements_near_component_gap(a: &Placement, b: &Placement, gap_mm: f64) -> bool {
+    let horizontal_gap = axis_gap(a.x_mm, a.x_mm + a.width_mm, b.x_mm, b.x_mm + b.width_mm);
+    let vertical_gap = axis_gap(a.y_mm, a.y_mm + a.height_mm, b.y_mm, b.y_mm + b.height_mm);
+    (horizontal_gap <= gap_mm + GROUP_SHIFT_EPS && vertical_gap <= GROUP_SHIFT_EPS)
+        || (vertical_gap <= gap_mm + GROUP_SHIFT_EPS && horizontal_gap <= GROUP_SHIFT_EPS)
+}
+
+fn axis_gap(a_min: f64, a_max: f64, b_min: f64, b_max: f64) -> f64 {
+    if a_max < b_min {
+        b_min - a_max
+    } else if b_max < a_min {
+        a_min - b_max
+    } else {
+        0.0
+    }
+}
+
+fn component_anchor_shift_directions(
+    solution: &Solution,
+    component: &[usize],
+    anchor_component: &[usize],
+) -> Vec<ShiftDirection> {
+    let (component_cx, component_cy) = component_center(solution, component);
+    let (anchor_cx, anchor_cy) = component_center(solution, anchor_component);
+    let dx = anchor_cx - component_cx;
+    let dy = anchor_cy - component_cy;
+    let horizontal = if dx < -GROUP_SHIFT_EPS {
+        Some(ShiftDirection::Left)
+    } else if dx > GROUP_SHIFT_EPS {
+        Some(ShiftDirection::Right)
+    } else {
+        None
+    };
+    let vertical = if dy < -GROUP_SHIFT_EPS {
+        Some(ShiftDirection::Up)
+    } else if dy > GROUP_SHIFT_EPS {
+        Some(ShiftDirection::Down)
+    } else {
+        None
+    };
+
+    let mut directions = Vec::with_capacity(2);
+    if dx.abs() >= dy.abs() {
+        if let Some(direction) = horizontal {
+            directions.push(direction);
+        }
+        if let Some(direction) = vertical {
+            directions.push(direction);
+        }
+    } else {
+        if let Some(direction) = vertical {
+            directions.push(direction);
+        }
+        if let Some(direction) = horizontal {
+            directions.push(direction);
+        }
+    }
+    directions
+}
+
+fn component_center(solution: &Solution, component: &[usize]) -> (f64, f64) {
+    let (min_x, min_y, max_x, max_y) = component.iter().fold(
+        (
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ),
+        |(min_x, min_y, max_x, max_y), idx| {
+            let placement = &solution.placements[*idx];
+            (
+                min_x.min(placement.x_mm),
+                min_y.min(placement.y_mm),
+                max_x.max(placement.x_mm + placement.width_mm),
+                max_y.max(placement.y_mm + placement.height_mm),
+            )
+        },
+    );
+    ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+}
+
 fn consider_group_shift_candidate(
     solution: &Solution,
     solution_index: usize,
@@ -4758,8 +4930,12 @@ fn consider_group_shift_candidate(
     min_shift_mm: f64,
     direction: ShiftDirection,
     selected: Vec<usize>,
+    anchor_mask: Option<&[bool]>,
     best: &mut Option<GroupShiftMove>,
 ) {
+    if anchor_mask.is_some_and(|mask| selected.iter().any(|idx| mask[*idx])) {
+        return;
+    }
     if let Some(candidate) = evaluate_group_shift_candidate(
         solution,
         solution_index,
@@ -5684,6 +5860,32 @@ mod tests {
         assert_eq!(telemetry.corridor_opportunity_delta_mm2, 0.0);
         assert!(telemetry.time_ms < 1_000);
         assert_eq!(solutions[0].placements[1].x_mm, 180.0);
+    }
+
+    #[test]
+    fn group_shift_moves_disconnected_component_without_dragging_same_side_obstacle() {
+        let mut solutions = vec![test_solution(vec![
+            test_placement("anchor", 0.0, 0.0, 100.0, 100.0),
+            test_placement("side_top", 180.0, 0.0, 40.0, 40.0),
+            test_placement("side_bottom", 180.0, 50.0, 40.0, 40.0),
+            test_placement("same_side_obstacle", 180.0, 130.0, 150.0, 60.0),
+        ])];
+
+        let telemetry = apply_group_shift_postprocess(
+            &mut solutions,
+            10.0,
+            GroupShiftOptions {
+                enabled: true,
+                min_shift_mm: 5.0,
+                max_passes: 4,
+            },
+        );
+
+        assert_eq!(telemetry.moves_applied, 1);
+        assert_eq!(telemetry.parts_moved, 2);
+        assert_eq!(solutions[0].placements[1].x_mm, 110.0);
+        assert_eq!(solutions[0].placements[2].x_mm, 110.0);
+        assert_eq!(solutions[0].placements[3].x_mm, 180.0);
     }
 
     #[test]
