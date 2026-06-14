@@ -984,6 +984,19 @@ async fn optimize_accepts_group_shift_and_reports_telemetry() {
         .get("moves_applied")
         .and_then(Value::as_u64)
         .is_some());
+    assert!(group_shift.get("time_ms").and_then(Value::as_u64).is_some());
+    assert!(group_shift
+        .get("corridor_opportunity_before_mm2")
+        .and_then(Value::as_f64)
+        .is_some());
+    assert!(group_shift
+        .get("corridor_opportunity_after_mm2")
+        .and_then(Value::as_f64)
+        .is_some());
+    assert!(group_shift
+        .get("corridor_opportunity_delta_mm2")
+        .and_then(Value::as_f64)
+        .is_some());
 }
 
 #[tokio::test]

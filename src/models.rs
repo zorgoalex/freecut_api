@@ -357,10 +357,14 @@ pub struct PartitionTelemetry {
 #[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct GroupShiftTelemetry {
     pub enabled: bool,
+    pub time_ms: u64,
     pub moves_applied: u32,
     pub parts_moved: u32,
     pub passes_run: u32,
     pub corridor_closed_area_mm2: f64,
+    pub corridor_opportunity_before_mm2: f64,
+    pub corridor_opportunity_after_mm2: f64,
+    pub corridor_opportunity_delta_mm2: f64,
     pub max_shift_mm: f64,
 }
 

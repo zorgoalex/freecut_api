@@ -297,10 +297,14 @@ async fn optimize_request_internal(
                 partition: None,
                 group_shift: group_shift_options(&req.params).map(|options| GroupShiftTelemetry {
                     enabled: options.enabled,
+                    time_ms: 0,
                     moves_applied: 0,
                     parts_moved: 0,
                     passes_run: 0,
                     corridor_closed_area_mm2: 0.0,
+                    corridor_opportunity_before_mm2: 0.0,
+                    corridor_opportunity_after_mm2: 0.0,
+                    corridor_opportunity_delta_mm2: 0.0,
                     max_shift_mm: 0.0,
                 }),
             },
@@ -4511,17 +4515,26 @@ fn apply_group_shift_postprocess(
     gap_mm: f64,
     options: GroupShiftOptions,
 ) -> GroupShiftTelemetry {
+    let started = Instant::now();
     let mut telemetry = GroupShiftTelemetry {
         enabled: options.enabled,
+        time_ms: 0,
         moves_applied: 0,
         parts_moved: 0,
         passes_run: 0,
         corridor_closed_area_mm2: 0.0,
+        corridor_opportunity_before_mm2: 0.0,
+        corridor_opportunity_after_mm2: 0.0,
+        corridor_opportunity_delta_mm2: 0.0,
         max_shift_mm: 0.0,
     };
     if !options.enabled {
+        telemetry.time_ms = started.elapsed().as_millis() as u64;
         return telemetry;
     }
+
+    telemetry.corridor_opportunity_before_mm2 =
+        group_shift_opportunity_score(solutions, gap_mm, options.min_shift_mm);
 
     for pass_idx in 0..options.max_passes {
         telemetry.passes_run = pass_idx + 1;
@@ -4548,7 +4561,33 @@ fn apply_group_shift_postprocess(
         telemetry.max_shift_mm = telemetry.max_shift_mm.max(best_move.shift_mm);
     }
 
+    telemetry.corridor_opportunity_after_mm2 = normalize_group_shift_metric(
+        group_shift_opportunity_score(solutions, gap_mm, options.min_shift_mm),
+    );
+    telemetry.corridor_opportunity_delta_mm2 = normalize_group_shift_metric(
+        telemetry.corridor_opportunity_before_mm2 - telemetry.corridor_opportunity_after_mm2,
+    );
+    telemetry.time_ms = started.elapsed().as_millis() as u64;
     telemetry
+}
+
+fn normalize_group_shift_metric(value: f64) -> f64 {
+    if value.abs() <= GROUP_SHIFT_EPS {
+        0.0
+    } else {
+        value
+    }
+}
+
+fn group_shift_opportunity_score(solutions: &[Solution], gap_mm: f64, min_shift_mm: f64) -> f64 {
+    solutions
+        .iter()
+        .enumerate()
+        .filter_map(|(solution_index, solution)| {
+            best_group_shift_for_solution(solution, solution_index, gap_mm, min_shift_mm)
+        })
+        .map(|group_shift_move| group_shift_move.corridor_closed_area_mm2)
+        .sum()
 }
 
 fn best_group_shift_for_solution(
@@ -5376,6 +5415,10 @@ mod tests {
         assert_eq!(telemetry.parts_moved, 2);
         assert_eq!(telemetry.max_shift_mm, 70.0);
         assert_eq!(telemetry.corridor_closed_area_mm2, 10_500.0);
+        assert_eq!(telemetry.corridor_opportunity_before_mm2, 10_500.0);
+        assert_eq!(telemetry.corridor_opportunity_after_mm2, 0.0);
+        assert_eq!(telemetry.corridor_opportunity_delta_mm2, 10_500.0);
+        assert!(telemetry.time_ms < 1_000);
         assert_eq!(solutions[0].placements[2].x_mm, 110.0);
         assert_eq!(solutions[0].placements[3].x_mm, 110.0);
         assert_eq!(solutions[0].placements[0].x_mm, 0.0);
@@ -5401,6 +5444,10 @@ mod tests {
 
         assert_eq!(telemetry.moves_applied, 0);
         assert_eq!(telemetry.parts_moved, 0);
+        assert_eq!(telemetry.corridor_opportunity_before_mm2, 0.0);
+        assert_eq!(telemetry.corridor_opportunity_after_mm2, 0.0);
+        assert_eq!(telemetry.corridor_opportunity_delta_mm2, 0.0);
+        assert!(telemetry.time_ms < 1_000);
         assert_eq!(solutions[0].placements[1].x_mm, 180.0);
     }
 

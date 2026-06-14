@@ -118,7 +118,17 @@ def row_from_response(seed, data):
         "group_moves": group_shift.get("moves_applied", 0),
         "group_parts_moved": group_shift.get("parts_moved", 0),
         "group_passes_run": group_shift.get("passes_run", 0),
+        "group_time_ms": group_shift.get("time_ms", 0),
         "group_closed_area_mm2": round(group_shift.get("corridor_closed_area_mm2", 0.0)),
+        "group_opportunity_before_mm2": round(
+            group_shift.get("corridor_opportunity_before_mm2", 0.0)
+        ),
+        "group_opportunity_after_mm2": round(
+            group_shift.get("corridor_opportunity_after_mm2", 0.0)
+        ),
+        "group_opportunity_delta_mm2": round(
+            group_shift.get("corridor_opportunity_delta_mm2", 0.0)
+        ),
         "group_max_shift_mm": round(group_shift.get("max_shift_mm", 0.0), 3),
         "data": data,
     }
@@ -206,7 +216,11 @@ def main():
     moved_layouts = sum(1 for r in rows if r["group_moves"] > 0)
     total_moves = sum(r["group_moves"] for r in rows)
     total_parts = sum(r["group_parts_moved"] for r in rows)
+    total_group_time_ms = sum(r["group_time_ms"] for r in rows)
     total_closed = sum(r["group_closed_area_mm2"] for r in rows)
+    total_opportunity_before = sum(r["group_opportunity_before_mm2"] for r in rows)
+    total_opportunity_after = sum(r["group_opportunity_after_mm2"] for r in rows)
+    total_opportunity_delta = sum(r["group_opportunity_delta_mm2"] for r in rows)
     max_shift = max((r["group_max_shift_mm"] for r in rows), default=0.0)
 
     ranked_quality, ranked_group = write_ranked_artifacts(rows)
@@ -223,7 +237,13 @@ def main():
     print(f"  Layouts with <=5 regions:     {n_regions_le_5}/{len(rows)}", flush=True)
     print(f"  Layouts moved by group_shift: {moved_layouts}/{len(rows)}", flush=True)
     print(f"  Total group moves/parts:      {total_moves}/{total_parts}", flush=True)
+    print(f"  Total group_shift time:       {total_group_time_ms}ms", flush=True)
     print(f"  Total corridor closed area:   {total_closed / 1e3:.0f}k mm2", flush=True)
+    print(
+        f"  Opportunity before/after:     {total_opportunity_before / 1e3:.0f}k -> "
+        f"{total_opportunity_after / 1e3:.0f}k mm2 (delta {total_opportunity_delta / 1e3:.0f}k)",
+        flush=True,
+    )
     print(f"  Max accepted shift:           {max_shift:.1f}mm", flush=True)
     for i, row in enumerate(ranked_quality[:5], start=1):
         print(
@@ -257,7 +277,11 @@ def main():
                     "moved_layouts": [moved_layouts, len(rows)],
                     "total_group_moves": total_moves,
                     "total_group_parts_moved": total_parts,
+                    "total_group_time_ms": total_group_time_ms,
                     "total_closed_area_mm2": total_closed,
+                    "total_opportunity_before_mm2": total_opportunity_before,
+                    "total_opportunity_after_mm2": total_opportunity_after,
+                    "total_opportunity_delta_mm2": total_opportunity_delta,
                     "max_shift_mm": max_shift,
                 },
                 "results": [{k: v for k, v in r.items() if k != "data"} for r in rows],
