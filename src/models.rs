@@ -183,6 +183,9 @@ pub struct GaOverrideParams {
     pub zone_penalty: Option<f64>,
     /// V15/V17 largest-waste-component fill penalty. Optional, defaults to service env/default.
     pub fill_penalty: Option<f64>,
+    /// V34: corner concentration penalty — rewards waste pushed to bottom-right corner,
+    /// creating monotone staircase layout form. Optional, defaults to 0.0 (disabled).
+    pub corner_penalty: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
@@ -197,6 +200,9 @@ pub struct ProfilePoolParams {
     pub rescue_zone_penalties: Option<Vec<f64>>,
     /// Fill penalty used for every profile. Optional, defaults to ga_override/default 0.1.
     pub fill_penalty: Option<f64>,
+    /// V34: Corner concentration penalty used for every profile.
+    /// Rewards waste pushed to bottom-right corner. Optional, defaults to ga_override/default 0.0.
+    pub corner_penalty: Option<f64>,
     /// Maximum lead-utilisation drop allowed before a lower-zone candidate
     /// is rejected, except breakthrough layouts with <=4 zones. Optional, defaults to 0.8.
     pub max_lead_drop_pp: Option<f64>,

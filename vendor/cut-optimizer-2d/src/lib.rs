@@ -392,6 +392,10 @@ pub struct GaFitnessConfig {
     pub zone_penalty: f64,
     /// Exponential penalty applied when the largest waste component is small.
     pub fill_penalty: f64,
+    /// V34: penalty for waste not concentrated in the bottom-right corner.
+    /// Rewards monotone staircase waste shape: corner_pull near 1.0 means waste
+    /// is pushed to bottom-right, which creates the ideal layout form.
+    pub corner_penalty: f64,
 }
 
 thread_local! {
@@ -439,6 +443,59 @@ fn ga_fill_penalty() -> f64 {
             .and_then(|s| s.parse().ok())
             .unwrap_or(0.1)
     })
+}
+
+fn ga_corner_penalty() -> f64 {
+    if let Some(config) = GA_FITNESS_CONFIG.with(|cell| cell.get()) {
+        return config.corner_penalty;
+    }
+    static VAL: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *VAL.get_or_init(|| {
+        std::env::var("FREECUT_GA_CORNER_PENALTY")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0)
+    })
+}
+
+/// V34: Compute waste corner concentration — fraction of free area pulled
+/// toward the bottom-right corner. For an ideal monotone-staircase layout,
+/// all waste is in the bottom-right corner and corner_pull ≈ 1.0.
+/// For centered/scattered waste, corner_pull ≈ 0.5 (center) or lower.
+fn waste_corner_pull(free_rects: &[Rect], sheet_width: usize, sheet_length: usize) -> f64 {
+    if free_rects.is_empty() || sheet_width == 0 || sheet_length == 0 {
+        return 1.0;
+    }
+    let sw = sheet_width as f64;
+    let sl = sheet_length as f64;
+    if sw <= 0.0 || sl <= 0.0 {
+        return 1.0;
+    }
+    let mut weighted_x = 0.0_f64;
+    let mut weighted_y = 0.0_f64;
+    let mut total_area = 0.0_f64;
+    for fr in free_rects {
+        let area = fr.width as f64 * fr.length as f64;
+        // Center of rect, normalized to [0, 1] within the sheet
+        let cx = (fr.x as f64 + fr.width as f64 / 2.0) / sw;
+        let cy = (fr.y as f64 + fr.length as f64 / 2.0) / sl;
+        weighted_x += cx * area;
+        weighted_y += cy * area;
+        total_area += area;
+    }
+    if total_area < 1.0 {
+        return 1.0;
+    }
+    // corner_pull = average normalized position of free area.
+    // (0,0) = top-left (all pieces packed here), (1,1) = bottom-right (ideal waste position).
+    // Rescale from [0.5, 1] to [0, 1]: a centered centroid (0.5) = 0, corner (1.0) = 1.0.
+    let raw_pull = (weighted_x / total_area + weighted_y / total_area) / 2.0;
+    // raw_pull ∈ [0, 1]. Perfect: 1.0 (all waste bottom-right).
+    // Centered: ~0.5. Top-left waste: ~0.0.
+    // Scale to emphasize deviation from center: pull = max(0, 2*raw - 1).
+    // pull = 1 when raw=1, pull = 0 when raw=0.5, pull < 0 when raw<0.5.
+    let pull = (2.0 * raw_pull - 1.0).max(0.0);
+    pull
 }
 
 /// Count connected components among `free_rects` using union-find.

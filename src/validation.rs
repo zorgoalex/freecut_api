@@ -145,6 +145,13 @@ pub fn validate_request(
                 ));
             }
         }
+        if let Some(corner_penalty) = ga.corner_penalty {
+            if !corner_penalty.is_finite() || !(0.0..=1.0).contains(&corner_penalty) {
+                return Err(ValidationError::new(
+                    "ga_override.corner_penalty must be finite and in range [0, 1]",
+                ));
+            }
+        }
     }
 
     if let Some(pool) = &req.params.profile_pool {
@@ -182,6 +189,13 @@ pub fn validate_request(
                 if !fill_penalty.is_finite() || !(0.0..=1.0).contains(&fill_penalty) {
                     return Err(ValidationError::new(
                         "profile_pool.fill_penalty must be finite and in range [0, 1]",
+                    ));
+                }
+            }
+            if let Some(corner_penalty) = pool.corner_penalty {
+                if !corner_penalty.is_finite() || !(0.0..=1.0).contains(&corner_penalty) {
+                    return Err(ValidationError::new(
+                        "profile_pool.corner_penalty must be finite and in range [0, 1]",
                     ));
                 }
             }

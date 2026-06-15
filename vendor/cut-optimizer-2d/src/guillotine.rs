@@ -154,10 +154,13 @@ impl Bin for GuillotineBin {
         let largest_fill = largest_zone_area as f64 / total_free;
         let fill_factor = (-(lambda_f * (1.0 - largest_fill))).exp();
 
-        // Combined: util^2 * zone_factor * fill_factor
-        // The exponent 2.0 maintains the original shape; zone and fill
-        // factors provide additional selection pressure toward 1-zone layouts.
-        util.powf(2.0) * zone_factor * fill_factor
+        // V34: corner concentration penalty — reward waste pushed to bottom-right.
+        let lambda_c = ga_corner_penalty();
+        let corner_pull = waste_corner_pull(&self.free_rects, self.width, self.length);
+        let corner_factor = (-(lambda_c * (1.0 - corner_pull))).exp();
+
+        // Combined: util^2 * zone_factor * fill_factor * corner_factor
+        util.powf(2.0) * zone_factor * fill_factor * corner_factor
     }
 
     fn price(&self) -> usize {
