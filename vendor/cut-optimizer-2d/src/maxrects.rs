@@ -103,11 +103,16 @@ impl Bin for MaxRectsBin {
         }
         let util = used_area / total_area;
 
-        // V15: zones-aware fitness (same as guillotine).
-        let (n_zones, largest_zone_area) =
-            free_rect_connected_components(&self.free_rects, self.blade_width);
         let lambda_z = ga_zone_penalty();
         let lambda_f = ga_fill_penalty();
+        let lambda_c = ga_corner_penalty();
+
+        let (n_zones, largest_zone_area, corner_pull) = if lambda_c > 1e-9 {
+            free_rect_zone_metrics(&self.free_rects, self.blade_width, self.width, self.length)
+        } else {
+            let (nz, la) = free_rect_connected_components(&self.free_rects, self.blade_width);
+            (nz, la, 1.0)
+        };
 
         let zone_factor = (-(lambda_z * (n_zones.saturating_sub(1)) as f64)).exp();
 
@@ -122,9 +127,7 @@ impl Bin for MaxRectsBin {
         };
         let fill_factor = (-(lambda_f * (1.0 - largest_fill))).exp();
 
-        // V34: corner concentration penalty — reward waste pushed to bottom-right.
-        let lambda_c = ga_corner_penalty();
-        let corner_pull = waste_corner_pull(&self.free_rects, self.width, self.length);
+        // V34a: corner concentration penalty.
         let corner_factor = (-(lambda_c * (1.0 - corner_pull))).exp();
 
         util.powf(2.0) * zone_factor * fill_factor * corner_factor

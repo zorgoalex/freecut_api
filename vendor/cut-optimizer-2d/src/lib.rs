@@ -458,44 +458,109 @@ fn ga_corner_penalty() -> f64 {
     })
 }
 
-/// V34: Compute waste corner concentration — fraction of free area pulled
-/// toward the bottom-right corner. For an ideal monotone-staircase layout,
-/// all waste is in the bottom-right corner and corner_pull ≈ 1.0.
-/// For centered/scattered waste, corner_pull ≈ 0.5 (center) or lower.
-fn waste_corner_pull(free_rects: &[Rect], sheet_width: usize, sheet_length: usize) -> f64 {
-    if free_rects.is_empty() || sheet_width == 0 || sheet_length == 0 {
-        return 1.0;
+/// Compute waste zone metrics in a single union-find pass.
+/// Returns (n_zones, largest_zone_area, corner_pull).
+/// corner_pull measures how much waste mass is pulled toward the bottom-right corner.
+/// Ideal layout: one zone near bottom-right, corner_pull ≈ 1.0.
+fn free_rect_zone_metrics(free_rects: &[Rect], blade_width: usize, sheet_width: usize, sheet_length: usize) -> (usize, u64, f64) {
+    let n = free_rects.len();
+    if n == 0 || sheet_width == 0 || sheet_length == 0 {
+        return (0, 0, 1.0);
     }
     let sw = sheet_width as f64;
     let sl = sheet_length as f64;
-    if sw <= 0.0 || sl <= 0.0 {
-        return 1.0;
+
+    let mut parent: Vec<usize> = (0..n).collect();
+    let mut rank: Vec<usize> = vec![0; n];
+
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
     }
-    let mut weighted_x = 0.0_f64;
-    let mut weighted_y = 0.0_f64;
-    let mut total_area = 0.0_f64;
-    for fr in free_rects {
-        let area = fr.width as f64 * fr.length as f64;
-        // Center of rect, normalized to [0, 1] within the sheet
-        let cx = (fr.x as f64 + fr.width as f64 / 2.0) / sw;
-        let cy = (fr.y as f64 + fr.length as f64 / 2.0) / sl;
-        weighted_x += cx * area;
-        weighted_y += cy * area;
-        total_area += area;
+    fn union(parent: &mut [usize], rank: &mut [usize], a: usize, b: usize) {
+        let ra = find(parent, a);
+        let rb = find(parent, b);
+        if ra == rb {
+            return;
+        }
+        if rank[ra] < rank[rb] {
+            parent[ra] = rb;
+        } else if rank[ra] > rank[rb] {
+            parent[rb] = ra;
+        } else {
+            parent[rb] = ra;
+            rank[ra] += 1;
+        }
     }
-    if total_area < 1.0 {
-        return 1.0;
+
+    let tol = blade_width;
+    for i in 0..n {
+        let ri = &free_rects[i];
+        let x1i = ri.x + ri.width;
+        let y1i = ri.y + ri.length;
+        for j in (i + 1)..n {
+            let rj = &free_rects[j];
+            let x1j = rj.x + rj.width;
+            let y1j = rj.y + rj.length;
+            if ri.x <= x1j + tol && x1i + tol >= rj.x && ri.y <= y1j + tol && y1i + tol >= rj.y {
+                union(&mut parent, &mut rank, i, j);
+            }
+        }
     }
-    // corner_pull = average normalized position of free area.
-    // (0,0) = top-left (all pieces packed here), (1,1) = bottom-right (ideal waste position).
-    // Rescale from [0.5, 1] to [0, 1]: a centered centroid (0.5) = 0, corner (1.0) = 1.0.
-    let raw_pull = (weighted_x / total_area + weighted_y / total_area) / 2.0;
-    // raw_pull ∈ [0, 1]. Perfect: 1.0 (all waste bottom-right).
-    // Centered: ~0.5. Top-left waste: ~0.0.
-    // Scale to emphasize deviation from center: pull = max(0, 2*raw - 1).
-    // pull = 1 when raw=1, pull = 0 when raw=0.5, pull < 0 when raw<0.5.
-    let pull = (2.0 * raw_pull - 1.0).max(0.0);
-    pull
+
+    use std::collections::HashMap;
+    let mut root_area: HashMap<usize, u64> = HashMap::new();
+    let mut root_min_x: HashMap<usize, usize> = HashMap::new();
+    let mut root_max_x1: HashMap<usize, usize> = HashMap::new();
+    let mut root_min_y: HashMap<usize, usize> = HashMap::new();
+    let mut root_max_y1: HashMap<usize, usize> = HashMap::new();
+
+    for i in 0..n {
+        let root = find(&mut parent, i);
+        let r = &free_rects[i];
+        let area = r.width as u64 * r.length as u64;
+        *root_area.entry(root).or_insert(0) += area;
+        root_min_x.entry(root).and_modify(|v| *v = (*v).min(r.x)).or_insert(r.x);
+        root_max_x1.entry(root).and_modify(|v| *v = (*v).max(r.x + r.width)).or_insert(r.x + r.width);
+        root_min_y.entry(root).and_modify(|v| *v = (*v).min(r.y)).or_insert(r.y);
+        root_max_y1.entry(root).and_modify(|v| *v = (*v).max(r.y + r.length)).or_insert(r.y + r.length);
+    }
+
+    let n_components = root_area.len();
+    let largest_area = root_area.values().copied().max().unwrap_or(0);
+
+    // Compute corner pull from component bounding boxes
+    let lambda_c = ga_corner_penalty();
+    let corner_pull = if lambda_c < 1e-9 || n_components == 0 {
+        1.0 // skip computation if penalty is zero
+    } else {
+        let mut weighted_x = 0.0_f64;
+        let mut weighted_y = 0.0_f64;
+        let mut total_w = 0.0_f64;
+        for (&root, &area) in &root_area {
+            let min_x = root_min_x[&root] as f64;
+            let max_x1 = root_max_x1[&root] as f64;
+            let min_y = root_min_y[&root] as f64;
+            let max_y1 = root_max_y1[&root] as f64;
+            let cx = (min_x + max_x1) / 2.0 / sw;
+            let cy = (min_y + max_y1) / 2.0 / sl;
+            let w = area as f64;
+            weighted_x += cx * w;
+            weighted_y += cy * w;
+            total_w += w;
+        }
+        if total_w < 1.0 {
+            1.0
+        } else {
+            let raw_pull = (weighted_x / total_w + weighted_y / total_w) / 2.0;
+            (2.0 * raw_pull - 1.0).max(0.0)
+        }
+    };
+
+    (n_components, largest_area, corner_pull)
 }
 
 /// Count connected components among `free_rects` using union-find.

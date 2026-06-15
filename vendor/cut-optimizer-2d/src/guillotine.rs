@@ -137,29 +137,28 @@ impl Bin for GuillotineBin {
         }
         let util = used_area / total_area;
 
-        // V15: zones-aware fitness.
-        // Replace raw free_rects.len() fragmentation proxy with connected-
-        // component count on free rects — a much better approximation of
-        // actual waste zones.
-        let (n_zones, largest_zone_area) =
-            free_rect_connected_components(&self.free_rects, self.blade_width);
         let lambda_z = ga_zone_penalty();
         let lambda_f = ga_fill_penalty();
+        let lambda_c = ga_corner_penalty();
 
-        // Zone penalty: exponential decay for each zone beyond the first.
+        // Compute zone metrics: use the combined function only when corner
+        // penalty is non-zero (it does extra work for bounding boxes).
+        // When corner_penalty = 0 (default), use the cheaper function.
+        let (n_zones, largest_zone_area, corner_pull) = if lambda_c > 1e-9 {
+            free_rect_zone_metrics(&self.free_rects, self.blade_width, self.width, self.length)
+        } else {
+            let (nz, la) = free_rect_connected_components(&self.free_rects, self.blade_width);
+            (nz, la, 1.0) // corner_pull = 1.0 when not needed
+        };
+
         let zone_factor = (-(lambda_z * (n_zones.saturating_sub(1)) as f64)).exp();
 
-        // Fill penalty: reward having a single large waste component.
         let total_free = free_area.max(1.0);
         let largest_fill = largest_zone_area as f64 / total_free;
         let fill_factor = (-(lambda_f * (1.0 - largest_fill))).exp();
 
-        // V34: corner concentration penalty — reward waste pushed to bottom-right.
-        let lambda_c = ga_corner_penalty();
-        let corner_pull = waste_corner_pull(&self.free_rects, self.width, self.length);
         let corner_factor = (-(lambda_c * (1.0 - corner_pull))).exp();
 
-        // Combined: util^2 * zone_factor * fill_factor * corner_factor
         util.powf(2.0) * zone_factor * fill_factor * corner_factor
     }
 
