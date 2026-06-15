@@ -561,6 +561,7 @@ struct ProfilePoolCandidate {
     zone_penalty: f64,
     is_rescue: bool,
     waste_regions: u32,
+    visual_waste_regions: u32,
     lead_util_pct: f64,
     max_corner_mm2: f64,
     group_shift_opportunity_after_mm2: f64,
@@ -758,6 +759,7 @@ async fn optimize_profile_pool(
         winner_seed: winner.seed,
         winner_zone_penalty: winner.zone_penalty,
         winner_waste_regions: winner.waste_regions,
+        winner_visual_waste_regions: winner.visual_waste_regions,
         winner_lead_util_pct: winner.lead_util_pct,
         winner_max_corner_mm2: winner.max_corner_mm2,
         winner_group_shift_opportunity_after_mm2: winner.group_shift_opportunity_after_mm2,
@@ -804,8 +806,10 @@ async fn run_profile_pool_candidate(
     ))
     .await?;
     let gap_mm = req.params.kerf_mm + req.params.spacing_mm;
+    let visual_regions = response_visual_waste_regions(&response);
     Ok(ProfilePoolCandidate {
         waste_regions: response_waste_regions(&response, gap_mm),
+        visual_waste_regions: visual_regions,
         lead_util_pct: response_lead_util_pct(&response),
         max_corner_mm2: response_max_corner_mm2(&response),
         group_shift_opportunity_after_mm2: response_group_shift_opportunity_after_mm2(&response),
@@ -887,7 +891,7 @@ fn profile_pool_winner_idx(
             continue;
         }
         let eligible =
-            candidate.lead_util_pct + max_lead_drop_pp >= best_lead || candidate.waste_regions <= 4;
+            candidate.lead_util_pct + max_lead_drop_pp >= best_lead || candidate.visual_waste_regions <= 4;
         if !eligible {
             continue;
         }
@@ -932,8 +936,8 @@ fn profile_pool_candidate_order(
     b: &ProfilePoolCandidate,
 ) -> Option<std::cmp::Ordering> {
     Some(
-        (a.response.summary.used_stock_count, a.waste_regions)
-            .cmp(&(b.response.summary.used_stock_count, b.waste_regions))
+        (a.response.summary.used_stock_count, a.visual_waste_regions)
+            .cmp(&(b.response.summary.used_stock_count, b.visual_waste_regions))
             .then_with(|| {
                 a.group_shift_opportunity_after_mm2
                     .partial_cmp(&b.group_shift_opportunity_after_mm2)
@@ -975,6 +979,13 @@ fn response_waste_regions(resp: &OptimizeResponse, gap_mm: f64) -> u32 {
     response_stock_pieces(resp)
         .iter()
         .map(|stock| waste_region_count(stock, gap))
+        .sum()
+}
+
+fn response_visual_waste_regions(resp: &OptimizeResponse) -> u32 {
+    response_stock_pieces(resp)
+        .iter()
+        .map(|stock| waste_region_count(stock, 0))
         .sum()
 }
 
@@ -1705,10 +1716,12 @@ fn build_column_candidates(
     out
 }
 
-/// Count connected free regions (>= 5000 mm^2) on a sheet, 10mm grid, with
-/// pieces inflated by the kerf gap.  Mirrors the benchmark's flood-fill
-/// metric closely enough to rank candidates by waste fragmentation.
-fn waste_region_count(stock: &cut_optimizer_2d::ResultStockPiece, gap: usize) -> u32 {
+/// Count connected free regions (>= 5000 mm^2) on a sheet, 10mm grid.
+/// `inflation_gap` inflates each piece by this amount on all sides (in SCALE units).
+/// For business reporting (can this offcut be reused?), use full kerf+spacing gap.
+/// For visual quality ranking (does the layout look consolidated?), use 0 or minimal gap
+/// because kerf gaps between pieces artificially split waste zones in flood-fill.
+fn waste_region_count(stock: &cut_optimizer_2d::ResultStockPiece, inflation_gap: usize) -> u32 {
     const CELL: usize = 10_000; // 10mm in vendor units
     let nx = stock.width / CELL;
     let ny = stock.length / CELL;
@@ -1717,10 +1730,10 @@ fn waste_region_count(stock: &cut_optimizer_2d::ResultStockPiece, gap: usize) ->
     }
     let mut occ = vec![false; nx * ny];
     for p in &stock.cut_pieces {
-        let x0 = p.x.saturating_sub(gap);
-        let y0 = p.y.saturating_sub(gap);
-        let x1 = (p.x + p.width + gap).min(stock.width);
-        let y1 = (p.y + p.length + gap).min(stock.length);
+        let x0 = p.x.saturating_sub(inflation_gap);
+        let y0 = p.y.saturating_sub(inflation_gap);
+        let x1 = (p.x + p.width + inflation_gap).min(stock.width);
+        let y1 = (p.y + p.length + inflation_gap).min(stock.length);
         let i0 = x0 / CELL;
         let j0 = y0 / CELL;
         let i1 = (x1.saturating_sub(1) / CELL).min(nx - 1);
@@ -1779,6 +1792,38 @@ fn candidate_waste_regions(candidate: &Candidate, gap: usize) -> u32 {
         .sum()
 }
 
+/// Count waste regions WITHOUT kerf inflation — matches visual appearance.
+/// Used for optimization decisions where kerf gaps between pieces should NOT
+/// artificially split waste zones. A 6mm kerf gap between two piece groups
+/// makes two separate waste zones in the kerf-inflated metric, but visually
+/// they appear as one consolidated zone.
+fn candidate_visual_waste_regions(candidate: &Candidate) -> u32 {
+    candidate
+        .solution
+        .stock_pieces
+        .iter()
+        .map(|s| waste_region_count(s, 0))
+        .sum()
+}
+
+/// Densest sheet waste regions WITHOUT kerf inflation (visual metric).
+fn densest_sheet_visual_waste_regions(sheets: &[cut_optimizer_2d::ResultStockPiece]) -> u32 {
+    if sheets.is_empty() {
+        return u32::MAX;
+    }
+    let idx = sheets
+        .iter()
+        .enumerate()
+        .max_by(|a, b| {
+            let ua = stock_piece_util_pct(a.1);
+            let ub = stock_piece_util_pct(b.1);
+            ua.partial_cmp(&ub).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    waste_region_count(&sheets[idx], 0)
+}
+
 fn densest_sheet_waste_regions(sheets: &[cut_optimizer_2d::ResultStockPiece], gap: usize) -> u32 {
     if sheets.is_empty() {
         return u32::MAX;
@@ -1804,36 +1849,32 @@ fn peel_candidate_better(
     remaining_area: u128,
     usable_area: u128,
     sheets_left_after: usize,
-    gap: usize,
 ) -> bool {
     if last_iteration {
         // Remainder (slack sheet): fewer sheets, then the LEAST fragmented
         // waste (V9b: one staircase beats a slightly larger but scattered
         // corner rect), then the larger corner zone.
+        // V39: use visual waste regions (no kerf inflation) for comparison
+        // because kerf inflation artificially splits waste zones.
         match best {
             None => true,
             Some(best) => {
                 (
                     candidate.used_stock_count,
-                    candidate_waste_regions(candidate, gap),
+                    candidate_visual_waste_regions(candidate),
                     std::cmp::Reverse(candidate.corner_free_area_units),
                 ) < (
                     best.used_stock_count,
-                    candidate_waste_regions(best, gap),
+                    candidate_visual_waste_regions(best),
                     std::cmp::Reverse(best.corner_free_area_units),
                 )
             }
         }
     } else {
-        // V13: zones-penalised peel selection.  When nested candidates have
-        // higher util but more waste regions, a pure util comparison lets
-        // them win even though they produce fragmented frozen sheets (9 zones
-        // vs 6.8 for guillotine).  We penalise each waste region beyond 1
-        // (the ideal = single corner remnant) by ZONES_PENALTY_PP per zone.
-        // This makes the effective comparison:
-        //   effective_util = densest_util - max(0, zones - 1) * ZONES_PENALTY_PP
-        // So a candidate with 3 zones needs to be >0.6pp denser than a
-        // candidate with 1 zone to win — balancing density vs. consolidation.
+        // V13+V39: zones-penalised peel selection using VISUAL waste regions
+        // (no kerf inflation). Kerf inflation splits waste zones at piece
+        // boundaries, making consolidated layouts appear MORE fragmented than
+        // they visually are. The visual metric matches human perception.
         const ZONES_PENALTY_PP: f64 = 0.8;
 
         let densest_util = candidate
@@ -1848,7 +1889,7 @@ fn peel_candidate_better(
         if !feasible {
             return false;
         }
-        let candidate_zones = densest_sheet_waste_regions(&candidate.solution.stock_pieces, gap);
+        let candidate_zones = densest_sheet_visual_waste_regions(&candidate.solution.stock_pieces);
         let candidate_effective =
             densest_util - (candidate_zones.saturating_sub(1) as f64) * ZONES_PENALTY_PP;
         match best {
@@ -1860,7 +1901,7 @@ fn peel_candidate_better(
                     .iter()
                     .map(stock_piece_util_pct)
                     .fold(0.0_f64, f64::max);
-                let best_zones = densest_sheet_waste_regions(&best.solution.stock_pieces, gap);
+                let best_zones = densest_sheet_visual_waste_regions(&best.solution.stock_pieces);
                 let best_effective =
                     best_densest_util - (best_zones.saturating_sub(1) as f64) * ZONES_PENALTY_PP;
                 if (candidate_effective - best_effective).abs() < 0.01 {
@@ -2017,7 +2058,6 @@ async fn run_partitioned(
                 remaining_area,
                 usable_area,
                 sheets_left_after,
-                prepared.cut_width,
             ) {
                 best_attempt = Some(candidate);
             }
@@ -2040,7 +2080,6 @@ async fn run_partitioned(
                 remaining_area,
                 usable_area,
                 sheets_left_after,
-                prepared.cut_width,
             ) {
                 best_attempt = Some(candidate);
             }
@@ -2056,7 +2095,7 @@ async fn run_partitioned(
             for stock in candidate.solution.stock_pieces {
                 group_sizes.push(stock.cut_pieces.len() as u32);
                 group_area_pct.push(stock_piece_util_pct(&stock));
-                densest_zones.push(waste_region_count(&stock, prepared.cut_width));
+                densest_zones.push(waste_region_count(&stock, 0));
                 frozen.push(stock);
             }
             break;
@@ -2085,7 +2124,7 @@ async fn run_partitioned(
         group_sizes.push(densest.cut_pieces.len() as u32);
         let densest_util_pct = stock_piece_util_pct(&densest);
         group_area_pct.push(densest_util_pct);
-        densest_zones.push(waste_region_count(&densest, prepared.cut_width));
+        densest_zones.push(waste_region_count(&densest, 0));
         frozen.push(densest);
         if remaining.is_empty() {
             break;
@@ -5794,6 +5833,7 @@ mod tests {
             zone_penalty: 0.3,
             is_rescue: false,
             waste_regions,
+            visual_waste_regions: waste_regions,
             lead_util_pct,
             max_corner_mm2: 100_000.0,
             group_shift_opportunity_after_mm2,
