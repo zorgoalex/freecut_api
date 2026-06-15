@@ -105,9 +105,9 @@ impl Bin for MaxRectsBin {
 
         let lambda_z = ga_zone_penalty();
         let lambda_f = ga_fill_penalty();
-        let lambda_c = ga_corner_penalty();
+        let lambda_m = ga_monotonicity_penalty();
 
-        let (n_zones, largest_zone_area, corner_pull) = if lambda_c > 1e-9 {
+        let (n_zones, largest_zone_area, skyline_mono) = if lambda_m > 1e-9 {
             free_rect_zone_metrics(&self.free_rects, self.blade_width, self.width, self.length)
         } else {
             let (nz, la) = free_rect_connected_components(&self.free_rects, self.blade_width);
@@ -127,10 +127,9 @@ impl Bin for MaxRectsBin {
         };
         let fill_factor = (-(lambda_f * (1.0 - largest_fill))).exp();
 
-        // V34a: corner concentration penalty.
-        let corner_factor = (-(lambda_c * (1.0 - corner_pull))).exp();
+        let mono_factor = (-(lambda_m * (1.0 - skyline_mono))).exp();
 
-        util.powf(2.0) * zone_factor * fill_factor * corner_factor
+        util.powf(2.0) * zone_factor * fill_factor * mono_factor
     }
 
     fn price(&self) -> usize {

@@ -627,13 +627,13 @@ async fn optimize_profile_pool(
                 .and_then(|ga| ga.fill_penalty)
         })
         .unwrap_or(0.1);
-    let corner_penalty = pool_cfg
-        .corner_penalty
+    let monotonicity_penalty = pool_cfg
+        .monotonicity_penalty
         .or_else(|| {
             req.params
                 .ga_override
                 .as_ref()
-                .and_then(|ga| ga.corner_penalty)
+                .and_then(|ga| ga.monotonicity_penalty)
         })
         .unwrap_or(0.0);
     let max_lead_drop_pp = pool_cfg.max_lead_drop_pp.unwrap_or(0.8);
@@ -654,7 +654,7 @@ async fn optimize_profile_pool(
 
     for &zone_penalty in &profiles {
         record_profile_pool_candidate_result(
-            run_profile_pool_candidate(&req, config, base_seed, zone_penalty, fill_penalty, corner_penalty, false)
+            run_profile_pool_candidate(&req, config, base_seed, zone_penalty, fill_penalty, monotonicity_penalty, false)
                 .await,
             &mut candidates,
             &mut timed_out,
@@ -695,7 +695,7 @@ async fn optimize_profile_pool(
                     base_seed,
                     zone_penalty,
                     fill_penalty,
-                    corner_penalty,
+                    monotonicity_penalty,
                     true,
                 )
                 .await,
@@ -716,7 +716,7 @@ async fn optimize_profile_pool(
                         seed,
                         zone_penalty,
                         fill_penalty,
-                        corner_penalty,
+                        monotonicity_penalty,
                         true,
                     )
                     .await,
@@ -773,7 +773,7 @@ async fn run_profile_pool_candidate(
     seed: u64,
     zone_penalty: f64,
     fill_penalty: f64,
-    corner_penalty: f64,
+    monotonicity_penalty: f64,
     is_rescue: bool,
 ) -> Result<ProfilePoolCandidate, OptimizeError> {
     let mut profile_req = req.clone();
@@ -790,11 +790,11 @@ async fn run_profile_pool_candidate(
             top_k_candidates: None,
             zone_penalty: None,
             fill_penalty: None,
-            corner_penalty: None,
+            monotonicity_penalty: None,
         });
     ga_override.zone_penalty = Some(zone_penalty);
     ga_override.fill_penalty = Some(fill_penalty);
-    ga_override.corner_penalty = Some(corner_penalty);
+    ga_override.monotonicity_penalty = Some(monotonicity_penalty);
     profile_req.params.ga_override = Some(ga_override);
 
     let response = Box::pin(optimize_request_internal(
@@ -2416,12 +2416,12 @@ fn resolve_ga_runtime(req: &OptimizeRequest) -> GaRuntime {
 
 fn resolve_ga_fitness_config(req: &OptimizeRequest) -> Option<GaFitnessConfig> {
     let override_cfg = req.params.ga_override.as_ref()?;
-    match (override_cfg.zone_penalty, override_cfg.fill_penalty, override_cfg.corner_penalty) {
+    match (override_cfg.zone_penalty, override_cfg.fill_penalty, override_cfg.monotonicity_penalty) {
         (None, None, None) => None,
-        (zone_penalty, fill_penalty, corner_penalty) => Some(GaFitnessConfig {
+        (zone_penalty, fill_penalty, monotonicity_penalty) => Some(GaFitnessConfig {
             zone_penalty: zone_penalty.unwrap_or(0.3),
             fill_penalty: fill_penalty.unwrap_or(0.1),
-            corner_penalty: corner_penalty.unwrap_or(0.0),
+            monotonicity_penalty: monotonicity_penalty.unwrap_or(0.0),
         }),
     }
 }

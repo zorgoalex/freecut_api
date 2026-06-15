@@ -392,10 +392,11 @@ pub struct GaFitnessConfig {
     pub zone_penalty: f64,
     /// Exponential penalty applied when the largest waste component is small.
     pub fill_penalty: f64,
-    /// V34: penalty for waste not concentrated in the bottom-right corner.
-    /// Rewards monotone staircase waste shape: corner_pull near 1.0 means waste
-    /// is pushed to bottom-right, which creates the ideal layout form.
-    pub corner_penalty: f64,
+    /// V34b: penalty for non-monotone skyline in waste region layout.
+    /// Rewards monotone staircase waste shape (decreasing from top-left).
+    /// monotonicity_factor = exp(-lambda_m * (1 - skyline_mono)), where
+    /// skyline_mono = fraction of occupied height profile that is monotonically non-increasing.
+    pub monotonicity_penalty: f64,
 }
 
 thread_local! {
@@ -445,30 +446,28 @@ fn ga_fill_penalty() -> f64 {
     })
 }
 
-fn ga_corner_penalty() -> f64 {
+fn ga_monotonicity_penalty() -> f64 {
     if let Some(config) = GA_FITNESS_CONFIG.with(|cell| cell.get()) {
-        return config.corner_penalty;
+        return config.monotonicity_penalty;
     }
     static VAL: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
     *VAL.get_or_init(|| {
-        std::env::var("FREECUT_GA_CORNER_PENALTY")
+        std::env::var("FREECUT_GA_MONOTONICITY_PENALTY")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(0.0)
     })
 }
 
-/// Compute waste zone metrics in a single union-find pass.
-/// Returns (n_zones, largest_zone_area, corner_pull).
-/// corner_pull measures how much waste mass is pulled toward the bottom-right corner.
-/// Ideal layout: one zone near bottom-right, corner_pull ≈ 1.0.
+/// V34b: Compute waste zone metrics + skyline monotonicity.
+/// Returns (n_zones, largest_zone_area, skyline_monotonicity).
+/// skyline_monotonicity = fraction of columns where free-space bottom profile
+/// is non-increasing (ideal staircase = 1.0, scattered waste ≈ 0.5).
 fn free_rect_zone_metrics(free_rects: &[Rect], blade_width: usize, sheet_width: usize, sheet_length: usize) -> (usize, u64, f64) {
     let n = free_rects.len();
     if n == 0 || sheet_width == 0 || sheet_length == 0 {
         return (0, 0, 1.0);
     }
-    let sw = sheet_width as f64;
-    let sl = sheet_length as f64;
 
     let mut parent: Vec<usize> = (0..n).collect();
     let mut rank: Vec<usize> = vec![0; n];
@@ -513,54 +512,54 @@ fn free_rect_zone_metrics(free_rects: &[Rect], blade_width: usize, sheet_width: 
 
     use std::collections::HashMap;
     let mut root_area: HashMap<usize, u64> = HashMap::new();
-    let mut root_min_x: HashMap<usize, usize> = HashMap::new();
-    let mut root_max_x1: HashMap<usize, usize> = HashMap::new();
-    let mut root_min_y: HashMap<usize, usize> = HashMap::new();
-    let mut root_max_y1: HashMap<usize, usize> = HashMap::new();
 
     for i in 0..n {
         let root = find(&mut parent, i);
         let r = &free_rects[i];
         let area = r.width as u64 * r.length as u64;
         *root_area.entry(root).or_insert(0) += area;
-        root_min_x.entry(root).and_modify(|v| *v = (*v).min(r.x)).or_insert(r.x);
-        root_max_x1.entry(root).and_modify(|v| *v = (*v).max(r.x + r.width)).or_insert(r.x + r.width);
-        root_min_y.entry(root).and_modify(|v| *v = (*v).min(r.y)).or_insert(r.y);
-        root_max_y1.entry(root).and_modify(|v| *v = (*v).max(r.y + r.length)).or_insert(r.y + r.length);
     }
 
     let n_components = root_area.len();
     let largest_area = root_area.values().copied().max().unwrap_or(0);
 
-    // Compute corner pull from component bounding boxes
-    let lambda_c = ga_corner_penalty();
-    let corner_pull = if lambda_c < 1e-9 || n_components == 0 {
-        1.0 // skip computation if penalty is zero
+    // V34b: skyline monotonicity — compute free-space bottom profile.
+    // For an ideal staircase layout, free-space bottoms DECREASE left to right
+    // (tall waste columns on left, short waste on right).
+    // monotonicity = fraction of columns where bottom is non-increasing.
+    // Ideal staircase: skyline_mono ≈ 1.0. Scattered waste: ≈ 0.5.
+    let lambda_m = ga_monotonicity_penalty();
+    let skyline_mono = if lambda_m < 1e-9 || n == 0 {
+        1.0
     } else {
-        let mut weighted_x = 0.0_f64;
-        let mut weighted_y = 0.0_f64;
-        let mut total_w = 0.0_f64;
-        for (&root, &area) in &root_area {
-            let min_x = root_min_x[&root] as f64;
-            let max_x1 = root_max_x1[&root] as f64;
-            let min_y = root_min_y[&root] as f64;
-            let max_y1 = root_max_y1[&root] as f64;
-            let cx = (min_x + max_x1) / 2.0 / sw;
-            let cy = (min_y + max_y1) / 2.0 / sl;
-            let w = area as f64;
-            weighted_x += cx * w;
-            weighted_y += cy * w;
-            total_w += w;
+        // Grid size must match the internal scale (values are ×SCALE).
+        // Use grid = 10mm → 10_000 in SCALE units.
+        let grid = 10_000usize;
+        let cols = (sheet_width / grid).max(1);
+        let mut bottom_profile: Vec<usize> = vec![sheet_length; cols];
+        for fr in free_rects {
+            let x_start = (fr.x / grid).min(cols - 1);
+            let x_end = ((fr.x + fr.width) / grid).min(cols);
+            for col in x_start..x_end {
+                if col < cols {
+                    bottom_profile[col] = bottom_profile[col].min(fr.y);
+                }
+            }
         }
-        if total_w < 1.0 {
+        if cols <= 1 {
             1.0
         } else {
-            let raw_pull = (weighted_x / total_w + weighted_y / total_w) / 2.0;
-            (2.0 * raw_pull - 1.0).max(0.0)
+            let mut decreasing = 0usize;
+            for i in 1..cols {
+                if bottom_profile[i] <= bottom_profile[i - 1] {
+                    decreasing += 1;
+                }
+            }
+            decreasing as f64 / (cols - 1) as f64
         }
     };
 
-    (n_components, largest_area, corner_pull)
+    (n_components, largest_area, skyline_mono)
 }
 
 /// Count connected components among `free_rects` using union-find.

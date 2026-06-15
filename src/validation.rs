@@ -145,10 +145,10 @@ pub fn validate_request(
                 ));
             }
         }
-        if let Some(corner_penalty) = ga.corner_penalty {
-            if !corner_penalty.is_finite() || !(0.0..=1.0).contains(&corner_penalty) {
+        if let Some(monotonicity_penalty) = ga.monotonicity_penalty {
+            if !monotonicity_penalty.is_finite() || !(0.0..=1.0).contains(&monotonicity_penalty) {
                 return Err(ValidationError::new(
-                    "ga_override.corner_penalty must be finite and in range [0, 1]",
+                    "ga_override.monotonicity_penalty must be finite and in range [0, 1]",
                 ));
             }
         }
@@ -192,10 +192,10 @@ pub fn validate_request(
                     ));
                 }
             }
-            if let Some(corner_penalty) = pool.corner_penalty {
-                if !corner_penalty.is_finite() || !(0.0..=1.0).contains(&corner_penalty) {
+            if let Some(monotonicity_penalty) = pool.monotonicity_penalty {
+                if !monotonicity_penalty.is_finite() || !(0.0..=1.0).contains(&monotonicity_penalty) {
                     return Err(ValidationError::new(
-                        "profile_pool.corner_penalty must be finite and in range [0, 1]",
+                        "profile_pool.monotonicity_penalty must be finite and in range [0, 1]",
                     ));
                 }
             }
