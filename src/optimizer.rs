@@ -5737,6 +5737,72 @@ mod tests {
         }
     }
 
+    fn test_cut_piece(
+        x_mm: f64,
+        y_mm: f64,
+        width_mm: f64,
+        height_mm: f64,
+    ) -> cut_optimizer_2d::ResultCutPiece {
+        cut_optimizer_2d::ResultCutPiece {
+            external_id: None,
+            x: mm_to_units_lossy(x_mm),
+            y: mm_to_units_lossy(y_mm),
+            width: mm_to_units_lossy(width_mm),
+            length: mm_to_units_lossy(height_mm),
+            pattern_direction: CutPatternDirection::None,
+            is_rotated: false,
+        }
+    }
+
+    fn test_stock_piece(
+        width_mm: f64,
+        height_mm: f64,
+        cut_pieces: Vec<cut_optimizer_2d::ResultCutPiece>,
+    ) -> cut_optimizer_2d::ResultStockPiece {
+        cut_optimizer_2d::ResultStockPiece {
+            width: mm_to_units_lossy(width_mm),
+            length: mm_to_units_lossy(height_mm),
+            pattern_direction: CutPatternDirection::None,
+            cut_pieces,
+            waste_pieces: Vec::new(),
+            price: 0,
+        }
+    }
+
+    fn test_response(solutions: Vec<Solution>) -> OptimizeResponse {
+        OptimizeResponse {
+            status: "ok",
+            summary: Summary {
+                objective: Objective::MinWaste,
+                used_stock_count: solutions.len() as u32,
+                total_waste_area_mm2: 0.0,
+                waste_percent: 0.0,
+                time_ms: 0,
+                restarts_used: 1,
+                restarts_requested: 1,
+                used_seed: 1,
+                layout_mode: LayoutMode::Guillotine,
+                timeout_reason: None,
+                restart_policy: None,
+                portfolio: None,
+                beam: None,
+                alns: None,
+                candidate_selection: None,
+                profile_pool: None,
+                retry: None,
+                partition: None,
+                group_shift: None,
+            },
+            solutions,
+            unplaced_items: Vec::new(),
+            artifacts: Artifacts {
+                svg: None,
+                group_shift_before_svg: None,
+                group_shift_diff_svg: None,
+            },
+        }
+    }
+
     fn test_profile_pool_candidate(
         waste_regions: u32,
         lead_util_pct: f64,
@@ -5784,6 +5850,55 @@ mod tests {
             group_shift_opportunity_after_mm2,
             group_shift_opportunity_delta_mm2,
         }
+    }
+
+    #[test]
+    fn response_stock_pieces_keep_placements_in_usable_area_coordinates() {
+        let solution = Solution {
+            stock_id: "trimmed".to_string(),
+            index: 0,
+            width_mm: 140.0,
+            height_mm: 120.0,
+            trim_mm: Trim {
+                left: 10.0,
+                right: 10.0,
+                top: 10.0,
+                bottom: 10.0,
+            },
+            placements: vec![test_placement("left_panel", 0.0, 0.0, 50.0, 100.0)],
+        };
+        let response = test_response(vec![solution]);
+        let stocks = response_stock_pieces(&response);
+
+        assert_eq!(stocks.len(), 1);
+        assert_eq!(stocks[0].width, mm_to_units_lossy(120.0));
+        assert_eq!(stocks[0].length, mm_to_units_lossy(100.0));
+        assert_eq!(stocks[0].cut_pieces[0].x, 0);
+        assert_eq!(stocks[0].cut_pieces[0].y, 0);
+        assert_eq!(response_waste_regions(&response, 0.0), 1);
+    }
+
+    #[test]
+    fn waste_region_count_separates_visual_gap_from_cut_clearance_gap() {
+        let stock = test_stock_piece(
+            200.0,
+            100.0,
+            vec![
+                test_cut_piece(95.0, 0.0, 10.0, 40.0),
+                test_cut_piece(95.0, 60.0, 10.0, 40.0),
+            ],
+        );
+
+        assert_eq!(
+            waste_region_count(&stock, mm_to_units_lossy(0.0)),
+            1,
+            "without inflated cut clearance, the left and right remnants connect through the visual corridor"
+        );
+        assert_eq!(
+            waste_region_count(&stock, mm_to_units_lossy(10.0)),
+            2,
+            "inflating parts by gap closes the corridor and measures cut-clearance fragmentation"
+        );
     }
 
     #[test]
