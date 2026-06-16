@@ -593,6 +593,24 @@ V49 intermediate (2026-06-16):
   - `cargo test optimize_profile_pool_returns_telemetry -- --test-threads=1`.
 - Риск: V49 пока подтверждён unit-level, не full benchmark. Следующий шаг должен быть paired profile_pool benchmark с SVG/PNG artifacts и сравнением V43/V48/V49 на seed 11/13 и group_shift cases.
 
+### V50: V49 quick profile_pool benchmark
+
+Цель: проверить V49 не только unit tests, а быстрым service-level paired benchmark на фиксированных seeds.
+
+V50 intermediate (2026-06-17):
+
+- Ветка: `feat/v50-v49-profile-pool-benchmark`, base = `origin/main`, сверху cherry-pick V49 commit.
+- Добавлен script `scripts/test_v50_v49_profile_pool_benchmark.py`.
+- Скрипт стартует текущий service, прогоняет `multisheet_varied_4sheets` с profile_pool `[0.2,0.3,0.4,0.5,0.6,0.8]`, сохраняет JSON/SVG и считает `zones_visual0` vs `zones_cut_gap`.
+- Артефакты: `ai_docs/tmp/v50_v49_profile_pool_benchmark/`.
+- Verification/run:
+  - `python -m py_compile scripts/test_v50_v49_profile_pool_benchmark.py` passed.
+  - `python scripts/test_v50_v49_profile_pool_benchmark.py --port 8098 --seeds 11 13 --time-limit-ms 30000 --restarts 5` passed.
+- Результат:
+  - seed 11: 4 sheets, visual0=6, cut_gap=7, lead=92.83%, min=89.21%, zp=0.4.
+  - seed 13: 5 sheets, visual0=7, cut_gap=6, lead=90.82%, min=4.42%, zp=0.8.
+- Вывод: V49 выявил новую проблему. Hard lead guard нельзя считать по всем candidates без учёта sheet count: 5-sheet candidate со slack-листом может иметь высокий `lead_util_pct` и отфильтровать 4-sheet candidates. Следующая гипотеза V51: сначала выбрать минимальный `used_stock_count` bucket, затем применять lead guard/visual-zone ordering внутри этого bucket.
+
 ## Практические правила дальнейшей работы
 
 - Каждая кодовая гипотеза — отдельная ветка от `main`.

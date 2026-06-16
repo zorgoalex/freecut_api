@@ -1,0 +1,59 @@
+{
+  "cut_gap_mm": 6.5,
+  "rows": [
+    {
+      "case": "v49_seed_11",
+      "sheets": 4,
+      "placements": 40,
+      "zones_visual0": 6,
+      "zones_cut_gap": 7,
+      "per_sheet_visual0": [
+        2,
+        2,
+        1,
+        1
+      ],
+      "per_sheet_cut_gap": [
+        2,
+        2,
+        1,
+        2
+      ],
+      "lead_util_pct": 92.8327,
+      "min_util_pct": 89.2086,
+      "service_time_ms": 8874,
+      "winner_zone_penalty": 0.4,
+      "winner_visual_waste_regions": 6,
+      "winner_waste_regions": 7,
+      "winner_lead_util_pct": 92.83266070070772
+    },
+    {
+      "case": "v49_seed_13",
+      "sheets": 5,
+      "placements": 40,
+      "zones_visual0": 7,
+      "zones_cut_gap": 6,
+      "per_sheet_visual0": [
+        1,
+        2,
+        1,
+        1,
+        2
+      ],
+      "per_sheet_cut_gap": [
+        1,
+        2,
+        1,
+        1,
+        1
+      ],
+      "lead_util_pct": 90.8212,
+      "min_util_pct": 4.4218,
+      "service_time_ms": 8454,
+      "winner_zone_penalty": 0.8,
+      "winner_visual_waste_regions": 7,
+      "winner_waste_regions": 6,
+      "winner_lead_util_pct": 90.82119670117565
+    }
+  ]
+}
