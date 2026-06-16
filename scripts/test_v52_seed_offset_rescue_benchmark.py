@@ -1,4 +1,4 @@
-"""V51: benchmark sheet-count bucketed profile_pool lead guard on fixed seeds.
+"""V52: benchmark profile_pool seed-offset rescue on fixed seeds.
 
 This is a research harness, not a production path.  It starts the current
 Freecut service, runs a small profile_pool benchmark, saves JSON/SVG artifacts,
@@ -23,7 +23,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "multisheet_varied_4sheets.json"
-OUT_DIR = ROOT / "ai_docs" / "tmp" / "v51_sheet_bucket_guard_benchmark"
+OUT_DIR = ROOT / "ai_docs" / "tmp" / "v52_seed_offset_rescue_benchmark"
 CELL_MM = 10.0
 MIN_REGION_CELLS = 50
 
@@ -74,7 +74,13 @@ def post_json(base_url: str, payload: dict[str, Any], timeout_s: float) -> dict[
         raise RuntimeError(f"HTTP {exc.code}: {error_body}") from exc
 
 
-def make_request(seed: int, time_limit_ms: int, restarts: int, include_svg: bool) -> dict[str, Any]:
+def make_request(
+    seed: int,
+    time_limit_ms: int,
+    restarts: int,
+    include_svg: bool,
+    seed_offsets: list[int],
+) -> dict[str, Any]:
     request = json.loads(FIXTURE.read_text(encoding="utf-8"))
     params = request["params"]
     params["seed"] = seed
@@ -88,6 +94,8 @@ def make_request(seed: int, time_limit_ms: int, restarts: int, include_svg: bool
         "fill_penalty": 0.1,
         "max_lead_drop_pp": 0.8,
     }
+    if seed_offsets:
+        params["profile_pool"]["seed_offsets"] = seed_offsets
     return request
 
 
@@ -179,6 +187,9 @@ def summarize_response(name: str, response: dict[str, Any], cut_gap_mm: float) -
         "winner_visual_waste_regions": pool.get("winner_visual_waste_regions"),
         "winner_waste_regions": pool.get("winner_waste_regions"),
         "winner_lead_util_pct": pool.get("winner_lead_util_pct"),
+        "rescue_triggered": pool.get("rescue_triggered"),
+        "seed_offsets_used": pool.get("seed_offsets_used"),
+        "candidates_completed": pool.get("candidates_completed"),
     }
 
 
@@ -190,7 +201,7 @@ def write_outputs(rows: list[dict[str, Any]], responses: dict[str, dict[str, Any
         if svg:
             (OUT_DIR / f"{name}.svg").write_text(svg, encoding="utf-8")
 
-    (OUT_DIR / "v51_metrics.json").write_text(
+    (OUT_DIR / "v52_metrics.json").write_text(
         json.dumps({"cut_gap_mm": cut_gap_mm, "rows": rows}, indent=2),
         encoding="utf-8",
     )
@@ -207,34 +218,37 @@ def write_outputs(rows: list[dict[str, Any]], responses: dict[str, dict[str, Any
         "winner_visual_waste_regions",
         "winner_waste_regions",
         "winner_lead_util_pct",
+        "rescue_triggered",
+        "seed_offsets_used",
+        "candidates_completed",
     ]
-    with (OUT_DIR / "v51_metrics.csv").open("w", newline="", encoding="utf-8") as handle:
+    with (OUT_DIR / "v52_metrics.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         for row in rows:
             writer.writerow({field: row.get(field) for field in fields})
 
     lines = [
-        "# V51 sheet-count bucket guard benchmark",
+        "# V52 seed-offset rescue benchmark",
         "",
         f"cut_gap_mm: {cut_gap_mm}",
         "",
-        "| case | visual0 | cut_gap | lead % | min % | zp | telemetry visual/cut |",
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "| case | sheets | visual0 | cut_gap | lead % | min % | zp | rescue | completed |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         lines.append(
-            f"| {row['case']} | {row['zones_visual0']} | {row['zones_cut_gap']} | "
+            f"| {row['case']} | {row['sheets']} | {row['zones_visual0']} | {row['zones_cut_gap']} | "
             f"{row['lead_util_pct']} | {row['min_util_pct']} | {row['winner_zone_penalty']} | "
-            f"{row['winner_visual_waste_regions']}/{row['winner_waste_regions']} |"
+            f"{row['rescue_triggered']} | {row['candidates_completed']} |"
         )
     lines.append("")
     lines.append(
         "Interpretation: this is a quick branch-local smoke benchmark.  It specifically "
-        "checks whether V51 avoids the V50 regression where a 5-sheet high-lead candidate "
-        "could beat the minimum-sheet bucket."
+        "checks whether seed-offset rescue can generate a better minimum-sheet candidate "
+        "when ranking changes alone are not enough."
     )
-    (OUT_DIR / "v51_summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (OUT_DIR / "v52_summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def run_benchmark(args: argparse.Namespace) -> None:
@@ -247,8 +261,14 @@ def run_benchmark(args: argparse.Namespace) -> None:
         rows: list[dict[str, Any]] = []
         responses: dict[str, dict[str, Any]] = {}
         for seed in args.seeds:
-            name = f"v51_seed_{seed}"
-            request = make_request(seed, args.time_limit_ms, args.restarts, args.include_svg)
+            name = f"v52_seed_{seed}"
+            request = make_request(
+                seed,
+                args.time_limit_ms,
+                args.restarts,
+                args.include_svg,
+                args.seed_offsets,
+            )
             response = post_json(base_url, request, args.request_timeout_s)
             responses[name] = response
             rows.append(summarize_response(name, response, args.cut_gap_mm))
@@ -271,6 +291,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seeds", type=int, nargs="+", default=[11, 13])
     parser.add_argument("--time-limit-ms", type=int, default=4000)
     parser.add_argument("--restarts", type=int, default=5)
+    parser.add_argument("--seed-offsets", type=int, nargs="*", default=[1, 2, 7, 8, 13, 21])
     parser.add_argument("--cut-gap-mm", type=float, default=6.5)
     parser.add_argument("--request-timeout-s", type=float, default=180.0)
     parser.add_argument("--startup-timeout-s", type=float, default=120.0)

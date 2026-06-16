@@ -1,0 +1,3 @@
+case,sheets,placements,zones_visual0,zones_cut_gap,lead_util_pct,min_util_pct,service_time_ms,winner_zone_penalty,winner_visual_waste_regions,winner_waste_regions,winner_lead_util_pct,rescue_triggered,seed_offsets_used,candidates_completed
+v52_seed_11,4,40,6,7,92.8327,89.2086,70282,0.4,6,7,92.83266070070772,True,"[1, 2, 3, 5, 7, 8, 13, 21]",54
+v52_seed_13,4,40,9,7,92.5192,90.1491,70838,0.5,9,7,92.5191554073814,True,"[1, 2, 3, 5, 7, 8, 13, 21]",54
