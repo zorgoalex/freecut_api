@@ -1,0 +1,556 @@
+{
+  "status": "ok",
+  "summary": {
+    "objective": "min_waste",
+    "used_stock_count": 5,
+    "total_waste_area_mm2": 7539400.0,
+    "waste_percent": 26.458676960870328,
+    "time_ms": 8423,
+    "restarts_used": 5,
+    "restarts_requested": 5,
+    "used_seed": 13,
+    "layout_mode": "guillotine",
+    "restart_policy": {
+      "profile": "balanced",
+      "min_slice_ms": 80,
+      "min_effective_slice_ms": 550,
+      "restarts_cap_by_effective_slice": 54,
+      "restarts_effective": 5,
+      "baseline_budget_ms": 12000,
+      "progressive_slicing": true,
+      "planned_slices_ms": [
+        12000,
+        7152,
+        5384,
+        3616,
+        1848
+      ],
+      "timeouts_per_restart": 0,
+      "best_found_at_restart": 1,
+      "rescue_used": false
+    },
+    "candidate_selection": {
+      "source": "top_k_population",
+      "top_k_requested": 6,
+      "candidates_total": 35,
+      "candidates_valid": 35,
+      "candidates_invalid_fitness": 0,
+      "candidates_rejected_primary_objective": 0,
+      "candidates_rejected_tie_bbox_void": 0,
+      "candidates_rejected_tie_bbox_area": 0,
+      "candidates_rejected_tie_perimeter": 0,
+      "candidates_rejected_tie_min_util": 0,
+      "candidates_rejected_tie_corner_free": 12,
+      "candidates_rejected_equal": 15,
+      "winner_used_stock_count": 5,
+      "winner_waste_area_mm2": 7539400.0,
+      "winner_bbox_void_area_mm2": 1462871.0,
+      "winner_bbox_area_mm2": 22418471.0,
+      "winner_piece_perimeter_mm": 119040.0,
+      "winner_min_sheet_util_pct": 4.42,
+      "winner_max_edge_gap_mm": 1870.0,
+      "winner_sheet_util_spread_pct": 34.591009814690295,
+      "winner_corner_free_area_mm2": 5878325.75
+    },
+    "profile_pool": {
+      "profiles_requested": [
+        0.2,
+        0.3,
+        0.4,
+        0.5,
+        0.6,
+        0.8
+      ],
+      "candidates_total": 6,
+      "candidates_completed": 6,
+      "candidates_timed_out": 0,
+      "candidates_failed": 0,
+      "rescue_candidates_rejected_by_guard": 0,
+      "rescue_triggered": false,
+      "winner_seed": 13,
+      "winner_zone_penalty": 0.8,
+      "winner_visual_waste_regions": 7,
+      "winner_waste_regions": 6,
+      "winner_lead_util_pct": 90.82119670117565,
+      "winner_max_corner_mm2": 5198600.0,
+      "winner_group_shift_opportunity_after_mm2": 0.0,
+      "winner_group_shift_opportunity_delta_mm2": 0.0,
+      "max_lead_drop_pp": 0.8
+    }
+  },
+  "solutions": [
+    {
+      "stock_id": "mdf-2800x2070",
+      "index": 0,
+      "width_mm": 2070.0,
+      "height_mm": 2800.0,
+      "trim_mm": {
+        "left": 10.0,
+        "right": 10.0,
+        "top": 10.0,
+        "bottom": 10.0
+      },
+      "placements": [
+        {
+          "item_id": "core_a",
+          "instance": 2,
+          "x_mm": 0.0,
+          "y_mm": 0.0,
+          "width_mm": 950.0,
+          "height_mm": 1400.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "core_a",
+          "instance": 1,
+          "x_mm": 956.5,
+          "y_mm": 0.0,
+          "width_mm": 950.0,
+          "height_mm": 1400.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "core_b",
+          "instance": 2,
+          "x_mm": 0.0,
+          "y_mm": 1406.5,
+          "width_mm": 850.0,
+          "height_mm": 1300.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "core_b",
+          "instance": 1,
+          "x_mm": 856.5,
+          "y_mm": 1406.5,
+          "width_mm": 850.0,
+          "height_mm": 1300.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "strip_c",
+          "instance": 2,
+          "x_mm": 1913.0,
+          "y_mm": 0.0,
+          "width_mm": 130.0,
+          "height_mm": 1240.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "strip_c",
+          "instance": 1,
+          "x_mm": 1913.0,
+          "y_mm": 1246.5,
+          "width_mm": 130.0,
+          "height_mm": 1240.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "strip_d",
+          "instance": 2,
+          "x_mm": 1713.0,
+          "y_mm": 1406.5,
+          "width_mm": 120.0,
+          "height_mm": 980.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        }
+      ]
+    },
+    {
+      "stock_id": "mdf-2800x2070",
+      "index": 1,
+      "width_mm": 2070.0,
+      "height_mm": 2800.0,
+      "trim_mm": {
+        "left": 10.0,
+        "right": 10.0,
+        "top": 10.0,
+        "bottom": 10.0
+      },
+      "placements": [
+        {
+          "item_id": "panel_f",
+          "instance": 1,
+          "x_mm": 0.0,
+          "y_mm": 0.0,
+          "width_mm": 500.0,
+          "height_mm": 680.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_f",
+          "instance": 2,
+          "x_mm": 0.0,
+          "y_mm": 686.5,
+          "width_mm": 500.0,
+          "height_mm": 680.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "core_c",
+          "instance": 2,
+          "x_mm": 506.5,
+          "y_mm": 0.0,
+          "width_mm": 780.0,
+          "height_mm": 1240.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "core_c",
+          "instance": 1,
+          "x_mm": 506.5,
+          "y_mm": 1246.5,
+          "width_mm": 780.0,
+          "height_mm": 1240.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "core_d",
+          "instance": 2,
+          "x_mm": 1293.0,
+          "y_mm": 0.0,
+          "width_mm": 740.0,
+          "height_mm": 1180.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "core_d",
+          "instance": 1,
+          "x_mm": 1293.0,
+          "y_mm": 1186.5,
+          "width_mm": 740.0,
+          "height_mm": 1180.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "small_a",
+          "instance": 1,
+          "x_mm": 1293.0,
+          "y_mm": 2373.0,
+          "width_mm": 560.0,
+          "height_mm": 340.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "strip_b",
+          "instance": 2,
+          "x_mm": 0.0,
+          "y_mm": 1373.0,
+          "width_mm": 150.0,
+          "height_mm": 1360.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "strip_b",
+          "instance": 1,
+          "x_mm": 156.5,
+          "y_mm": 1373.0,
+          "width_mm": 150.0,
+          "height_mm": 1360.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "strip_a",
+          "instance": 2,
+          "x_mm": 313.0,
+          "y_mm": 1373.0,
+          "width_mm": 180.0,
+          "height_mm": 1400.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        }
+      ]
+    },
+    {
+      "stock_id": "mdf-2800x2070",
+      "index": 2,
+      "width_mm": 2070.0,
+      "height_mm": 2800.0,
+      "trim_mm": {
+        "left": 10.0,
+        "right": 10.0,
+        "top": 10.0,
+        "bottom": 10.0
+      },
+      "placements": [
+        {
+          "item_id": "panel_b",
+          "instance": 1,
+          "x_mm": 0.0,
+          "y_mm": 0.0,
+          "width_mm": 920.0,
+          "height_mm": 660.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_b",
+          "instance": 2,
+          "x_mm": 926.5,
+          "y_mm": 0.0,
+          "width_mm": 920.0,
+          "height_mm": 660.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_c",
+          "instance": 1,
+          "x_mm": 0.0,
+          "y_mm": 666.5,
+          "width_mm": 860.0,
+          "height_mm": 620.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_c",
+          "instance": 2,
+          "x_mm": 866.5,
+          "y_mm": 666.5,
+          "width_mm": 860.0,
+          "height_mm": 620.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_d",
+          "instance": 1,
+          "x_mm": 0.0,
+          "y_mm": 1293.0,
+          "width_mm": 800.0,
+          "height_mm": 580.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_d",
+          "instance": 2,
+          "x_mm": 0.0,
+          "y_mm": 1879.5,
+          "width_mm": 800.0,
+          "height_mm": 580.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_e",
+          "instance": 1,
+          "x_mm": 806.5,
+          "y_mm": 1293.0,
+          "width_mm": 740.0,
+          "height_mm": 540.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_e",
+          "instance": 2,
+          "x_mm": 806.5,
+          "y_mm": 1839.5,
+          "width_mm": 740.0,
+          "height_mm": 540.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_g",
+          "instance": 1,
+          "x_mm": 1553.0,
+          "y_mm": 1293.0,
+          "width_mm": 460.0,
+          "height_mm": 620.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_g",
+          "instance": 2,
+          "x_mm": 1553.0,
+          "y_mm": 1919.5,
+          "width_mm": 460.0,
+          "height_mm": 620.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "small_b",
+          "instance": 2,
+          "x_mm": 0.0,
+          "y_mm": 2466.0,
+          "width_mm": 480.0,
+          "height_mm": 300.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "small_b",
+          "instance": 1,
+          "x_mm": 1733.0,
+          "y_mm": 666.5,
+          "width_mm": 300.0,
+          "height_mm": 480.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "small_a",
+          "instance": 2,
+          "x_mm": 806.5,
+          "y_mm": 2386.0,
+          "width_mm": 560.0,
+          "height_mm": 340.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        }
+      ]
+    },
+    {
+      "stock_id": "mdf-2800x2070",
+      "index": 3,
+      "width_mm": 2070.0,
+      "height_mm": 2800.0,
+      "trim_mm": {
+        "left": 10.0,
+        "right": 10.0,
+        "top": 10.0,
+        "bottom": 10.0
+      },
+      "placements": [
+        {
+          "item_id": "strip_a",
+          "instance": 1,
+          "x_mm": 0.0,
+          "y_mm": 0.0,
+          "width_mm": 180.0,
+          "height_mm": 1400.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        }
+      ]
+    },
+    {
+      "stock_id": "mdf-2800x2070",
+      "index": 4,
+      "width_mm": 2070.0,
+      "height_mm": 2800.0,
+      "trim_mm": {
+        "left": 10.0,
+        "right": 10.0,
+        "top": 10.0,
+        "bottom": 10.0
+      },
+      "placements": [
+        {
+          "item_id": "core_e",
+          "instance": 1,
+          "x_mm": 0.0,
+          "y_mm": 0.0,
+          "width_mm": 820.0,
+          "height_mm": 1120.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "core_e",
+          "instance": 2,
+          "x_mm": 826.5,
+          "y_mm": 0.0,
+          "width_mm": 1120.0,
+          "height_mm": 820.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "core_f",
+          "instance": 1,
+          "x_mm": 0.0,
+          "y_mm": 1126.5,
+          "width_mm": 1040.0,
+          "height_mm": 760.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "core_f",
+          "instance": 2,
+          "x_mm": 0.0,
+          "y_mm": 1893.0,
+          "width_mm": 1040.0,
+          "height_mm": 760.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_a",
+          "instance": 1,
+          "x_mm": 1046.5,
+          "y_mm": 1093.0,
+          "width_mm": 980.0,
+          "height_mm": 700.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_a",
+          "instance": 2,
+          "x_mm": 1046.5,
+          "y_mm": 1799.5,
+          "width_mm": 980.0,
+          "height_mm": 700.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "small_c",
+          "instance": 1,
+          "x_mm": 826.5,
+          "y_mm": 826.5,
+          "width_mm": 420.0,
+          "height_mm": 260.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "small_c",
+          "instance": 2,
+          "x_mm": 1253.0,
+          "y_mm": 826.5,
+          "width_mm": 420.0,
+          "height_mm": 260.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "strip_d",
+          "instance": 1,
+          "x_mm": 1046.5,
+          "y_mm": 2506.0,
+          "width_mm": 980.0,
+          "height_mm": 120.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        }
+      ]
+    }
+  ],
+  "artifacts": {
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"-10.000 -10.000 2070.000 14200.000\"><rect x=\"-10.000\" y=\"-10.000\" width=\"2070.000\" height=\"2800.000\" fill=\"#f5f5f5\" stroke=\"#333\" stroke-width=\"1\"/><text x=\"-5.000\" y=\"10.000\" font-size=\"14\" font-weight=\"bold\" fill=\"#333\">Sheet 1 (mdf-2800x2070)</text><rect x=\"950.000\" y=\"0.000\" width=\"6.500\" height=\"1400.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"1400.000\" width=\"850.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"856.500\" y=\"1400.000\" width=\"93.500\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"956.500\" y=\"1400.000\" width=\"750.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1906.500\" y=\"0.000\" width=\"6.500\" height=\"1240.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1906.500\" y=\"1246.500\" width=\"6.500\" height=\"153.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1713.000\" y=\"1400.000\" width=\"120.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"850.000\" y=\"1406.500\" width=\"6.500\" height=\"1300.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1706.500\" y=\"1406.500\" width=\"6.500\" height=\"980.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1913.000\" y=\"1240.000\" width=\"130.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"0.000\" width=\"950.000\" height=\"1400.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"12.000\" font-size=\"10\" fill=\"#1f4a6d\">core_a</text><rect x=\"956.500\" y=\"0.000\" width=\"950.000\" height=\"1400.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"958.500\" y=\"12.000\" font-size=\"10\" fill=\"#1f4a6d\">core_a</text><rect x=\"0.000\" y=\"1406.500\" width=\"850.000\" height=\"1300.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"1418.500\" font-size=\"10\" fill=\"#1f4a6d\">core_b</text><rect x=\"856.500\" y=\"1406.500\" width=\"850.000\" height=\"1300.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"858.500\" y=\"1418.500\" font-size=\"10\" fill=\"#1f4a6d\">core_b</text><rect x=\"1913.000\" y=\"0.000\" width=\"130.000\" height=\"1240.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1915.000\" y=\"12.000\" font-size=\"10\" fill=\"#1f4a6d\">strip_c</text><rect x=\"1913.000\" y=\"1246.500\" width=\"130.000\" height=\"1240.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1915.000\" y=\"1258.500\" font-size=\"10\" fill=\"#1f4a6d\">strip_c</text><rect x=\"1713.000\" y=\"1406.500\" width=\"120.000\" height=\"980.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1715.000\" y=\"1418.500\" font-size=\"10\" fill=\"#1f4a6d\">strip_d</text><rect x=\"-10.000\" y=\"2840.000\" width=\"2070.000\" height=\"2800.000\" fill=\"#f5f5f5\" stroke=\"#333\" stroke-width=\"1\"/><text x=\"-5.000\" y=\"2860.000\" font-size=\"14\" font-weight=\"bold\" fill=\"#333\">Sheet 2 (mdf-2800x2070)</text><rect x=\"0.000\" y=\"3530.000\" width=\"500.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"500.000\" y=\"2850.000\" width=\"6.500\" height=\"680.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"500.000\" y=\"3536.500\" width=\"6.500\" height=\"553.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"500.000\" y=\"4096.500\" width=\"6.500\" height=\"120.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"4216.500\" width=\"150.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"156.500\" y=\"4216.500\" width=\"150.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"313.000\" y=\"4216.500\" width=\"180.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"506.500\" y=\"4090.000\" width=\"780.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1286.500\" y=\"2850.000\" width=\"6.500\" height=\"1180.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1286.500\" y=\"4036.500\" width=\"6.500\" height=\"53.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1286.500\" y=\"4096.500\" width=\"6.500\" height=\"1120.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1286.500\" y=\"5223.000\" width=\"6.500\" height=\"113.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1293.000\" y=\"4030.000\" width=\"740.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1293.000\" y=\"5216.500\" width=\"560.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"150.000\" y=\"4223.000\" width=\"6.500\" height=\"1360.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"306.500\" y=\"4223.000\" width=\"6.500\" height=\"1360.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"2850.000\" width=\"500.000\" height=\"680.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"2862.000\" font-size=\"10\" fill=\"#1f4a6d\">panel_f</text><rect x=\"0.000\" y=\"3536.500\" width=\"500.000\" height=\"680.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"3548.500\" font-size=\"10\" fill=\"#1f4a6d\">panel_f</text><rect x=\"506.500\" y=\"2850.000\" width=\"780.000\" height=\"1240.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"508.500\" y=\"2862.000\" font-size=\"10\" fill=\"#1f4a6d\">core_c</text><rect x=\"506.500\" y=\"4096.500\" width=\"780.000\" height=\"1240.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"508.500\" y=\"4108.500\" font-size=\"10\" fill=\"#1f4a6d\">core_c</text><rect x=\"1293.000\" y=\"2850.000\" width=\"740.000\" height=\"1180.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1295.000\" y=\"2862.000\" font-size=\"10\" fill=\"#1f4a6d\">core_d</text><rect x=\"1293.000\" y=\"4036.500\" width=\"740.000\" height=\"1180.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1295.000\" y=\"4048.500\" font-size=\"10\" fill=\"#1f4a6d\">core_d</text><rect x=\"1293.000\" y=\"5223.000\" width=\"560.000\" height=\"340.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1295.000\" y=\"5235.000\" font-size=\"10\" fill=\"#1f4a6d\">small_a</text><rect x=\"0.000\" y=\"4223.000\" width=\"150.000\" height=\"1360.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"4235.000\" font-size=\"10\" fill=\"#1f4a6d\">strip_b</text><rect x=\"156.500\" y=\"4223.000\" width=\"150.000\" height=\"1360.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"158.500\" y=\"4235.000\" font-size=\"10\" fill=\"#1f4a6d\">strip_b</text><rect x=\"313.000\" y=\"4223.000\" width=\"180.000\" height=\"1400.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"315.000\" y=\"4235.000\" font-size=\"10\" fill=\"#1f4a6d\">strip_a</text><rect x=\"-10.000\" y=\"5690.000\" width=\"2070.000\" height=\"2800.000\" fill=\"#f5f5f5\" stroke=\"#333\" stroke-width=\"1\"/><text x=\"-5.000\" y=\"5710.000\" font-size=\"14\" font-weight=\"bold\" fill=\"#333\">Sheet 3 (mdf-2800x2070)</text><rect x=\"920.000\" y=\"5700.000\" width=\"6.500\" height=\"660.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"6360.000\" width=\"860.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"866.500\" y=\"6360.000\" width=\"53.500\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"926.500\" y=\"6360.000\" width=\"800.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1733.000\" y=\"6360.000\" width=\"113.500\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"860.000\" y=\"6366.500\" width=\"6.500\" height=\"620.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"6986.500\" width=\"800.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"806.500\" y=\"6986.500\" width=\"53.500\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"866.500\" y=\"6986.500\" width=\"680.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1553.000\" y=\"6986.500\" width=\"173.500\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1726.500\" y=\"6366.500\" width=\"6.500\" height=\"480.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"7573.000\" width=\"800.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"800.000\" y=\"6993.000\" width=\"6.500\" height=\"540.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"800.000\" y=\"7539.500\" width=\"6.500\" height=\"33.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"800.000\" y=\"7579.500\" width=\"6.500\" height=\"500.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"8159.500\" width=\"480.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"800.000\" y=\"8086.000\" width=\"6.500\" height=\"73.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"806.500\" y=\"7533.000\" width=\"740.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1546.500\" y=\"6993.000\" width=\"6.500\" height=\"540.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1546.500\" y=\"7539.500\" width=\"6.500\" height=\"73.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1546.500\" y=\"7619.500\" width=\"6.500\" height=\"460.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"806.500\" y=\"8079.500\" width=\"560.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1553.000\" y=\"7613.000\" width=\"460.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"5700.000\" width=\"920.000\" height=\"660.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"5712.000\" font-size=\"10\" fill=\"#1f4a6d\">panel_b</text><rect x=\"926.500\" y=\"5700.000\" width=\"920.000\" height=\"660.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"928.500\" y=\"5712.000\" font-size=\"10\" fill=\"#1f4a6d\">panel_b</text><rect x=\"0.000\" y=\"6366.500\" width=\"860.000\" height=\"620.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"6378.500\" font-size=\"10\" fill=\"#1f4a6d\">panel_c</text><rect x=\"866.500\" y=\"6366.500\" width=\"860.000\" height=\"620.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"868.500\" y=\"6378.500\" font-size=\"10\" fill=\"#1f4a6d\">panel_c</text><rect x=\"0.000\" y=\"6993.000\" width=\"800.000\" height=\"580.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"7005.000\" font-size=\"10\" fill=\"#1f4a6d\">panel_d</text><rect x=\"0.000\" y=\"7579.500\" width=\"800.000\" height=\"580.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"7591.500\" font-size=\"10\" fill=\"#1f4a6d\">panel_d</text><rect x=\"806.500\" y=\"6993.000\" width=\"740.000\" height=\"540.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"808.500\" y=\"7005.000\" font-size=\"10\" fill=\"#1f4a6d\">panel_e</text><rect x=\"806.500\" y=\"7539.500\" width=\"740.000\" height=\"540.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"808.500\" y=\"7551.500\" font-size=\"10\" fill=\"#1f4a6d\">panel_e</text><rect x=\"1553.000\" y=\"6993.000\" width=\"460.000\" height=\"620.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1555.000\" y=\"7005.000\" font-size=\"10\" fill=\"#1f4a6d\">panel_g</text><rect x=\"1553.000\" y=\"7619.500\" width=\"460.000\" height=\"620.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1555.000\" y=\"7631.500\" font-size=\"10\" fill=\"#1f4a6d\">panel_g</text><rect x=\"0.000\" y=\"8166.000\" width=\"480.000\" height=\"300.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"8178.000\" font-size=\"10\" fill=\"#1f4a6d\">small_b</text><rect x=\"1733.000\" y=\"6366.500\" width=\"300.000\" height=\"480.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1735.000\" y=\"6378.500\" font-size=\"10\" fill=\"#1f4a6d\">small_b</text><rect x=\"806.500\" y=\"8086.000\" width=\"560.000\" height=\"340.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"808.500\" y=\"8098.000\" font-size=\"10\" fill=\"#1f4a6d\">small_a</text><rect x=\"-10.000\" y=\"8540.000\" width=\"2070.000\" height=\"2800.000\" fill=\"#f5f5f5\" stroke=\"#333\" stroke-width=\"1\"/><text x=\"-5.000\" y=\"8560.000\" font-size=\"14\" font-weight=\"bold\" fill=\"#333\">Sheet 4 (mdf-2800x2070)</text><rect x=\"0.000\" y=\"8550.000\" width=\"180.000\" height=\"1400.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"8562.000\" font-size=\"10\" fill=\"#1f4a6d\">strip_a</text><rect x=\"-10.000\" y=\"11390.000\" width=\"2070.000\" height=\"2800.000\" fill=\"#f5f5f5\" stroke=\"#333\" stroke-width=\"1\"/><text x=\"-5.000\" y=\"11410.000\" font-size=\"14\" font-weight=\"bold\" fill=\"#333\">Sheet 5 (mdf-2800x2070)</text><rect x=\"820.000\" y=\"11400.000\" width=\"6.500\" height=\"820.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"12520.000\" width=\"820.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"820.000\" y=\"12226.500\" width=\"6.500\" height=\"260.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"826.500\" y=\"12220.000\" width=\"420.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1253.000\" y=\"12220.000\" width=\"420.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"13286.500\" width=\"1040.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1040.000\" y=\"12526.500\" width=\"6.500\" height=\"666.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1040.000\" y=\"13199.500\" width=\"6.500\" height=\"87.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1040.000\" y=\"13293.000\" width=\"6.500\" height=\"606.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1040.000\" y=\"13906.000\" width=\"6.500\" height=\"120.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1046.500\" y=\"13193.000\" width=\"980.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1046.500\" y=\"12486.500\" width=\"200.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1253.000\" y=\"12486.500\" width=\"420.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1046.500\" y=\"13899.500\" width=\"980.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1246.500\" y=\"12226.500\" width=\"6.500\" height=\"260.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"11400.000\" width=\"820.000\" height=\"1120.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"11412.000\" font-size=\"10\" fill=\"#1f4a6d\">core_e</text><rect x=\"826.500\" y=\"11400.000\" width=\"1120.000\" height=\"820.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"828.500\" y=\"11412.000\" font-size=\"10\" fill=\"#1f4a6d\">core_e</text><rect x=\"0.000\" y=\"12526.500\" width=\"1040.000\" height=\"760.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"12538.500\" font-size=\"10\" fill=\"#1f4a6d\">core_f</text><rect x=\"0.000\" y=\"13293.000\" width=\"1040.000\" height=\"760.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"13305.000\" font-size=\"10\" fill=\"#1f4a6d\">core_f</text><rect x=\"1046.500\" y=\"12493.000\" width=\"980.000\" height=\"700.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1048.500\" y=\"12505.000\" font-size=\"10\" fill=\"#1f4a6d\">panel_a</text><rect x=\"1046.500\" y=\"13199.500\" width=\"980.000\" height=\"700.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1048.500\" y=\"13211.500\" font-size=\"10\" fill=\"#1f4a6d\">panel_a</text><rect x=\"826.500\" y=\"12226.500\" width=\"420.000\" height=\"260.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"828.500\" y=\"12238.500\" font-size=\"10\" fill=\"#1f4a6d\">small_c</text><rect x=\"1253.000\" y=\"12226.500\" width=\"420.000\" height=\"260.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1255.000\" y=\"12238.500\" font-size=\"10\" fill=\"#1f4a6d\">small_c</text><rect x=\"1046.500\" y=\"13906.000\" width=\"980.000\" height=\"120.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1048.500\" y=\"13918.000\" font-size=\"10\" fill=\"#1f4a6d\">strip_d</text></svg>"
+  }
+}

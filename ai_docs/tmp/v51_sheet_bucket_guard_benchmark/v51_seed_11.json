@@ -1,0 +1,542 @@
+{
+  "status": "ok",
+  "summary": {
+    "objective": "min_waste",
+    "used_stock_count": 4,
+    "total_waste_area_mm2": 1840400.0,
+    "waste_percent": 8.07334620108791,
+    "time_ms": 8706,
+    "restarts_used": 5,
+    "restarts_requested": 5,
+    "used_seed": 11,
+    "layout_mode": "guillotine",
+    "restart_policy": {
+      "profile": "balanced",
+      "min_slice_ms": 80,
+      "min_effective_slice_ms": 550,
+      "restarts_cap_by_effective_slice": 54,
+      "restarts_effective": 5,
+      "baseline_budget_ms": 12000,
+      "progressive_slicing": true,
+      "planned_slices_ms": [
+        12000,
+        7152,
+        5384,
+        3616,
+        1848
+      ],
+      "timeouts_per_restart": 0,
+      "best_found_at_restart": 1,
+      "rescue_used": false
+    },
+    "candidate_selection": {
+      "source": "top_k_population",
+      "top_k_requested": 6,
+      "candidates_total": 35,
+      "candidates_valid": 35,
+      "candidates_invalid_fitness": 0,
+      "candidates_rejected_primary_objective": 0,
+      "candidates_rejected_tie_bbox_void": 0,
+      "candidates_rejected_tie_bbox_area": 0,
+      "candidates_rejected_tie_perimeter": 0,
+      "candidates_rejected_tie_min_util": 0,
+      "candidates_rejected_tie_corner_free": 6,
+      "candidates_rejected_equal": 20,
+      "winner_used_stock_count": 4,
+      "winner_waste_area_mm2": 1840400.0,
+      "winner_bbox_void_area_mm2": 1395199.25,
+      "winner_bbox_area_mm2": 22350799.25,
+      "winner_piece_perimeter_mm": 119040.0,
+      "winner_min_sheet_util_pct": 89.2,
+      "winner_max_edge_gap_mm": 67.0,
+      "winner_sheet_util_spread_pct": 1.6854153790683173,
+      "winner_corner_free_area_mm2": 559214.0
+    },
+    "profile_pool": {
+      "profiles_requested": [
+        0.2,
+        0.3,
+        0.4,
+        0.5,
+        0.6,
+        0.8
+      ],
+      "candidates_total": 6,
+      "candidates_completed": 6,
+      "candidates_timed_out": 0,
+      "candidates_failed": 0,
+      "rescue_candidates_rejected_by_guard": 0,
+      "rescue_triggered": false,
+      "winner_seed": 11,
+      "winner_zone_penalty": 0.4,
+      "winner_visual_waste_regions": 6,
+      "winner_waste_regions": 7,
+      "winner_lead_util_pct": 92.83266070070772,
+      "winner_max_corner_mm2": 187654.5,
+      "winner_group_shift_opportunity_after_mm2": 0.0,
+      "winner_group_shift_opportunity_delta_mm2": 0.0,
+      "max_lead_drop_pp": 0.8
+    }
+  },
+  "solutions": [
+    {
+      "stock_id": "mdf-2800x2070",
+      "index": 0,
+      "width_mm": 2070.0,
+      "height_mm": 2800.0,
+      "trim_mm": {
+        "left": 10.0,
+        "right": 10.0,
+        "top": 10.0,
+        "bottom": 10.0
+      },
+      "placements": [
+        {
+          "item_id": "core_b",
+          "instance": 2,
+          "x_mm": 0.0,
+          "y_mm": 0.0,
+          "width_mm": 1300.0,
+          "height_mm": 850.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "core_c",
+          "instance": 2,
+          "x_mm": 0.0,
+          "y_mm": 856.5,
+          "width_mm": 1240.0,
+          "height_mm": 780.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "core_c",
+          "instance": 1,
+          "x_mm": 0.0,
+          "y_mm": 1643.0,
+          "width_mm": 1240.0,
+          "height_mm": 780.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "core_d",
+          "instance": 1,
+          "x_mm": 1306.5,
+          "y_mm": 0.0,
+          "width_mm": 740.0,
+          "height_mm": 1180.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "core_d",
+          "instance": 2,
+          "x_mm": 1246.5,
+          "y_mm": 1186.5,
+          "width_mm": 740.0,
+          "height_mm": 1180.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "small_a",
+          "instance": 1,
+          "x_mm": 1246.5,
+          "y_mm": 2373.0,
+          "width_mm": 560.0,
+          "height_mm": 340.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "small_a",
+          "instance": 2,
+          "x_mm": 0.0,
+          "y_mm": 2429.5,
+          "width_mm": 560.0,
+          "height_mm": 340.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "small_b",
+          "instance": 1,
+          "x_mm": 566.5,
+          "y_mm": 2429.5,
+          "width_mm": 480.0,
+          "height_mm": 300.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        }
+      ]
+    },
+    {
+      "stock_id": "mdf-2800x2070",
+      "index": 1,
+      "width_mm": 2070.0,
+      "height_mm": 2800.0,
+      "trim_mm": {
+        "left": 10.0,
+        "right": 10.0,
+        "top": 10.0,
+        "bottom": 10.0
+      },
+      "placements": [
+        {
+          "item_id": "panel_e",
+          "instance": 1,
+          "x_mm": 0.0,
+          "y_mm": 0.0,
+          "width_mm": 540.0,
+          "height_mm": 740.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_e",
+          "instance": 2,
+          "x_mm": 0.0,
+          "y_mm": 746.5,
+          "width_mm": 540.0,
+          "height_mm": 740.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_f",
+          "instance": 2,
+          "x_mm": 0.0,
+          "y_mm": 1493.0,
+          "width_mm": 500.0,
+          "height_mm": 680.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "core_e",
+          "instance": 2,
+          "x_mm": 546.5,
+          "y_mm": 0.0,
+          "width_mm": 820.0,
+          "height_mm": 1120.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "core_e",
+          "instance": 1,
+          "x_mm": 546.5,
+          "y_mm": 1126.5,
+          "width_mm": 820.0,
+          "height_mm": 1120.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "small_c",
+          "instance": 1,
+          "x_mm": 0.0,
+          "y_mm": 2179.5,
+          "width_mm": 420.0,
+          "height_mm": 260.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_b",
+          "instance": 2,
+          "x_mm": 1373.0,
+          "y_mm": 0.0,
+          "width_mm": 660.0,
+          "height_mm": 920.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "small_c",
+          "instance": 2,
+          "x_mm": 0.0,
+          "y_mm": 2446.0,
+          "width_mm": 420.0,
+          "height_mm": 260.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_c",
+          "instance": 1,
+          "x_mm": 1373.0,
+          "y_mm": 926.5,
+          "width_mm": 620.0,
+          "height_mm": 860.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_g",
+          "instance": 1,
+          "x_mm": 426.5,
+          "y_mm": 2253.0,
+          "width_mm": 620.0,
+          "height_mm": 460.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_d",
+          "instance": 2,
+          "x_mm": 1373.0,
+          "y_mm": 1793.0,
+          "width_mm": 580.0,
+          "height_mm": 800.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        }
+      ]
+    },
+    {
+      "stock_id": "mdf-2800x2070",
+      "index": 2,
+      "width_mm": 2070.0,
+      "height_mm": 2800.0,
+      "trim_mm": {
+        "left": 10.0,
+        "right": 10.0,
+        "top": 10.0,
+        "bottom": 10.0
+      },
+      "placements": [
+        {
+          "item_id": "core_f",
+          "instance": 1,
+          "x_mm": 0.0,
+          "y_mm": 0.0,
+          "width_mm": 760.0,
+          "height_mm": 1040.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "core_f",
+          "instance": 2,
+          "x_mm": 766.5,
+          "y_mm": 0.0,
+          "width_mm": 760.0,
+          "height_mm": 1040.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_a",
+          "instance": 1,
+          "x_mm": 0.0,
+          "y_mm": 1046.5,
+          "width_mm": 700.0,
+          "height_mm": 980.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_a",
+          "instance": 2,
+          "x_mm": 706.5,
+          "y_mm": 1046.5,
+          "width_mm": 700.0,
+          "height_mm": 980.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_b",
+          "instance": 1,
+          "x_mm": 0.0,
+          "y_mm": 2033.0,
+          "width_mm": 920.0,
+          "height_mm": 660.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_c",
+          "instance": 2,
+          "x_mm": 1413.0,
+          "y_mm": 1046.5,
+          "width_mm": 620.0,
+          "height_mm": 860.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_d",
+          "instance": 1,
+          "x_mm": 1413.0,
+          "y_mm": 1913.0,
+          "width_mm": 580.0,
+          "height_mm": 800.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_f",
+          "instance": 1,
+          "x_mm": 1533.0,
+          "y_mm": 0.0,
+          "width_mm": 500.0,
+          "height_mm": 680.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "panel_g",
+          "instance": 2,
+          "x_mm": 926.5,
+          "y_mm": 2033.0,
+          "width_mm": 460.0,
+          "height_mm": 620.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "small_b",
+          "instance": 2,
+          "x_mm": 1533.0,
+          "y_mm": 686.5,
+          "width_mm": 480.0,
+          "height_mm": 300.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        }
+      ]
+    },
+    {
+      "stock_id": "mdf-2800x2070",
+      "index": 3,
+      "width_mm": 2070.0,
+      "height_mm": 2800.0,
+      "trim_mm": {
+        "left": 10.0,
+        "right": 10.0,
+        "top": 10.0,
+        "bottom": 10.0
+      },
+      "placements": [
+        {
+          "item_id": "core_a",
+          "instance": 1,
+          "x_mm": 0.0,
+          "y_mm": 0.0,
+          "width_mm": 950.0,
+          "height_mm": 1400.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "core_a",
+          "instance": 2,
+          "x_mm": 956.5,
+          "y_mm": 0.0,
+          "width_mm": 950.0,
+          "height_mm": 1400.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "strip_a",
+          "instance": 1,
+          "x_mm": 0.0,
+          "y_mm": 1406.5,
+          "width_mm": 1400.0,
+          "height_mm": 180.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "strip_a",
+          "instance": 2,
+          "x_mm": 0.0,
+          "y_mm": 1593.0,
+          "width_mm": 1400.0,
+          "height_mm": 180.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "strip_b",
+          "instance": 2,
+          "x_mm": 1406.5,
+          "y_mm": 1406.5,
+          "width_mm": 150.0,
+          "height_mm": 1360.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "strip_b",
+          "instance": 1,
+          "x_mm": 1563.0,
+          "y_mm": 1406.5,
+          "width_mm": 150.0,
+          "height_mm": 1360.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "core_b",
+          "instance": 1,
+          "x_mm": 0.0,
+          "y_mm": 1779.5,
+          "width_mm": 1300.0,
+          "height_mm": 850.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "strip_c",
+          "instance": 2,
+          "x_mm": 1913.0,
+          "y_mm": 0.0,
+          "width_mm": 130.0,
+          "height_mm": 1240.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "strip_c",
+          "instance": 1,
+          "x_mm": 0.0,
+          "y_mm": 2636.0,
+          "width_mm": 1240.0,
+          "height_mm": 130.0,
+          "rotated": false,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "strip_d",
+          "instance": 1,
+          "x_mm": 1719.5,
+          "y_mm": 1406.5,
+          "width_mm": 120.0,
+          "height_mm": 980.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        },
+        {
+          "item_id": "strip_d",
+          "instance": 2,
+          "x_mm": 1846.0,
+          "y_mm": 1406.5,
+          "width_mm": 120.0,
+          "height_mm": 980.0,
+          "rotated": true,
+          "pattern_direction": "none"
+        }
+      ]
+    }
+  ],
+  "artifacts": {
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"-10.000 -10.000 2070.000 11350.000\"><rect x=\"-10.000\" y=\"-10.000\" width=\"2070.000\" height=\"2800.000\" fill=\"#f5f5f5\" stroke=\"#333\" stroke-width=\"1\"/><text x=\"-5.000\" y=\"10.000\" font-size=\"14\" font-weight=\"bold\" fill=\"#333\">Sheet 1 (mdf-2800x2070)</text><rect x=\"0.000\" y=\"850.000\" width=\"1240.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1300.000\" y=\"0.000\" width=\"6.500\" height=\"850.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"1636.500\" width=\"1240.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1240.000\" y=\"1186.500\" width=\"6.500\" height=\"450.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1240.000\" y=\"1643.000\" width=\"6.500\" height=\"723.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1240.000\" y=\"2373.000\" width=\"6.500\" height=\"50.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"2423.000\" width=\"560.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"566.500\" y=\"2423.000\" width=\"480.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1306.500\" y=\"1180.000\" width=\"680.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1246.500\" y=\"2366.500\" width=\"560.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"560.000\" y=\"2429.500\" width=\"6.500\" height=\"300.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"0.000\" width=\"1300.000\" height=\"850.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"12.000\" font-size=\"10\" fill=\"#1f4a6d\">core_b</text><rect x=\"0.000\" y=\"856.500\" width=\"1240.000\" height=\"780.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"868.500\" font-size=\"10\" fill=\"#1f4a6d\">core_c</text><rect x=\"0.000\" y=\"1643.000\" width=\"1240.000\" height=\"780.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"1655.000\" font-size=\"10\" fill=\"#1f4a6d\">core_c</text><rect x=\"1306.500\" y=\"0.000\" width=\"740.000\" height=\"1180.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1308.500\" y=\"12.000\" font-size=\"10\" fill=\"#1f4a6d\">core_d</text><rect x=\"1246.500\" y=\"1186.500\" width=\"740.000\" height=\"1180.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1248.500\" y=\"1198.500\" font-size=\"10\" fill=\"#1f4a6d\">core_d</text><rect x=\"1246.500\" y=\"2373.000\" width=\"560.000\" height=\"340.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1248.500\" y=\"2385.000\" font-size=\"10\" fill=\"#1f4a6d\">small_a</text><rect x=\"0.000\" y=\"2429.500\" width=\"560.000\" height=\"340.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"2441.500\" font-size=\"10\" fill=\"#1f4a6d\">small_a</text><rect x=\"566.500\" y=\"2429.500\" width=\"480.000\" height=\"300.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"568.500\" y=\"2441.500\" font-size=\"10\" fill=\"#1f4a6d\">small_b</text><rect x=\"-10.000\" y=\"2840.000\" width=\"2070.000\" height=\"2800.000\" fill=\"#f5f5f5\" stroke=\"#333\" stroke-width=\"1\"/><text x=\"-5.000\" y=\"2860.000\" font-size=\"14\" font-weight=\"bold\" fill=\"#333\">Sheet 2 (mdf-2800x2070)</text><rect x=\"0.000\" y=\"3590.000\" width=\"540.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"540.000\" y=\"2850.000\" width=\"6.500\" height=\"740.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"4336.500\" width=\"500.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"540.000\" y=\"3596.500\" width=\"6.500\" height=\"373.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"540.000\" y=\"3976.500\" width=\"6.500\" height=\"360.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"5023.000\" width=\"420.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"546.500\" y=\"3970.000\" width=\"820.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1366.500\" y=\"2850.000\" width=\"6.500\" height=\"920.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1366.500\" y=\"3776.500\" width=\"6.500\" height=\"193.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1366.500\" y=\"3976.500\" width=\"6.500\" height=\"660.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"546.500\" y=\"5096.500\" width=\"500.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1366.500\" y=\"4643.000\" width=\"6.500\" height=\"453.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"5289.500\" width=\"420.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"420.000\" y=\"5103.000\" width=\"6.500\" height=\"186.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1373.000\" y=\"3770.000\" width=\"620.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"420.000\" y=\"5296.000\" width=\"6.500\" height=\"260.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1373.000\" y=\"4636.500\" width=\"580.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"2850.000\" width=\"540.000\" height=\"740.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"2862.000\" font-size=\"10\" fill=\"#1f4a6d\">panel_e</text><rect x=\"0.000\" y=\"3596.500\" width=\"540.000\" height=\"740.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"3608.500\" font-size=\"10\" fill=\"#1f4a6d\">panel_e</text><rect x=\"0.000\" y=\"4343.000\" width=\"500.000\" height=\"680.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"4355.000\" font-size=\"10\" fill=\"#1f4a6d\">panel_f</text><rect x=\"546.500\" y=\"2850.000\" width=\"820.000\" height=\"1120.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"548.500\" y=\"2862.000\" font-size=\"10\" fill=\"#1f4a6d\">core_e</text><rect x=\"546.500\" y=\"3976.500\" width=\"820.000\" height=\"1120.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"548.500\" y=\"3988.500\" font-size=\"10\" fill=\"#1f4a6d\">core_e</text><rect x=\"0.000\" y=\"5029.500\" width=\"420.000\" height=\"260.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"5041.500\" font-size=\"10\" fill=\"#1f4a6d\">small_c</text><rect x=\"1373.000\" y=\"2850.000\" width=\"660.000\" height=\"920.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1375.000\" y=\"2862.000\" font-size=\"10\" fill=\"#1f4a6d\">panel_b</text><rect x=\"0.000\" y=\"5296.000\" width=\"420.000\" height=\"260.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"5308.000\" font-size=\"10\" fill=\"#1f4a6d\">small_c</text><rect x=\"1373.000\" y=\"3776.500\" width=\"620.000\" height=\"860.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1375.000\" y=\"3788.500\" font-size=\"10\" fill=\"#1f4a6d\">panel_c</text><rect x=\"426.500\" y=\"5103.000\" width=\"620.000\" height=\"460.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"428.500\" y=\"5115.000\" font-size=\"10\" fill=\"#1f4a6d\">panel_g</text><rect x=\"1373.000\" y=\"4643.000\" width=\"580.000\" height=\"800.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1375.000\" y=\"4655.000\" font-size=\"10\" fill=\"#1f4a6d\">panel_d</text><rect x=\"-10.000\" y=\"5690.000\" width=\"2070.000\" height=\"2800.000\" fill=\"#f5f5f5\" stroke=\"#333\" stroke-width=\"1\"/><text x=\"-5.000\" y=\"5710.000\" font-size=\"14\" font-weight=\"bold\" fill=\"#333\">Sheet 3 (mdf-2800x2070)</text><rect x=\"760.000\" y=\"5700.000\" width=\"6.500\" height=\"1040.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"6740.000\" width=\"700.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"706.500\" y=\"6740.000\" width=\"53.500\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"766.500\" y=\"6740.000\" width=\"640.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1413.000\" y=\"6740.000\" width=\"113.500\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1526.500\" y=\"5700.000\" width=\"6.500\" height=\"680.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1526.500\" y=\"6386.500\" width=\"6.500\" height=\"300.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"700.000\" y=\"6746.500\" width=\"6.500\" height=\"980.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"7726.500\" width=\"700.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"706.500\" y=\"7726.500\" width=\"213.500\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1406.500\" y=\"6746.500\" width=\"6.500\" height=\"860.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1406.500\" y=\"7613.000\" width=\"6.500\" height=\"113.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"926.500\" y=\"7726.500\" width=\"460.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"920.000\" y=\"7733.000\" width=\"6.500\" height=\"620.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1413.000\" y=\"7606.500\" width=\"580.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1533.000\" y=\"6380.000\" width=\"480.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"5700.000\" width=\"760.000\" height=\"1040.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"5712.000\" font-size=\"10\" fill=\"#1f4a6d\">core_f</text><rect x=\"766.500\" y=\"5700.000\" width=\"760.000\" height=\"1040.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"768.500\" y=\"5712.000\" font-size=\"10\" fill=\"#1f4a6d\">core_f</text><rect x=\"0.000\" y=\"6746.500\" width=\"700.000\" height=\"980.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"6758.500\" font-size=\"10\" fill=\"#1f4a6d\">panel_a</text><rect x=\"706.500\" y=\"6746.500\" width=\"700.000\" height=\"980.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"708.500\" y=\"6758.500\" font-size=\"10\" fill=\"#1f4a6d\">panel_a</text><rect x=\"0.000\" y=\"7733.000\" width=\"920.000\" height=\"660.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"7745.000\" font-size=\"10\" fill=\"#1f4a6d\">panel_b</text><rect x=\"1413.000\" y=\"6746.500\" width=\"620.000\" height=\"860.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1415.000\" y=\"6758.500\" font-size=\"10\" fill=\"#1f4a6d\">panel_c</text><rect x=\"1413.000\" y=\"7613.000\" width=\"580.000\" height=\"800.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1415.000\" y=\"7625.000\" font-size=\"10\" fill=\"#1f4a6d\">panel_d</text><rect x=\"1533.000\" y=\"5700.000\" width=\"500.000\" height=\"680.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1535.000\" y=\"5712.000\" font-size=\"10\" fill=\"#1f4a6d\">panel_f</text><rect x=\"926.500\" y=\"7733.000\" width=\"460.000\" height=\"620.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"928.500\" y=\"7745.000\" font-size=\"10\" fill=\"#1f4a6d\">panel_g</text><rect x=\"1533.000\" y=\"6386.500\" width=\"480.000\" height=\"300.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1535.000\" y=\"6398.500\" font-size=\"10\" fill=\"#1f4a6d\">small_b</text><rect x=\"-10.000\" y=\"8540.000\" width=\"2070.000\" height=\"2800.000\" fill=\"#f5f5f5\" stroke=\"#333\" stroke-width=\"1\"/><text x=\"-5.000\" y=\"8560.000\" font-size=\"14\" font-weight=\"bold\" fill=\"#333\">Sheet 4 (mdf-2800x2070)</text><rect x=\"950.000\" y=\"8550.000\" width=\"6.500\" height=\"1400.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"9950.000\" width=\"950.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"956.500\" y=\"9950.000\" width=\"443.500\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1406.500\" y=\"9950.000\" width=\"150.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1563.000\" y=\"9950.000\" width=\"150.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1906.500\" y=\"8550.000\" width=\"6.500\" height=\"1240.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1719.500\" y=\"9950.000\" width=\"120.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1846.000\" y=\"9950.000\" width=\"60.500\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"10136.500\" width=\"1400.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1400.000\" y=\"9956.500\" width=\"6.500\" height=\"180.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1400.000\" y=\"10143.000\" width=\"6.500\" height=\"180.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"10323.000\" width=\"1300.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1556.500\" y=\"9956.500\" width=\"6.500\" height=\"1360.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1713.000\" y=\"9956.500\" width=\"6.500\" height=\"980.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"11179.500\" width=\"1240.000\" height=\"6.500\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"1839.500\" y=\"9956.500\" width=\"6.500\" height=\"980.000\" fill=\"#8B0000\" stroke=\"#3a0000\" stroke-width=\"0.3\"/><rect x=\"0.000\" y=\"8550.000\" width=\"950.000\" height=\"1400.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"8562.000\" font-size=\"10\" fill=\"#1f4a6d\">core_a</text><rect x=\"956.500\" y=\"8550.000\" width=\"950.000\" height=\"1400.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"958.500\" y=\"8562.000\" font-size=\"10\" fill=\"#1f4a6d\">core_a</text><rect x=\"0.000\" y=\"9956.500\" width=\"1400.000\" height=\"180.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"9968.500\" font-size=\"10\" fill=\"#1f4a6d\">strip_a</text><rect x=\"0.000\" y=\"10143.000\" width=\"1400.000\" height=\"180.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"10155.000\" font-size=\"10\" fill=\"#1f4a6d\">strip_a</text><rect x=\"1406.500\" y=\"9956.500\" width=\"150.000\" height=\"1360.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1408.500\" y=\"9968.500\" font-size=\"10\" fill=\"#1f4a6d\">strip_b</text><rect x=\"1563.000\" y=\"9956.500\" width=\"150.000\" height=\"1360.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1565.000\" y=\"9968.500\" font-size=\"10\" fill=\"#1f4a6d\">strip_b</text><rect x=\"0.000\" y=\"10329.500\" width=\"1300.000\" height=\"850.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"10341.500\" font-size=\"10\" fill=\"#1f4a6d\">core_b</text><rect x=\"1913.000\" y=\"8550.000\" width=\"130.000\" height=\"1240.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1915.000\" y=\"8562.000\" font-size=\"10\" fill=\"#1f4a6d\">strip_c</text><rect x=\"0.000\" y=\"11186.000\" width=\"1240.000\" height=\"130.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"2.000\" y=\"11198.000\" font-size=\"10\" fill=\"#1f4a6d\">strip_c</text><rect x=\"1719.500\" y=\"9956.500\" width=\"120.000\" height=\"980.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1721.500\" y=\"9968.500\" font-size=\"10\" fill=\"#1f4a6d\">strip_d</text><rect x=\"1846.000\" y=\"9956.500\" width=\"120.000\" height=\"980.000\" fill=\"#cfe8ff\" stroke=\"#1f4a6d\" stroke-width=\"0.5\"/><text x=\"1848.000\" y=\"9968.500\" font-size=\"10\" fill=\"#1f4a6d\">strip_d</text></svg>"
+  }
+}

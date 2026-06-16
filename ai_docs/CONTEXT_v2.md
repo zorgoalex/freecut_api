@@ -593,6 +593,44 @@ V49 intermediate (2026-06-16):
   - `cargo test optimize_profile_pool_returns_telemetry -- --test-threads=1`.
 - Риск: V49 пока подтверждён unit-level, не full benchmark. Следующий шаг должен быть paired profile_pool benchmark с SVG/PNG artifacts и сравнением V43/V48/V49 на seed 11/13 и group_shift cases.
 
+### V50: V49 quick profile_pool benchmark
+
+Цель: проверить V49 не только unit tests, а быстрым service-level paired benchmark на фиксированных seeds.
+
+V50 intermediate (2026-06-17):
+
+- Ветка: `feat/v50-v49-profile-pool-benchmark`, base = `origin/main`, сверху cherry-pick V49 commit.
+- Добавлен script `scripts/test_v50_v49_profile_pool_benchmark.py`.
+- Скрипт стартует текущий service, прогоняет `multisheet_varied_4sheets` с profile_pool `[0.2,0.3,0.4,0.5,0.6,0.8]`, сохраняет JSON/SVG и считает `zones_visual0` vs `zones_cut_gap`.
+- Артефакты: `ai_docs/tmp/v50_v49_profile_pool_benchmark/`.
+- Verification/run:
+  - `python -m py_compile scripts/test_v50_v49_profile_pool_benchmark.py` passed.
+  - `python scripts/test_v50_v49_profile_pool_benchmark.py --port 8098 --seeds 11 13 --time-limit-ms 30000 --restarts 5` passed.
+- Результат:
+  - seed 11: 4 sheets, visual0=6, cut_gap=7, lead=92.83%, min=89.21%, zp=0.4.
+  - seed 13: 5 sheets, visual0=7, cut_gap=6, lead=90.82%, min=4.42%, zp=0.8.
+- Вывод: V49 выявил новую проблему. Hard lead guard нельзя считать по всем candidates без учёта sheet count: 5-sheet candidate со slack-листом может иметь высокий `lead_util_pct` и отфильтровать 4-sheet candidates. Следующая гипотеза V51: сначала выбрать минимальный `used_stock_count` bucket, затем применять lead guard/visual-zone ordering внутри этого bucket.
+
+### V51: sheet-count bucket lead guard
+
+Цель: не позволить lead guard сравнивать 4-sheet и 5-sheet candidates как один pool.
+
+V51 intermediate (2026-06-17):
+
+- Ветка: `feat/v51-profile-pool-sheet-bucket-guard`, base = `origin/main`, сверху cherry-pick V49 commit.
+- TDD RED: `profile_pool_lead_guard_is_scoped_to_min_sheet_count_bucket` падал: high-lead 5-sheet candidate выбирался вместо 4-sheet candidate.
+- GREEN: `profile_pool_winner_idx` сначала находит минимальный `used_stock_count` среди не rejected candidates, затем считает `best_lead`, eligibility и fallback ordering только внутри этого bucket.
+- Targeted checks passed:
+  - `cargo test profile_pool_lead_guard_is_scoped_to_min_sheet_count_bucket -- --test-threads=1`;
+  - `cargo test profile_pool_prefers_visual_zones_before_cut_gap_zones -- --test-threads=1`;
+  - `cargo test profile_pool_lead_guard_rejects_low_density_four_zone_candidate -- --test-threads=1`.
+- Добавлен script `scripts/test_v51_sheet_bucket_guard_benchmark.py`; артефакты: `ai_docs/tmp/v51_sheet_bucket_guard_benchmark/`.
+- Smoke run: `python scripts/test_v51_sheet_bucket_guard_benchmark.py --port 8099 --seeds 11 13 --time-limit-ms 30000 --restarts 5` passed.
+- Результат smoke:
+  - seed 11: 4 sheets, visual0=6, cut_gap=7, lead=92.83%, min=89.21%, zp=0.4.
+  - seed 13: 5 sheets, visual0=7, cut_gap=6, lead=90.82%, min=4.42%, zp=0.8.
+- Вывод: V51 исправляет реальный selection-safety bug на unit level, но smoke показывает, что seed 13 проблема не ушла. Значит в quick profile_pool setup, вероятно, нет хорошего 4-sheet candidate среди candidates. Следующая гипотеза V52: rescue через seed offsets / расширение candidate generation при `used_stock_count > 4`, а не только изменение ranking.
+
 ## Практические правила дальнейшей работы
 
 - Каждая кодовая гипотеза — отдельная ветка от `main`.
