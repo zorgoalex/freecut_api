@@ -560,6 +560,7 @@ struct ProfilePoolCandidate {
     seed: u64,
     zone_penalty: f64,
     is_rescue: bool,
+    visual_waste_regions: u32,
     waste_regions: u32,
     lead_util_pct: f64,
     max_corner_mm2: f64,
@@ -746,6 +747,7 @@ async fn optimize_profile_pool(
         rescue_accept_min_max_corner_mm2,
         winner_seed: winner.seed,
         winner_zone_penalty: winner.zone_penalty,
+        winner_visual_waste_regions: winner.visual_waste_regions,
         winner_waste_regions: winner.waste_regions,
         winner_lead_util_pct: winner.lead_util_pct,
         winner_max_corner_mm2: winner.max_corner_mm2,
@@ -791,6 +793,7 @@ async fn run_profile_pool_candidate(
     .await?;
     let gap_mm = req.params.kerf_mm + req.params.spacing_mm;
     Ok(ProfilePoolCandidate {
+        visual_waste_regions: response_waste_regions(&response, 0.0),
         waste_regions: response_waste_regions(&response, gap_mm),
         lead_util_pct: response_lead_util_pct(&response),
         max_corner_mm2: response_max_corner_mm2(&response),
@@ -5778,6 +5781,7 @@ mod tests {
             seed: 1,
             zone_penalty: 0.3,
             is_rescue: false,
+            visual_waste_regions: waste_regions,
             waste_regions,
             lead_util_pct,
             max_corner_mm2: 100_000.0,
