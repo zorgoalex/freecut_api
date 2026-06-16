@@ -571,14 +571,14 @@ struct ProfilePoolCandidate {
 fn preset_zone_penalties(preset: ProfilePoolPreset) -> Vec<f64> {
     match preset {
         ProfilePoolPreset::Cheap | ProfilePoolPreset::BalancedQuality => vec![0.2, 0.3, 0.5],
-        ProfilePoolPreset::Aggressive => vec![0.2, 0.3, 0.4, 0.5],
+        ProfilePoolPreset::Aggressive => vec![0.2, 0.3, 0.4, 0.5, 0.6, 0.8],
     }
 }
 
 fn preset_rescue_zone_penalties(preset: ProfilePoolPreset) -> Vec<f64> {
     match preset {
         ProfilePoolPreset::Cheap | ProfilePoolPreset::BalancedQuality => vec![0.4],
-        ProfilePoolPreset::Aggressive => Vec::new(),
+        ProfilePoolPreset::Aggressive => vec![0.8, 1.0],
     }
 }
 
@@ -586,7 +586,7 @@ fn preset_rescue_when_zones_gt(preset: ProfilePoolPreset) -> Option<u32> {
     match preset {
         ProfilePoolPreset::Cheap => Some(5),
         ProfilePoolPreset::BalancedQuality => Some(4),
-        ProfilePoolPreset::Aggressive => None,
+        ProfilePoolPreset::Aggressive => Some(4),
     }
 }
 
@@ -655,8 +655,16 @@ async fn optimize_profile_pool(
 
     for &zone_penalty in &profiles {
         record_profile_pool_candidate_result(
-            run_profile_pool_candidate(&req, config, base_seed, zone_penalty, fill_penalty, monotonicity_penalty, false)
-                .await,
+            run_profile_pool_candidate(
+                &req,
+                config,
+                base_seed,
+                zone_penalty,
+                fill_penalty,
+                monotonicity_penalty,
+                false,
+            )
+            .await,
             &mut candidates,
             &mut timed_out,
             &mut failed,
@@ -890,8 +898,8 @@ fn profile_pool_winner_idx(
         ) {
             continue;
         }
-        let eligible =
-            candidate.lead_util_pct + max_lead_drop_pp >= best_lead || candidate.visual_waste_regions <= 4;
+        let eligible = candidate.lead_util_pct + max_lead_drop_pp >= best_lead
+            || candidate.visual_waste_regions <= 4;
         if !eligible {
             continue;
         }
@@ -2455,7 +2463,11 @@ fn resolve_ga_runtime(req: &OptimizeRequest) -> GaRuntime {
 
 fn resolve_ga_fitness_config(req: &OptimizeRequest) -> Option<GaFitnessConfig> {
     let override_cfg = req.params.ga_override.as_ref()?;
-    match (override_cfg.zone_penalty, override_cfg.fill_penalty, override_cfg.monotonicity_penalty) {
+    match (
+        override_cfg.zone_penalty,
+        override_cfg.fill_penalty,
+        override_cfg.monotonicity_penalty,
+    ) {
         (None, None, None) => None,
         (zone_penalty, fill_penalty, monotonicity_penalty) => Some(GaFitnessConfig {
             zone_penalty: zone_penalty.unwrap_or(0.3),

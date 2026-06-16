@@ -1314,11 +1314,17 @@ async fn optimize_profile_pool_aggressive_preset_expands_to_v22_full_pool() {
         pool.get("profiles_requested")
             .and_then(Value::as_array)
             .map(|items| items.iter().filter_map(Value::as_f64).collect::<Vec<_>>()),
-        Some(vec![0.2, 0.3, 0.4, 0.5])
+        Some(vec![0.2, 0.3, 0.4, 0.5, 0.6, 0.8])
     );
-    assert!(
-        pool.get("rescue_zone_penalties_requested").is_none(),
-        "aggressive preset should not use delayed rescue profiles"
+    assert_eq!(
+        pool.get("rescue_zone_penalties_requested")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Value::as_f64).collect::<Vec<_>>()),
+        Some(vec![0.8, 1.0])
+    );
+    assert_eq!(
+        pool.get("rescue_when_zones_gt").and_then(Value::as_u64),
+        Some(4)
     );
 }
 

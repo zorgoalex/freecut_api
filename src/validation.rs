@@ -193,7 +193,8 @@ pub fn validate_request(
                 }
             }
             if let Some(monotonicity_penalty) = pool.monotonicity_penalty {
-                if !monotonicity_penalty.is_finite() || !(0.0..=1.0).contains(&monotonicity_penalty) {
+                if !monotonicity_penalty.is_finite() || !(0.0..=1.0).contains(&monotonicity_penalty)
+                {
                     return Err(ValidationError::new(
                         "profile_pool.monotonicity_penalty must be finite and in range [0, 1]",
                     ));
