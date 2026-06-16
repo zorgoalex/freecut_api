@@ -1,0 +1,227 @@
+{
+  "cut_gap_mm": 7.0,
+  "rows": [
+    {
+      "case": "v41c_seed11_old",
+      "path": "ai_docs\\tmp\\v41c_visual_artifacts\\seed_11_old.json",
+      "sheets": 4,
+      "placements": 40,
+      "zones_visual0": 5,
+      "zones_cut_gap": 5,
+      "zones_delta_cut_minus_visual": 0,
+      "per_sheet_visual0": [
+        1,
+        2,
+        1,
+        1
+      ],
+      "per_sheet_cut_gap": [
+        1,
+        2,
+        1,
+        1
+      ],
+      "lead_util_pct": 94.6014,
+      "min_util_pct": 83.9024,
+      "profile_pool_winner_zones": 5,
+      "profile_pool_winner_visual_zones": 5,
+      "group_shift_moves": null,
+      "group_shift_closed_area_mm2": null
+    },
+    {
+      "case": "v41c_seed11_new",
+      "path": "ai_docs\\tmp\\v41c_visual_artifacts\\seed_11_new.json",
+      "sheets": 4,
+      "placements": 40,
+      "zones_visual0": 4,
+      "zones_cut_gap": 4,
+      "zones_delta_cut_minus_visual": 0,
+      "per_sheet_visual0": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "per_sheet_cut_gap": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "lead_util_pct": 94.2247,
+      "min_util_pct": 85.0325,
+      "profile_pool_winner_zones": 4,
+      "profile_pool_winner_visual_zones": 4,
+      "group_shift_moves": null,
+      "group_shift_closed_area_mm2": null
+    },
+    {
+      "case": "v41c_seed13_old",
+      "path": "ai_docs\\tmp\\v41c_visual_artifacts\\seed_13_old.json",
+      "sheets": 4,
+      "placements": 40,
+      "zones_visual0": 5,
+      "zones_cut_gap": 5,
+      "zones_delta_cut_minus_visual": 0,
+      "per_sheet_visual0": [
+        1,
+        2,
+        1,
+        1
+      ],
+      "per_sheet_cut_gap": [
+        1,
+        2,
+        1,
+        1
+      ],
+      "lead_util_pct": 94.6014,
+      "min_util_pct": 83.9024,
+      "profile_pool_winner_zones": 5,
+      "profile_pool_winner_visual_zones": 5,
+      "group_shift_moves": null,
+      "group_shift_closed_area_mm2": null
+    },
+    {
+      "case": "v41c_seed13_new",
+      "path": "ai_docs\\tmp\\v41c_visual_artifacts\\seed_13_new.json",
+      "sheets": 4,
+      "placements": 40,
+      "zones_visual0": 4,
+      "zones_cut_gap": 4,
+      "zones_delta_cut_minus_visual": 0,
+      "per_sheet_visual0": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "per_sheet_cut_gap": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "lead_util_pct": 93.3871,
+      "min_util_pct": 87.5452,
+      "profile_pool_winner_zones": 4,
+      "profile_pool_winner_visual_zones": 4,
+      "group_shift_moves": null,
+      "group_shift_closed_area_mm2": null
+    },
+    {
+      "case": "v43_seed13_hard_guard",
+      "path": "ai_docs\\tmp\\v43_hard_lead_guard\\seed_13_v43_hard_guard.json",
+      "sheets": 4,
+      "placements": 40,
+      "zones_visual0": 6,
+      "zones_cut_gap": 5,
+      "zones_delta_cut_minus_visual": -1,
+      "per_sheet_visual0": [
+        1,
+        2,
+        1,
+        2
+      ],
+      "per_sheet_cut_gap": [
+        1,
+        2,
+        1,
+        1
+      ],
+      "lead_util_pct": 94.6014,
+      "min_util_pct": 83.9024,
+      "profile_pool_winner_zones": 5,
+      "profile_pool_winner_visual_zones": null,
+      "group_shift_moves": null,
+      "group_shift_closed_area_mm2": null
+    },
+    {
+      "case": "v31_seed08_group_shift",
+      "path": "ai_docs\\tmp\\best_layouts_v31_paired_group_shift_diff_quick\\seed_08_moves4_closed498280.json",
+      "sheets": 5,
+      "placements": 40,
+      "zones_visual0": 9,
+      "zones_cut_gap": 10,
+      "zones_delta_cut_minus_visual": 1,
+      "per_sheet_visual0": [
+        2,
+        2,
+        2,
+        2,
+        1
+      ],
+      "per_sheet_cut_gap": [
+        2,
+        3,
+        2,
+        2,
+        1
+      ],
+      "lead_util_pct": 90.1878,
+      "min_util_pct": 6.9556,
+      "profile_pool_winner_zones": null,
+      "profile_pool_winner_visual_zones": null,
+      "group_shift_moves": 4,
+      "group_shift_closed_area_mm2": 498280.0
+    },
+    {
+      "case": "v30_seed2_group_shift_off",
+      "path": "ai_docs\\tmp\\best_layouts_v30_group_shift_metrics_quick\\off_seed2.json",
+      "sheets": 5,
+      "placements": 40,
+      "zones_visual0": 11,
+      "zones_cut_gap": 11,
+      "zones_delta_cut_minus_visual": 0,
+      "per_sheet_visual0": [
+        2,
+        3,
+        3,
+        2,
+        1
+      ],
+      "per_sheet_cut_gap": [
+        2,
+        3,
+        3,
+        2,
+        1
+      ],
+      "lead_util_pct": 88.1137,
+      "min_util_pct": 15.2518,
+      "profile_pool_winner_zones": null,
+      "profile_pool_winner_visual_zones": null,
+      "group_shift_moves": null,
+      "group_shift_closed_area_mm2": null
+    },
+    {
+      "case": "v30_seed2_group_shift_on",
+      "path": "ai_docs\\tmp\\best_layouts_v30_group_shift_metrics_quick\\on_seed2.json",
+      "sheets": 5,
+      "placements": 40,
+      "zones_visual0": 11,
+      "zones_cut_gap": 11,
+      "zones_delta_cut_minus_visual": 0,
+      "per_sheet_visual0": [
+        2,
+        3,
+        3,
+        2,
+        1
+      ],
+      "per_sheet_cut_gap": [
+        2,
+        3,
+        3,
+        2,
+        1
+      ],
+      "lead_util_pct": 88.1137,
+      "min_util_pct": 15.2518,
+      "profile_pool_winner_zones": null,
+      "profile_pool_winner_visual_zones": null,
+      "group_shift_moves": 3,
+      "group_shift_closed_area_mm2": 141790.0
+    }
+  ]
+}

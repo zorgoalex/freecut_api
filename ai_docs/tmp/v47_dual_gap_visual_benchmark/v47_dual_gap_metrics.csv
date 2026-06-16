@@ -1,0 +1,9 @@
+case,sheets,placements,zones_visual0,zones_cut_gap,zones_delta_cut_minus_visual,lead_util_pct,min_util_pct,profile_pool_winner_zones,profile_pool_winner_visual_zones,group_shift_moves,group_shift_closed_area_mm2,path
+v41c_seed11_old,4,40,5,5,0,94.6014,83.9024,5,5,,,ai_docs\tmp\v41c_visual_artifacts\seed_11_old.json
+v41c_seed11_new,4,40,4,4,0,94.2247,85.0325,4,4,,,ai_docs\tmp\v41c_visual_artifacts\seed_11_new.json
+v41c_seed13_old,4,40,5,5,0,94.6014,83.9024,5,5,,,ai_docs\tmp\v41c_visual_artifacts\seed_13_old.json
+v41c_seed13_new,4,40,4,4,0,93.3871,87.5452,4,4,,,ai_docs\tmp\v41c_visual_artifacts\seed_13_new.json
+v43_seed13_hard_guard,4,40,6,5,-1,94.6014,83.9024,5,,,,ai_docs\tmp\v43_hard_lead_guard\seed_13_v43_hard_guard.json
+v31_seed08_group_shift,5,40,9,10,1,90.1878,6.9556,,,4,498280.0,ai_docs\tmp\best_layouts_v31_paired_group_shift_diff_quick\seed_08_moves4_closed498280.json
+v30_seed2_group_shift_off,5,40,11,11,0,88.1137,15.2518,,,,,ai_docs\tmp\best_layouts_v30_group_shift_metrics_quick\off_seed2.json
+v30_seed2_group_shift_on,5,40,11,11,0,88.1137,15.2518,,,3,141790.0,ai_docs\tmp\best_layouts_v30_group_shift_metrics_quick\on_seed2.json
