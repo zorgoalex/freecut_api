@@ -417,6 +417,15 @@ V42 промежуточный результат (2026-06-16):
 
 Следующий шаг: усилить V42 score не только paired-read, а формально: hard guard по lead drop перед zones/remnant score. Для V43 нельзя выбирать 4-zone candidate, если он проваливает density guard, даже если `visual_loss` ниже.
 
+V42b intermediate: добавлена метрика `part_contact_ratio` (near-contact perimeter между деталями при gap <= 7 мм).
+
+- V31 group_shift seed 08: zones 9 -> 9, contact +0.007, loss -0.21. Это уже математически ловит визуально заметное сближение деталей.
+- V30 seed2: zones 11 -> 11, contact +0.007, loss -0.17. Раньше это выглядело как 0 uplift; теперь видно локальное улучшение формы без изменения zones.
+- V41c seed 11: zones 5 -> 4, lead -0.38pp, contact +0.009; acceptable.
+- V41c seed 13: zones 5 -> 4, lead -1.21pp, contact +0.010; still must be rejected/flagged by lead guard despite better topology.
+
+Вывод: для group_shift/anchor-shift нужна не только waste metric, но и contact/cluster metric. Пользовательская гипотеза про сдвиг группы к основной массе подтверждается: эффект проявляется как рост contact ratio, а не обязательно как уменьшение waste zones.
+
 ### V43: remnant score в profile_pool selection
 
 Цель: заменить zones-only выбор на combined scoring.

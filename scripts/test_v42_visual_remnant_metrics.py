@@ -24,6 +24,7 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 CELL_MM = int(os.environ.get("FREECUT_VIS_CELL_MM", "10"))
 MIN_ZONE_AREA_MM2 = float(os.environ.get("FREECUT_MIN_ZONE_AREA_MM2", "5000"))
 LEAD_DROP_GUARD_PP = float(os.environ.get("FREECUT_LEAD_DROP_GUARD_PP", "0.8"))
+CONTACT_GAP_MM = float(os.environ.get("FREECUT_CONTACT_GAP_MM", "7.0"))
 
 
 @dataclass
@@ -55,6 +56,8 @@ class SheetMetrics:
     largest_corner_zone_area_mm2: float
     cluster_bbox_density: float
     internal_gap_area_mm2: float
+    part_contact_mm: float
+    part_contact_ratio: float
 
 
 @dataclass
@@ -79,6 +82,8 @@ class LayoutMetrics:
     avg_cluster_bbox_density: float
     min_cluster_bbox_density: float
     internal_gap_area_mm2: float
+    part_contact_mm: float
+    part_contact_ratio: float
     visual_loss: float
     per_sheet_zones: list[int]
     per_sheet_util_pct: list[float]
@@ -174,6 +179,32 @@ def mark_occupancy(sheet: Sheet) -> list[list[bool]]:
     return occ
 
 
+def overlap_len(a0: float, a1: float, b0: float, b1: float) -> float:
+    return max(0.0, min(a1, b1) - max(a0, b0))
+
+
+def part_contact_metrics(sheet: Sheet) -> tuple[float, float]:
+    contact = 0.0
+    rects = sheet.placements
+    for i, a in enumerate(rects):
+        for b in rects[i + 1 :]:
+            vertical_overlap = overlap_len(a.y, a.y + a.h, b.y, b.y + b.h)
+            horizontal_overlap = overlap_len(a.x, a.x + a.w, b.x, b.x + b.w)
+            if vertical_overlap > 0:
+                gap_ab = abs((a.x + a.w) - b.x)
+                gap_ba = abs((b.x + b.w) - a.x)
+                if min(gap_ab, gap_ba) <= CONTACT_GAP_MM:
+                    contact += vertical_overlap
+            if horizontal_overlap > 0:
+                gap_ab = abs((a.y + a.h) - b.y)
+                gap_ba = abs((b.y + b.h) - a.y)
+                if min(gap_ab, gap_ba) <= CONTACT_GAP_MM:
+                    contact += horizontal_overlap
+    total_perimeter = sum(2.0 * (r.w + r.h) for r in rects)
+    ratio = contact / total_perimeter if total_perimeter > 0 else 0.0
+    return contact, ratio
+
+
 def sheet_metrics(sheet: Sheet) -> SheetMetrics:
     used_area = sum(r.w * r.h for r in sheet.placements)
     usable_area = sheet.width * sheet.height
@@ -253,6 +284,7 @@ def sheet_metrics(sheet: Sheet) -> SheetMetrics:
     else:
         cluster_density = 0.0
         internal_gap = 0.0
+    part_contact, part_contact_ratio = part_contact_metrics(sheet)
 
     return SheetMetrics(
         util_pct=util_pct,
@@ -266,6 +298,8 @@ def sheet_metrics(sheet: Sheet) -> SheetMetrics:
         largest_corner_zone_area_mm2=largest_corner,
         cluster_bbox_density=cluster_density,
         internal_gap_area_mm2=internal_gap,
+        part_contact_mm=part_contact,
+        part_contact_ratio=part_contact_ratio,
     )
 
 
@@ -290,6 +324,8 @@ def layout_metrics(label: str, source: Path, sheets: list[Sheet]) -> LayoutMetri
     corner_ratio = largest_corner / total_waste if total_waste > 0 else 0.0
     avg_density = sum(densities) / len(densities) if densities else 0.0
     min_density = min(densities) if densities else 0.0
+    part_contact = sum(m.part_contact_mm for m in sm)
+    part_contact_ratio = sum(m.part_contact_ratio for m in sm) / len(sm) if sm else 0.0
     visual_loss = (
         1000.0 * max(0, len(sheets) - 4)
         + 80.0 * extra_zones
@@ -299,6 +335,7 @@ def layout_metrics(label: str, source: Path, sheets: list[Sheet]) -> LayoutMetri
         - 30.0 * boundary_ratio
         - 20.0 * corner_ratio
         - 15.0 * avg_density
+        - 25.0 * part_contact_ratio
     )
     return LayoutMetrics(
         label=label,
@@ -321,6 +358,8 @@ def layout_metrics(label: str, source: Path, sheets: list[Sheet]) -> LayoutMetri
         avg_cluster_bbox_density=round(avg_density, 5),
         min_cluster_bbox_density=round(min_density, 5),
         internal_gap_area_mm2=round(sum(m.internal_gap_area_mm2 for m in sm), 1),
+        part_contact_mm=round(part_contact, 1),
+        part_contact_ratio=round(part_contact_ratio, 5),
         visual_loss=round(visual_loss, 3),
         per_sheet_zones=[m.zones for m in sm],
         per_sheet_util_pct=[round(m.util_pct, 2) for m in sm],
@@ -377,8 +416,8 @@ def write_outputs(rows: list[LayoutMetrics]) -> None:
         f"Cell: {CELL_MM} mm. Min zone area: {MIN_ZONE_AREA_MM2:.0f} mm2. "
         f"Paired lead guard: {LEAD_DROP_GUARD_PP:.2f}pp.",
         "",
-        "| Case | Sheets | Lead | Zones | Secondary ratio | Internal ratio | Boundary ratio | Cluster density | Visual loss |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Case | Sheets | Lead | Zones | Secondary ratio | Internal ratio | Boundary ratio | Cluster density | Contact ratio | Visual loss |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         lines.append(
@@ -386,11 +425,11 @@ def write_outputs(rows: list[LayoutMetrics]) -> None:
             f"{row.total_zones} ({'/'.join(map(str, row.per_sheet_zones))}) | "
             f"{row.secondary_waste_ratio:.3f} | {row.internal_void_ratio:.3f} | "
             f"{row.largest_boundary_zone_ratio:.3f} | {row.avg_cluster_bbox_density:.3f} | "
-            f"{row.visual_loss:.2f} |"
+            f"{row.part_contact_ratio:.3f} | {row.visual_loss:.2f} |"
         )
     lines.extend(["", "## Paired deltas", ""])
-    lines.append("| Pair | Zones delta | Lead delta | Secondary delta | Internal delta | Loss delta | Read |")
-    lines.append("|---|---:|---:|---:|---:|---:|---|")
+    lines.append("| Pair | Zones delta | Lead delta | Secondary delta | Internal delta | Contact delta | Loss delta | Read |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---|")
     for pair, old_label, new_label in pairs:
         if old_label not in by_label or new_label not in by_label:
             continue
@@ -400,6 +439,7 @@ def write_outputs(rows: list[LayoutMetrics]) -> None:
         dlead = new.lead_util_pct - old.lead_util_pct
         dsec = new.secondary_waste_ratio - old.secondary_waste_ratio
         dint = new.internal_void_ratio - old.internal_void_ratio
+        dcontact = new.part_contact_ratio - old.part_contact_ratio
         dloss = new.visual_loss - old.visual_loss
         lead_guard_failed = dlead < -LEAD_DROP_GUARD_PP
         if dz < 0 and lead_guard_failed:
@@ -410,10 +450,13 @@ def write_outputs(rows: list[LayoutMetrics]) -> None:
             read = "zones improve, combined score warns about trade-off"
         elif dz == 0 and dloss < 0:
             read = "shape improves without zone-count change"
+        elif dz == 0 and dcontact > 0:
+            read = "part-contact improves without zone-count change"
         else:
             read = "no clear improvement"
         lines.append(
-            f"| {pair} | {dz:+d} | {dlead:+.2f}pp | {dsec:+.3f} | {dint:+.3f} | {dloss:+.2f} | {read} |"
+            f"| {pair} | {dz:+d} | {dlead:+.2f}pp | {dsec:+.3f} | {dint:+.3f} | "
+            f"{dcontact:+.3f} | {dloss:+.2f} | {read} |"
         )
     (OUT_DIR / "v42_summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
