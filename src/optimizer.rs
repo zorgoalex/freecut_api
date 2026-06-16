@@ -560,6 +560,7 @@ struct ProfilePoolCandidate {
     seed: u64,
     zone_penalty: f64,
     is_rescue: bool,
+    visual_waste_regions: u32,
     waste_regions: u32,
     lead_util_pct: f64,
     max_corner_mm2: f64,
@@ -746,6 +747,7 @@ async fn optimize_profile_pool(
         rescue_accept_min_max_corner_mm2,
         winner_seed: winner.seed,
         winner_zone_penalty: winner.zone_penalty,
+        winner_visual_waste_regions: winner.visual_waste_regions,
         winner_waste_regions: winner.waste_regions,
         winner_lead_util_pct: winner.lead_util_pct,
         winner_max_corner_mm2: winner.max_corner_mm2,
@@ -791,6 +793,7 @@ async fn run_profile_pool_candidate(
     .await?;
     let gap_mm = req.params.kerf_mm + req.params.spacing_mm;
     Ok(ProfilePoolCandidate {
+        visual_waste_regions: response_waste_regions(&response, 0.0),
         waste_regions: response_waste_regions(&response, gap_mm),
         lead_util_pct: response_lead_util_pct(&response),
         max_corner_mm2: response_max_corner_mm2(&response),
@@ -872,8 +875,7 @@ fn profile_pool_winner_idx(
         ) {
             continue;
         }
-        let eligible =
-            candidate.lead_util_pct + max_lead_drop_pp >= best_lead || candidate.waste_regions <= 4;
+        let eligible = candidate.lead_util_pct + max_lead_drop_pp >= best_lead;
         if !eligible {
             continue;
         }
@@ -918,8 +920,16 @@ fn profile_pool_candidate_order(
     b: &ProfilePoolCandidate,
 ) -> Option<std::cmp::Ordering> {
     Some(
-        (a.response.summary.used_stock_count, a.waste_regions)
-            .cmp(&(b.response.summary.used_stock_count, b.waste_regions))
+        (
+            a.response.summary.used_stock_count,
+            a.visual_waste_regions,
+            a.waste_regions,
+        )
+            .cmp(&(
+                b.response.summary.used_stock_count,
+                b.visual_waste_regions,
+                b.waste_regions,
+            ))
             .then_with(|| {
                 a.group_shift_opportunity_after_mm2
                     .partial_cmp(&b.group_shift_opportunity_after_mm2)
@@ -5743,6 +5753,22 @@ mod tests {
         group_shift_opportunity_after_mm2: f64,
         group_shift_opportunity_delta_mm2: f64,
     ) -> ProfilePoolCandidate {
+        test_profile_pool_candidate_with_visual(
+            waste_regions,
+            waste_regions,
+            lead_util_pct,
+            group_shift_opportunity_after_mm2,
+            group_shift_opportunity_delta_mm2,
+        )
+    }
+
+    fn test_profile_pool_candidate_with_visual(
+        visual_waste_regions: u32,
+        waste_regions: u32,
+        lead_util_pct: f64,
+        group_shift_opportunity_after_mm2: f64,
+        group_shift_opportunity_delta_mm2: f64,
+    ) -> ProfilePoolCandidate {
         ProfilePoolCandidate {
             response: OptimizeResponse {
                 status: "ok",
@@ -5778,6 +5804,7 @@ mod tests {
             seed: 1,
             zone_penalty: 0.3,
             is_rescue: false,
+            visual_waste_regions,
             waste_regions,
             lead_util_pct,
             max_corner_mm2: 100_000.0,
@@ -5800,6 +5827,31 @@ mod tests {
         assert!(
             profile_pool_candidate_better(&same_residual_more_delta, &cleaner),
             "same residual should prefer the candidate where group_shift closed more opportunity"
+        );
+    }
+
+    #[test]
+    fn profile_pool_prefers_visual_zones_before_cut_gap_zones() {
+        let visually_cleaner = test_profile_pool_candidate_with_visual(4, 5, 95.0, 0.0, 0.0);
+        let cut_gap_cleaner = test_profile_pool_candidate_with_visual(5, 4, 95.0, 0.0, 0.0);
+
+        assert!(
+            profile_pool_candidate_better(&visually_cleaner, &cut_gap_cleaner),
+            "visual zones should be the primary topology tie-break before cut-gap zones"
+        );
+    }
+
+    #[test]
+    fn profile_pool_lead_guard_rejects_low_density_four_zone_candidate() {
+        let dense = test_profile_pool_candidate(5, 95.0, 0.0, 0.0);
+        let low_density_four_zone = test_profile_pool_candidate(4, 93.9, 0.0, 0.0);
+        let candidates = vec![dense, low_density_four_zone];
+
+        let winner_idx = profile_pool_winner_idx(&candidates, 0.8, None);
+
+        assert_eq!(
+            winner_idx, 0,
+            "4-zone candidates must not bypass max_lead_drop_pp"
         );
     }
 
