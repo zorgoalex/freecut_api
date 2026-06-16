@@ -365,6 +365,7 @@ pub struct GroupShiftTelemetry {
     pub parts_moved: u32,
     pub passes_run: u32,
     pub corridor_closed_area_mm2: f64,
+    pub contact_gain_mm: f64,
     pub corridor_opportunity_before_mm2: f64,
     pub corridor_opportunity_after_mm2: f64,
     pub corridor_opportunity_delta_mm2: f64,

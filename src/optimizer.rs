@@ -302,6 +302,7 @@ async fn optimize_request_internal(
                     parts_moved: 0,
                     passes_run: 0,
                     corridor_closed_area_mm2: 0.0,
+                    contact_gain_mm: 0.0,
                     corridor_opportunity_before_mm2: 0.0,
                     corridor_opportunity_after_mm2: 0.0,
                     corridor_opportunity_delta_mm2: 0.0,
@@ -4581,6 +4582,7 @@ struct GroupShiftMove {
     direction: ShiftDirection,
     shift_mm: f64,
     corridor_closed_area_mm2: f64,
+    contact_gain_mm: f64,
     selected_area_mm2: f64,
 }
 
@@ -4610,6 +4612,7 @@ fn apply_group_shift_postprocess(
         parts_moved: 0,
         passes_run: 0,
         corridor_closed_area_mm2: 0.0,
+        contact_gain_mm: 0.0,
         corridor_opportunity_before_mm2: 0.0,
         corridor_opportunity_after_mm2: 0.0,
         corridor_opportunity_delta_mm2: 0.0,
@@ -4645,6 +4648,7 @@ fn apply_group_shift_postprocess(
         telemetry.moves_applied += 1;
         telemetry.parts_moved += best_move.placement_indices.len() as u32;
         telemetry.corridor_closed_area_mm2 += best_move.corridor_closed_area_mm2;
+        telemetry.contact_gain_mm += best_move.contact_gain_mm;
         telemetry.max_shift_mm = telemetry.max_shift_mm.max(best_move.shift_mm);
     }
 
@@ -4972,6 +4976,7 @@ fn consider_group_shift_candidate(
         min_shift_mm,
         direction,
         selected,
+        anchor_mask,
     ) {
         let replace = best
             .as_ref()
@@ -4990,6 +4995,7 @@ fn evaluate_group_shift_candidate(
     min_shift_mm: f64,
     direction: ShiftDirection,
     selected: Vec<usize>,
+    anchor_mask: Option<&[bool]>,
 ) -> Option<GroupShiftMove> {
     let n = solution.placements.len();
     if selected.is_empty() || selected.len() == n {
@@ -5066,13 +5072,26 @@ fn evaluate_group_shift_candidate(
     if corridor_closed_area_mm2 <= GROUP_SHIFT_EPS {
         return None;
     }
-
+    let contact_before_mm = placement_contact_score_for_selection(
+        &solution.placements,
+        gap_mm,
+        &selected_mask,
+        anchor_mask,
+    );
+    let mut shifted = solution.placements.clone();
+    shift_placements(&mut shifted, &selected, direction, shift_mm);
+    let contact_gain_mm = normalize_group_shift_metric(
+        placement_contact_score_for_selection(&shifted, gap_mm, &selected_mask, anchor_mask)
+            - contact_before_mm,
+    )
+    .max(0.0);
     Some(GroupShiftMove {
         solution_index,
         placement_indices: selected,
         direction,
         shift_mm,
         corridor_closed_area_mm2,
+        contact_gain_mm,
         selected_area_mm2: selected_area,
     })
 }
@@ -5170,23 +5189,80 @@ fn selected_group_perpendicular_span(
 
 fn apply_group_shift_move(solutions: &mut [Solution], group_shift_move: &GroupShiftMove) {
     let solution = &mut solutions[group_shift_move.solution_index];
-    for idx in &group_shift_move.placement_indices {
-        let placement = &mut solution.placements[*idx];
-        match group_shift_move.direction {
-            ShiftDirection::Left => placement.x_mm -= group_shift_move.shift_mm,
-            ShiftDirection::Right => placement.x_mm += group_shift_move.shift_mm,
-            ShiftDirection::Up => placement.y_mm -= group_shift_move.shift_mm,
-            ShiftDirection::Down => placement.y_mm += group_shift_move.shift_mm,
+    shift_placements(
+        &mut solution.placements,
+        &group_shift_move.placement_indices,
+        group_shift_move.direction,
+        group_shift_move.shift_mm,
+    );
+}
+
+fn shift_placements(
+    placements: &mut [Placement],
+    placement_indices: &[usize],
+    direction: ShiftDirection,
+    shift_mm: f64,
+) {
+    for idx in placement_indices {
+        let placement = &mut placements[*idx];
+        match direction {
+            ShiftDirection::Left => placement.x_mm -= shift_mm,
+            ShiftDirection::Right => placement.x_mm += shift_mm,
+            ShiftDirection::Up => placement.y_mm -= shift_mm,
+            ShiftDirection::Down => placement.y_mm += shift_mm,
         }
     }
 }
 
 fn compare_group_shift_moves(a: &GroupShiftMove, b: &GroupShiftMove) -> std::cmp::Ordering {
-    a.corridor_closed_area_mm2
-        .total_cmp(&b.corridor_closed_area_mm2)
+    a.contact_gain_mm
+        .total_cmp(&b.contact_gain_mm)
+        .then_with(|| {
+            a.corridor_closed_area_mm2
+                .total_cmp(&b.corridor_closed_area_mm2)
+        })
         .then_with(|| a.shift_mm.total_cmp(&b.shift_mm))
         .then_with(|| b.selected_area_mm2.total_cmp(&a.selected_area_mm2))
         .then_with(|| b.placement_indices.len().cmp(&a.placement_indices.len()))
+}
+
+fn placement_contact_score_for_selection(
+    placements: &[Placement],
+    gap_mm: f64,
+    selected_mask: &[bool],
+    anchor_mask: Option<&[bool]>,
+) -> f64 {
+    let contact_gap = gap_mm + GROUP_SHIFT_EPS;
+    let mut score = 0.0;
+    for (idx, a) in placements.iter().enumerate() {
+        for (other_idx, b) in placements.iter().enumerate().skip(idx + 1) {
+            let a_selected = selected_mask[idx];
+            let b_selected = selected_mask[other_idx];
+            if a_selected == b_selected {
+                continue;
+            }
+            if let Some(anchor_mask) = anchor_mask {
+                let a_anchor = anchor_mask[idx];
+                let b_anchor = anchor_mask[other_idx];
+                if !(a_selected && b_anchor || b_selected && a_anchor) {
+                    continue;
+                }
+            }
+            let horizontal_gap = axis_gap(a.x_mm, a.x_mm + a.width_mm, b.x_mm, b.x_mm + b.width_mm);
+            let vertical_gap = axis_gap(a.y_mm, a.y_mm + a.height_mm, b.y_mm, b.y_mm + b.height_mm);
+            if horizontal_gap <= contact_gap && vertical_gap <= GROUP_SHIFT_EPS {
+                score += overlap_length(a.y_mm, a.y_mm + a.height_mm, b.y_mm, b.y_mm + b.height_mm);
+            }
+            if vertical_gap <= contact_gap && horizontal_gap <= GROUP_SHIFT_EPS {
+                score += overlap_length(a.x_mm, a.x_mm + a.width_mm, b.x_mm, b.x_mm + b.width_mm);
+            }
+        }
+    }
+    score
+}
+
+fn overlap_length(a_min: f64, a_max: f64, b_min: f64, b_max: f64) -> f64 {
+    (a_max.min(b_max) - a_min.max(b_min)).max(0.0)
 }
 
 fn usable_width_mm(solution: &Solution) -> f64 {
@@ -5939,6 +6015,41 @@ mod tests {
         assert_eq!(solutions[0].placements[3].x_mm, 110.0);
         assert_eq!(solutions[0].placements[0].x_mm, 0.0);
         assert_eq!(solutions[0].placements[1].x_mm, 0.0);
+    }
+
+    #[test]
+    fn group_shift_prefers_contact_gain_over_large_low_contact_corridor() {
+        let mut solutions = vec![test_solution(vec![
+            test_placement("tiny_stop", 0.0, 0.0, 10.0, 10.0),
+            test_placement("tall_far", 250.0, 0.0, 50.0, 100.0),
+            test_placement("anchor_main", 0.0, 120.0, 100.0, 30.0),
+            test_placement("anchor_extension", 0.0, 155.0, 100.0, 40.0),
+            test_placement("side_panel", 160.0, 120.0, 100.0, 30.0),
+        ])];
+
+        let telemetry = apply_group_shift_postprocess(
+            &mut solutions,
+            10.0,
+            GroupShiftOptions {
+                enabled: true,
+                min_shift_mm: 5.0,
+                max_passes: 1,
+            },
+        );
+
+        assert_eq!(telemetry.moves_applied, 1);
+        assert_eq!(
+            solutions[0].placements[1].x_mm, 250.0,
+            "the tall low-contact candidate should not win by closed area alone"
+        );
+        assert_eq!(
+            solutions[0].placements[4].x_mm, 110.0,
+            "the side panel should move into near-contact with the anchor group"
+        );
+        assert!(
+            telemetry.contact_gain_mm > 0.0,
+            "the accepted move should report a measurable contact gain"
+        );
     }
 
     #[test]

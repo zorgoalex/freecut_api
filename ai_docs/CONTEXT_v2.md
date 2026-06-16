@@ -631,6 +631,24 @@ V51 intermediate (2026-06-17):
   - seed 13: 5 sheets, visual0=7, cut_gap=6, lead=90.82%, min=4.42%, zp=0.8.
 - Вывод: V51 исправляет реальный selection-safety bug на unit level, но smoke показывает, что seed 13 проблема не ушла. Значит в quick profile_pool setup, вероятно, нет хорошего 4-sheet candidate среди candidates. Следующая гипотеза V52: rescue через seed offsets / расширение candidate generation при `used_stock_count > 4`, а не только изменение ranking.
 
+### V52: seed-offset rescue benchmark
+
+Цель: проверить, может ли существующий `profile_pool.seed_offsets` решить V51 smoke failure через расширение candidate generation.
+
+V52 intermediate (2026-06-17):
+
+- Ветка: `feat/v52-seed-offset-rescue-benchmark`, base = `origin/main`, сверху cherry-pick V49+V51.
+- Добавлен script `scripts/test_v52_seed_offset_rescue_benchmark.py`.
+- Скрипт добавляет в profile_pool `seed_offsets` и логирует `rescue_triggered`, `seed_offsets_used`, `candidates_completed`.
+- Артефакты: `ai_docs/tmp/v52_seed_offset_rescue_benchmark/`.
+- Verification/run:
+  - `python -m py_compile scripts/test_v52_seed_offset_rescue_benchmark.py` passed.
+  - `python scripts/test_v52_seed_offset_rescue_benchmark.py --port 8100 --seeds 11 13 --time-limit-ms 4000 --restarts 5 --seed-offsets 1 2 3 5 7 8 13 21` passed.
+- Результат:
+  - seed 11: 4 sheets, visual0=6, cut_gap=7, lead=92.83%, min=89.21%, rescue=true, 54 candidates.
+  - seed 13: 4 sheets, visual0=9, cut_gap=7, lead=92.52%, min=90.15%, rescue=true, 54 candidates.
+- Вывод: seed-offset rescue подтверждён как способ вернуть seed 13 с 5 sheets на 4 sheets. Но visual quality хуже, чем хотелось: `visual0=9`. Следующая гипотеза V53: rescue acceptance/ranking должен учитывать visual/contact guard, а не только вернуть минимальное число листов. Простое расширение seeds без визуального guard может дать плотность, но разорванный остаток.
+
 ## Практические правила дальнейшей работы
 
 - Каждая кодовая гипотеза — отдельная ветка от `main`.
