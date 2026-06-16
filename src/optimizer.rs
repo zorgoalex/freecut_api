@@ -857,13 +857,25 @@ fn profile_pool_winner_idx(
     max_lead_drop_pp: f64,
     rescue_accept_min_max_corner_mm2: Option<f64>,
 ) -> usize {
-    let best_lead = candidates
+    let min_sheet_count = candidates
         .iter()
         .filter(|candidate| {
             !profile_pool_candidate_rejected_by_rescue_guard(
                 candidate,
                 rescue_accept_min_max_corner_mm2,
             )
+        })
+        .map(|candidate| candidate.response.summary.used_stock_count)
+        .min();
+    let best_lead = candidates
+        .iter()
+        .filter(|candidate| {
+            !profile_pool_candidate_rejected_by_rescue_guard(
+                candidate,
+                rescue_accept_min_max_corner_mm2,
+            ) && min_sheet_count.is_some_and(|sheet_count| {
+                candidate.response.summary.used_stock_count == sheet_count
+            })
         })
         .map(|candidate| candidate.lead_util_pct)
         .fold(0.0_f64, f64::max);
@@ -873,6 +885,11 @@ fn profile_pool_winner_idx(
             candidate,
             rescue_accept_min_max_corner_mm2,
         ) {
+            continue;
+        }
+        if min_sheet_count
+            .is_some_and(|sheet_count| candidate.response.summary.used_stock_count != sheet_count)
+        {
             continue;
         }
         let eligible = candidate.lead_util_pct + max_lead_drop_pp >= best_lead;
@@ -895,7 +912,9 @@ fn profile_pool_winner_idx(
                 !profile_pool_candidate_rejected_by_rescue_guard(
                     candidate,
                     rescue_accept_min_max_corner_mm2,
-                )
+                ) && min_sheet_count.is_some_and(|sheet_count| {
+                    candidate.response.summary.used_stock_count == sheet_count
+                })
             })
             .min_by(|(_, a), (_, b)| {
                 profile_pool_candidate_order(a, b).unwrap_or(std::cmp::Ordering::Equal)
@@ -5769,12 +5788,30 @@ mod tests {
         group_shift_opportunity_after_mm2: f64,
         group_shift_opportunity_delta_mm2: f64,
     ) -> ProfilePoolCandidate {
+        test_profile_pool_candidate_with_sheet_count(
+            4,
+            visual_waste_regions,
+            waste_regions,
+            lead_util_pct,
+            group_shift_opportunity_after_mm2,
+            group_shift_opportunity_delta_mm2,
+        )
+    }
+
+    fn test_profile_pool_candidate_with_sheet_count(
+        used_stock_count: u32,
+        visual_waste_regions: u32,
+        waste_regions: u32,
+        lead_util_pct: f64,
+        group_shift_opportunity_after_mm2: f64,
+        group_shift_opportunity_delta_mm2: f64,
+    ) -> ProfilePoolCandidate {
         ProfilePoolCandidate {
             response: OptimizeResponse {
                 status: "ok",
                 summary: Summary {
                     objective: Objective::MinWaste,
-                    used_stock_count: 4,
+                    used_stock_count,
                     total_waste_area_mm2: 0.0,
                     waste_percent: 0.0,
                     time_ms: 0,
@@ -5838,6 +5875,22 @@ mod tests {
         assert!(
             profile_pool_candidate_better(&visually_cleaner, &cut_gap_cleaner),
             "visual zones should be the primary topology tie-break before cut-gap zones"
+        );
+    }
+
+    #[test]
+    fn profile_pool_lead_guard_is_scoped_to_min_sheet_count_bucket() {
+        let four_sheet_candidate =
+            test_profile_pool_candidate_with_sheet_count(4, 6, 7, 89.0, 0.0, 0.0);
+        let high_lead_five_sheet_candidate =
+            test_profile_pool_candidate_with_sheet_count(5, 1, 1, 95.0, 0.0, 0.0);
+        let candidates = vec![four_sheet_candidate, high_lead_five_sheet_candidate];
+
+        let winner_idx = profile_pool_winner_idx(&candidates, 0.8, None);
+
+        assert_eq!(
+            winner_idx, 0,
+            "lead guard must not let a higher-lead 5-sheet candidate eliminate all 4-sheet candidates"
         );
     }
 
