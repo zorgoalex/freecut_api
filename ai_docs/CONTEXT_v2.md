@@ -456,6 +456,9 @@ V43 intermediate (2026-06-16):
   - 4-zone candidate ниже lead guard отклоняется;
   - 4-zone candidate внутри lead guard всё ещё побеждает 5-zone candidate.
 - Это ещё не full remnant score. Это hard safety guard, который нужен до V43/V44 scoring.
+- Empirical smoke на seed 13 с explicit pool `[0.2,0.3,0.4,0.5,0.6,0.8]`: winner стал `zone_penalty=0.4`, `waste_regions=5`, `lead=94.60%`. Низкоплотный 4-zone candidate из V41c больше не проходит.
+- Артефакты: `ai_docs/tmp/v43_hard_lead_guard/seed_13_v43_hard_guard.{json,svg,png}`.
+- Визуальный вывод: V43 выбирает более плотный 5-zone вариант вместо рыхлого 4-zone варианта. Это подтверждает hard lead guard.
 
 ### V44: group_shift acceptance by remnant score
 
