@@ -872,8 +872,7 @@ fn profile_pool_winner_idx(
         ) {
             continue;
         }
-        let eligible =
-            candidate.lead_util_pct + max_lead_drop_pp >= best_lead || candidate.waste_regions <= 4;
+        let eligible = candidate.lead_util_pct + max_lead_drop_pp >= best_lead;
         if !eligible {
             continue;
         }
@@ -5800,6 +5799,34 @@ mod tests {
         assert!(
             profile_pool_candidate_better(&same_residual_more_delta, &cleaner),
             "same residual should prefer the candidate where group_shift closed more opportunity"
+        );
+    }
+
+    #[test]
+    fn profile_pool_lead_guard_rejects_low_density_four_zone_candidate() {
+        let dense = test_profile_pool_candidate(5, 95.0, 80_000.0, 120_000.0);
+        let too_sparse = test_profile_pool_candidate(4, 93.9, 10_000.0, 80_000.0);
+        let candidates = vec![dense, too_sparse];
+
+        let winner_idx = profile_pool_winner_idx(&candidates, 0.8, None);
+
+        assert_eq!(
+            winner_idx, 0,
+            "a 4-zone candidate still has to satisfy the lead-util guard"
+        );
+    }
+
+    #[test]
+    fn profile_pool_allows_four_zone_candidate_inside_lead_guard() {
+        let dense = test_profile_pool_candidate(5, 95.0, 80_000.0, 120_000.0);
+        let cleaner = test_profile_pool_candidate(4, 94.3, 10_000.0, 80_000.0);
+        let candidates = vec![dense, cleaner];
+
+        let winner_idx = profile_pool_winner_idx(&candidates, 0.8, None);
+
+        assert_eq!(
+            winner_idx, 1,
+            "inside the lead guard, fewer waste regions should still win"
         );
     }
 
