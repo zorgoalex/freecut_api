@@ -567,6 +567,7 @@ struct ProfilePoolCandidate {
     max_corner_mm2: f64,
     group_shift_opportunity_after_mm2: f64,
     group_shift_opportunity_delta_mm2: f64,
+    group_shift_contact_gain_mm: f64,
 }
 
 fn preset_zone_penalties(preset: ProfilePoolPreset) -> Vec<f64> {
@@ -754,6 +755,7 @@ async fn optimize_profile_pool(
         winner_max_corner_mm2: winner.max_corner_mm2,
         winner_group_shift_opportunity_after_mm2: winner.group_shift_opportunity_after_mm2,
         winner_group_shift_opportunity_delta_mm2: winner.group_shift_opportunity_delta_mm2,
+        winner_group_shift_contact_gain_mm: winner.group_shift_contact_gain_mm,
         max_lead_drop_pp,
     });
     Ok(winner.response)
@@ -800,6 +802,7 @@ async fn run_profile_pool_candidate(
         max_corner_mm2: response_max_corner_mm2(&response),
         group_shift_opportunity_after_mm2: response_group_shift_opportunity_after_mm2(&response),
         group_shift_opportunity_delta_mm2: response_group_shift_opportunity_delta_mm2(&response),
+        group_shift_contact_gain_mm: response_group_shift_contact_gain_mm(&response),
         response,
         seed,
         zone_penalty,
@@ -956,6 +959,11 @@ fn profile_pool_candidate_order(
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
             .then_with(|| {
+                b.group_shift_contact_gain_mm
+                    .partial_cmp(&a.group_shift_contact_gain_mm)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
                 b.group_shift_opportunity_delta_mm2
                     .partial_cmp(&a.group_shift_opportunity_delta_mm2)
                     .unwrap_or(std::cmp::Ordering::Equal)
@@ -1016,6 +1024,14 @@ fn response_group_shift_opportunity_delta_mm2(resp: &OptimizeResponse) -> f64 {
         .group_shift
         .as_ref()
         .map(|group_shift| group_shift.corridor_opportunity_delta_mm2)
+        .unwrap_or(0.0)
+}
+
+fn response_group_shift_contact_gain_mm(resp: &OptimizeResponse) -> f64 {
+    resp.summary
+        .group_shift
+        .as_ref()
+        .map(|group_shift| group_shift.contact_gain_mm)
         .unwrap_or(0.0)
 }
 
@@ -5923,7 +5939,42 @@ mod tests {
             max_corner_mm2: 100_000.0,
             group_shift_opportunity_after_mm2,
             group_shift_opportunity_delta_mm2,
+            group_shift_contact_gain_mm: 0.0,
         }
+    }
+
+    fn test_profile_pool_candidate_with_group_shift_contact(
+        visual_waste_regions: u32,
+        waste_regions: u32,
+        lead_util_pct: f64,
+        group_shift_opportunity_after_mm2: f64,
+        group_shift_opportunity_delta_mm2: f64,
+        group_shift_contact_gain_mm: f64,
+    ) -> ProfilePoolCandidate {
+        let mut candidate = test_profile_pool_candidate_with_sheet_count(
+            4,
+            visual_waste_regions,
+            waste_regions,
+            lead_util_pct,
+            group_shift_opportunity_after_mm2,
+            group_shift_opportunity_delta_mm2,
+        );
+        candidate.response.summary.group_shift = Some(GroupShiftTelemetry {
+            enabled: true,
+            time_ms: 0,
+            moves_applied: 1,
+            parts_moved: 2,
+            passes_run: 1,
+            corridor_closed_area_mm2: 0.0,
+            contact_gain_mm: group_shift_contact_gain_mm,
+            corridor_opportunity_before_mm2: group_shift_opportunity_after_mm2
+                + group_shift_opportunity_delta_mm2,
+            corridor_opportunity_after_mm2: group_shift_opportunity_after_mm2,
+            corridor_opportunity_delta_mm2: group_shift_opportunity_delta_mm2,
+            max_shift_mm: 0.0,
+        });
+        candidate.group_shift_contact_gain_mm = group_shift_contact_gain_mm;
+        candidate
     }
 
     #[test]
@@ -5951,6 +6002,21 @@ mod tests {
         assert!(
             profile_pool_candidate_better(&visually_cleaner, &cut_gap_cleaner),
             "visual zones should be the primary topology tie-break before cut-gap zones"
+        );
+    }
+
+    #[test]
+    fn profile_pool_prefers_group_shift_contact_gain_after_zone_ties() {
+        let stronger_contact = test_profile_pool_candidate_with_group_shift_contact(
+            5, 5, 95.0, 10_000.0, 40_000.0, 120.0,
+        );
+        let weaker_contact = test_profile_pool_candidate_with_group_shift_contact(
+            5, 5, 95.0, 10_000.0, 40_000.0, 10.0,
+        );
+
+        assert!(
+            profile_pool_candidate_better(&stronger_contact, &weaker_contact),
+            "same sheets/zones/residual/delta should prefer higher group_shift contact gain"
         );
     }
 

@@ -1140,6 +1140,10 @@ async fn optimize_profile_pool_returns_telemetry() {
         .get("winner_group_shift_opportunity_delta_mm2")
         .and_then(Value::as_f64)
         .is_some());
+    assert!(pool
+        .get("winner_group_shift_contact_gain_mm")
+        .and_then(Value::as_f64)
+        .is_some());
     assert!(json.pointer("/summary/group_shift").is_some());
 }
 

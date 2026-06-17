@@ -649,6 +649,37 @@ V52 intermediate (2026-06-17):
   - seed 13: 4 sheets, visual0=9, cut_gap=7, lead=92.52%, min=90.15%, rescue=true, 54 candidates.
 - Вывод: seed-offset rescue подтверждён как способ вернуть seed 13 с 5 sheets на 4 sheets. Но visual quality хуже, чем хотелось: `visual0=9`. Следующая гипотеза V53: rescue acceptance/ranking должен учитывать visual/contact guard, а не только вернуть минимальное число листов. Простое расширение seeds без визуального guard может дать плотность, но разорванный остаток.
 
+### V53: contact-aware group_shift signal in profile_pool
+
+Цель: проверить, можно ли сделать математическую оценку ближе к визуальному качеству, добавив в `profile_pool` фактический `group_shift.contact_gain_mm`.
+
+V53 intermediate (2026-06-17):
+
+- Ветка: `feat/v53-profile-pool-visual-rescue-guard`, base = `origin/main`, сверху V49+V51+V44.
+- TDD RED: `profile_pool_prefers_group_shift_contact_gain_after_zone_ties` падал, потому что candidates с одинаковыми sheets/zones/residual/delta не различались по contact gain.
+- GREEN:
+  - добавлено `ProfilePoolCandidate.group_shift_contact_gain_mm`;
+  - добавлено telemetry поле `summary.profile_pool.winner_group_shift_contact_gain_mm`;
+  - `profile_pool_candidate_order`: `used_stock_count -> visual_waste_regions -> waste_regions -> group_shift residual -> contact_gain -> group_shift delta -> lead -> corner`.
+- Targeted checks passed:
+  - `cargo test profile_pool -- --test-threads=1` (17 passed);
+  - `cargo test group_shift -- --test-threads=1` (9 passed);
+  - `cargo test optimize_profile_pool_returns_telemetry -- --test-threads=1`.
+- Добавлен script `scripts/test_v53_contact_guard_benchmark.py`.
+- Артефакты: `ai_docs/tmp/v53_contact_guard_benchmark/` (`json`, `svg`, `diff.svg`, PIL-rendered `*_pil.png`).
+- Run: `python scripts/test_v53_contact_guard_benchmark.py --port 8101 --seeds 11 13 --time-limit-ms 4000 --restarts 5 --seed-offsets 1 2 3 5 7 8 13 21` passed.
+- Результат paired off/on:
+  - seed 11 off: 4 sheets, visual0=6, cut_gap=7, lead=92.83%, 54 candidates.
+  - seed 11 on: 4 sheets, visual0=7, cut_gap=9, contact_gain=816.5mm, moves=3, parts_moved=5, 54 candidates.
+  - seed 13 off: 4 sheets, visual0=9, cut_gap=7, lead=92.52%, 54 candidates.
+  - seed 13 on: 4 sheets, visual0=9, cut_gap=7, contact_gain=1293.5mm, moves=4, parts_moved=6, 54 candidates.
+- Визуальный вывод:
+  - seed13 подтверждает пользовательскую гипотезу: group_shift сдвигает крайние группы к основной массе и не ухудшает zones; это визуально выглядит как полезное уплотнение.
+  - seed11 показывает риск: contact_gain может быть высоким, но aggregate zones ухудшается. Значит contact_gain нужен как полезный compactness signal, но не должен быть единственным acceptance/scoring критерием.
+- Главный вывод V53: подход group_shift/contact недооценён, но ему нужен paired acceptance guard: move/candidate должен получать credit за контакт только если не ухудшает visual/cut-gap topology или usable remnant.
+- Следующая гипотеза V54: `group_shift` acceptance по `contact_gain` + hard guard `visual_zones_after <= visual_zones_before` и/или `cut_gap_zones_after <= cut_gap_zones_before + tolerance`, с отдельной фиксацией `before/after` metrics per moved sheet.
+- Следующая гипотеза V55: вместо raw zone-count добавить `usable_remnant_score`: цельный крупный остаток у края/угла должен иметь больший вес, чем несколько разрозненных зон, даже если количество зон одинаковое.
+
 ## Практические правила дальнейшей работы
 
 - Каждая кодовая гипотеза — отдельная ветка от `main`.

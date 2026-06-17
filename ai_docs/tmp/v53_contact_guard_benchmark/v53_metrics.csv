@@ -1,0 +1,5 @@
+case,sheets,placements,zones_visual0,zones_cut_gap,lead_util_pct,min_util_pct,service_time_ms,winner_zone_penalty,winner_visual_waste_regions,winner_waste_regions,winner_lead_util_pct,winner_group_shift_contact_gain_mm,winner_group_shift_after_mm2,winner_group_shift_delta_mm2,rescue_triggered,seed_offsets_used,candidates_completed,group_shift_moves,group_shift_parts_moved,group_shift_contact_gain_mm,group_shift_closed_area_mm2,group_shift_time_ms
+v53_seed_11_off,4,40,6,7,92.8327,89.2086,88129,0.4,6,7,92.83266070070772,0.0,0.0,0.0,True,"[1, 2, 3, 5, 7, 8, 13, 21]",54,,,,,
+v53_seed_11_on,4,40,7,9,92.8327,89.2086,84148,0.4,7,9,92.83266070070772,816.5,0.0,113340.0,True,"[1, 2, 3, 5, 7, 8, 13, 21]",54,3,5,816.5,113340.0,0
+v53_seed_13_off,4,40,9,7,92.5192,90.1491,79486,0.5,9,7,92.5191554073814,0.0,0.0,0.0,True,"[1, 2, 3, 5, 7, 8, 13, 21]",54,,,,,
+v53_seed_13_on,4,40,9,7,92.5192,90.1491,74217,0.5,9,7,92.5191554073814,1293.5,0.0,197960.0,True,"[1, 2, 3, 5, 7, 8, 13, 21]",54,4,6,1293.5,248360.0,0
