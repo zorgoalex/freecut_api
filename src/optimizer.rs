@@ -22,7 +22,6 @@ use crate::validation::item_fits_any_stock_public;
 const SCALE: f64 = 1000.0;
 const MIN_SLICE_MS: u64 = 80;
 const SEED_STRIDE: u64 = 1_000_003;
-const EARLY_STOP_NO_IMPROVE_PATIENCE: u32 = 4;
 const PORTFOLIO_DEFAULT_CANDIDATES: u32 = 4;
 const PORTFOLIO_MAX_CANDIDATES: u32 = 16;
 const BEAM_DEFAULT_WIDTH: u32 = 2;
@@ -2551,7 +2550,6 @@ async fn run_restarts_with_budget(
     let mut last_constraint: Option<OptimizeError> = None;
     let started_at = Instant::now();
     let mut restarts_used: u32 = 0;
-    let mut no_improve_streak: u32 = 0;
     let mut timeouts_per_restart: u32 = 0;
     let mut first_timeout_at_restart: Option<u32> = None;
     let mut best_found_at_restart: Option<u32> = None;
@@ -2594,78 +2592,80 @@ async fn run_restarts_with_budget(
         }
     }
 
-    let slice_schedule_ms = restart_plan.map(|p| p.schedule_ms.as_slice());
-    let planned_restarts = slice_schedule_ms
-        .map(|s| s.len() as u64)
+    // H3/V57: run all planned restarts CONCURRENTLY via a tokio JoinSet, each
+    // with the FULL remaining budget, instead of slicing the budget across
+    // sequential restarts. Sequential slicing gave each restart budget/N --
+    // too short to converge on medium jobs, so they fell back to the heuristic
+    // floor while cores sat idle (see H4). Parallel full-budget runs let each
+    // GA use the whole budget and exploit multiple cores; we keep the best of
+    // whatever finished before the deadline.
+    let planned_restarts = restart_plan
+        .map(|p| p.schedule_ms.len() as u64)
         .unwrap_or(restarts.max(1));
-    for i in 0..planned_restarts {
-        let elapsed_ms = started_at.elapsed().as_millis() as u64;
-        if elapsed_ms >= total_budget_ms {
-            budget_exhausted = true;
-            break;
-        }
-        let remaining_ms = total_budget_ms - elapsed_ms;
-        let planned_slice_ms = slice_schedule_ms
-            .and_then(|s| s.get(i as usize))
-            .copied()
-            .unwrap_or(slice_ms);
-        let this_slice_ms = remaining_ms.min(planned_slice_ms).max(1);
-
-        let seed = base_seed.wrapping_add(i.wrapping_mul(SEED_STRIDE));
-        let mode = layout_mode;
-        let stock_templates = Arc::clone(&stock_templates);
-        let cut_templates = Arc::clone(&cut_templates);
-        let cut_width = prepared.cut_width;
-        let restart_idx = i;
-        let ga_runtime = ga_runtime;
-        let ga_fitness_config = ga_fitness_config;
-
-        let mut handle = tokio::task::spawn_blocking(move || {
-            let diversified_stock = diversify_stock_order(&stock_templates, seed, restart_idx);
-            let diversified_cut = diversify_cut_order(&cut_templates, seed, restart_idx);
-            let mut optimizer = Optimizer::new();
-            optimizer
-                .set_random_seed(seed)
-                .set_cut_width(cut_width)
-                .set_ga_epochs(ga_runtime.epochs)
-                .set_ga_breed_factor(ga_runtime.breed_factor)
-                .set_ga_survival_factor(ga_runtime.survival_factor)
-                .add_stock_pieces(diversified_stock.into_iter())
-                .add_cut_pieces(diversified_cut.into_iter());
-            let run_optimizer = || match mode {
-                LayoutMode::Nested => optimizer.optimize_nested_top_k(ga_runtime.top_k, |_| {}),
-                LayoutMode::Guillotine => {
-                    optimizer.optimize_guillotine_top_k(ga_runtime.top_k, |_| {})
-                }
-            };
-            let ga_set = if let Some(config) = ga_fitness_config {
-                cut_optimizer_2d::with_ga_fitness_config(config, run_optimizer)
-            } else {
-                run_optimizer()
-            };
-            // V4 heuristic seeding: also run a pure First-Fit-Decreasing
-            // heuristic and prepend it to the candidate pool.  The
-            // service-level compare_candidates tie-breakers will then pick
-            // the best between the GA-evolved solutions and the
-            // hand-crafted heuristic.
-            let mut combined = cut_optimizer_2d::SolutionSet { solutions: vec![] };
-            if let Ok(set) = ga_set {
-                let mut heuristic_solutions = match mode {
-                    LayoutMode::Nested => optimizer.build_nested_heuristic(),
-                    LayoutMode::Guillotine => optimizer.build_guillotine_heuristic(),
+    let _ = slice_ms; // budget is no longer sliced per restart
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    if elapsed_ms >= total_budget_ms {
+        budget_exhausted = true;
+    } else {
+        let remaining_ms = (total_budget_ms - elapsed_ms).max(1);
+        type GaResult = std::result::Result<cut_optimizer_2d::SolutionSet, cut_optimizer_2d::Error>;
+        let mut set: tokio::task::JoinSet<GaResult> = tokio::task::JoinSet::new();
+        for i in 0..planned_restarts {
+            let seed = base_seed.wrapping_add(i.wrapping_mul(SEED_STRIDE));
+            let mode = layout_mode;
+            let stock_templates = Arc::clone(&stock_templates);
+            let cut_templates = Arc::clone(&cut_templates);
+            let cut_width = prepared.cut_width;
+            let restart_idx = i;
+            let ga_runtime = ga_runtime;
+            let ga_fitness_config = ga_fitness_config;
+            set.spawn_blocking(move || {
+                let diversified_stock = diversify_stock_order(&stock_templates, seed, restart_idx);
+                let diversified_cut = diversify_cut_order(&cut_templates, seed, restart_idx);
+                let mut optimizer = Optimizer::new();
+                optimizer
+                    .set_random_seed(seed)
+                    .set_cut_width(cut_width)
+                    .set_ga_epochs(ga_runtime.epochs)
+                    .set_ga_breed_factor(ga_runtime.breed_factor)
+                    .set_ga_survival_factor(ga_runtime.survival_factor)
+                    .add_stock_pieces(diversified_stock.into_iter())
+                    .add_cut_pieces(diversified_cut.into_iter());
+                let run_optimizer = || match mode {
+                    LayoutMode::Nested => optimizer.optimize_nested_top_k(ga_runtime.top_k, |_| {}),
+                    LayoutMode::Guillotine => {
+                        optimizer.optimize_guillotine_top_k(ga_runtime.top_k, |_| {})
+                    }
                 };
-                combined.solutions.append(&mut heuristic_solutions);
-                combined.solutions.extend(set.solutions);
-            } else {
-                combined = cut_optimizer_2d::SolutionSet { solutions: vec![] };
-            }
-            Ok(combined)
-        });
+                let ga_set = if let Some(config) = ga_fitness_config {
+                    cut_optimizer_2d::with_ga_fitness_config(config, run_optimizer)
+                } else {
+                    run_optimizer()
+                };
+                // V4 heuristic seeding: prepend the FFD heuristic to the pool so
+                // compare_candidates can pick the best of GA vs hand-crafted.
+                let mut combined = cut_optimizer_2d::SolutionSet { solutions: vec![] };
+                if let Ok(set) = ga_set {
+                    let mut heuristic_solutions = match mode {
+                        LayoutMode::Nested => optimizer.build_nested_heuristic(),
+                        LayoutMode::Guillotine => optimizer.build_guillotine_heuristic(),
+                    };
+                    combined.solutions.append(&mut heuristic_solutions);
+                    combined.solutions.extend(set.solutions);
+                }
+                Ok(combined)
+            });
+        }
 
-        let run = tokio::time::timeout(Duration::from_millis(this_slice_ms), &mut handle).await;
-        match run {
-            Ok(join_result) => match join_result {
-                Ok(Ok(solution_set)) => {
+        let deadline = Instant::now() + Duration::from_millis(remaining_ms);
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                timed_out = true;
+                break;
+            }
+            match tokio::time::timeout(deadline - now, set.join_next()).await {
+                Ok(Some(Ok(Ok(solution_set)))) => {
                     restarts_used += 1;
                     let Some(candidate) = pick_best_candidate(
                         solution_set,
@@ -2680,62 +2680,43 @@ async fn run_restarts_with_budget(
                         continue;
                     };
                     if best_found_at_restart.is_none() {
-                        best_found_at_restart = Some((i + 1) as u32);
+                        best_found_at_restart = Some(restarts_used);
                     }
                     best = match best {
-                        None => {
-                            no_improve_streak = 0;
-                            Some(candidate)
-                        }
+                        None => Some(candidate),
                         Some(current) => {
                             match compare_candidates(&candidate, &current, &req.params.objective) {
-                                CandidateCompare::Better => {
-                                    no_improve_streak = 0;
-                                    Some(candidate)
-                                }
-                                CandidateCompare::WorseByPrimaryObjective
-                                | CandidateCompare::WorseByTieBboxVoid
-                                | CandidateCompare::WorseByTieBboxArea
-                                | CandidateCompare::WorseByTiePerimeter
-                                | CandidateCompare::WorseByTieMinUtil
-                                | CandidateCompare::WorseByTieCornerFree
-                                | CandidateCompare::Equal => {
-                                    no_improve_streak = no_improve_streak.saturating_add(1);
-                                    Some(current)
-                                }
+                                CandidateCompare::Better => Some(candidate),
+                                _ => Some(current),
                             }
                         }
                     };
-                    if no_improve_streak >= EARLY_STOP_NO_IMPROVE_PATIENCE {
-                        break;
-                    }
                 }
-                Ok(Err(err)) => {
+                Ok(Some(Ok(Err(err)))) => {
                     restarts_used += 1;
                     last_constraint = Some(map_optimizer_error(err, prepared));
-                    no_improve_streak = no_improve_streak.saturating_add(1);
-                    if no_improve_streak >= EARLY_STOP_NO_IMPROVE_PATIENCE {
-                        break;
+                }
+                Ok(Some(Err(join_err))) => {
+                    if join_err.is_panic() {
+                        return Err(OptimizeError::Internal(format!(
+                            "optimizer task failed: {join_err}"
+                        )));
                     }
                 }
-                Err(err) => {
-                    return Err(OptimizeError::Internal(format!(
-                        "optimizer task failed: {err}"
-                    )));
+                Ok(None) => break,
+                Err(_) => {
+                    timed_out = true;
+                    break;
                 }
-            },
-            Err(_) => {
-                timed_out = true;
-                timeouts_per_restart = timeouts_per_restart.saturating_add(1);
-                if first_timeout_at_restart.is_none() {
-                    first_timeout_at_restart = Some((i + 1) as u32);
-                }
-                // Best-effort abort. The blocking task may still run to completion.
-                handle.abort();
-                // Do not launch more heavy tasks once one slice timed out.
-                break;
             }
         }
+        let outstanding = planned_restarts.saturating_sub(u64::from(restarts_used));
+        if timed_out && outstanding > 0 {
+            timeouts_per_restart = outstanding as u32;
+            first_timeout_at_restart = Some(restarts_used.saturating_add(1));
+        }
+        // Abort any GA tasks that did not finish before the deadline.
+        set.abort_all();
     }
 
     if let Some(best) = best {
