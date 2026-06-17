@@ -365,6 +365,7 @@ pub struct GroupShiftTelemetry {
     pub parts_moved: u32,
     pub passes_run: u32,
     pub corridor_closed_area_mm2: f64,
+    pub contact_gain_mm: f64,
     pub corridor_opportunity_before_mm2: f64,
     pub corridor_opportunity_after_mm2: f64,
     pub corridor_opportunity_delta_mm2: f64,
@@ -398,11 +399,15 @@ pub struct ProfilePoolTelemetry {
     pub rescue_accept_min_max_corner_mm2: Option<f64>,
     pub winner_seed: u64,
     pub winner_zone_penalty: f64,
+    /// Waste regions without part inflation (`gap=0`), closer to visual review.
+    pub winner_visual_waste_regions: u32,
+    /// Waste regions with kerf+spacing inflation, used by current selection.
     pub winner_waste_regions: u32,
     pub winner_lead_util_pct: f64,
     pub winner_max_corner_mm2: f64,
     pub winner_group_shift_opportunity_after_mm2: f64,
     pub winner_group_shift_opportunity_delta_mm2: f64,
+    pub winner_group_shift_contact_gain_mm: f64,
     pub max_lead_drop_pp: f64,
 }
 

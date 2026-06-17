@@ -302,6 +302,7 @@ async fn optimize_request_internal(
                     parts_moved: 0,
                     passes_run: 0,
                     corridor_closed_area_mm2: 0.0,
+                    contact_gain_mm: 0.0,
                     corridor_opportunity_before_mm2: 0.0,
                     corridor_opportunity_after_mm2: 0.0,
                     corridor_opportunity_delta_mm2: 0.0,
@@ -560,11 +561,13 @@ struct ProfilePoolCandidate {
     seed: u64,
     zone_penalty: f64,
     is_rescue: bool,
+    visual_waste_regions: u32,
     waste_regions: u32,
     lead_util_pct: f64,
     max_corner_mm2: f64,
     group_shift_opportunity_after_mm2: f64,
     group_shift_opportunity_delta_mm2: f64,
+    group_shift_contact_gain_mm: f64,
 }
 
 fn preset_zone_penalties(preset: ProfilePoolPreset) -> Vec<f64> {
@@ -746,11 +749,13 @@ async fn optimize_profile_pool(
         rescue_accept_min_max_corner_mm2,
         winner_seed: winner.seed,
         winner_zone_penalty: winner.zone_penalty,
+        winner_visual_waste_regions: winner.visual_waste_regions,
         winner_waste_regions: winner.waste_regions,
         winner_lead_util_pct: winner.lead_util_pct,
         winner_max_corner_mm2: winner.max_corner_mm2,
         winner_group_shift_opportunity_after_mm2: winner.group_shift_opportunity_after_mm2,
         winner_group_shift_opportunity_delta_mm2: winner.group_shift_opportunity_delta_mm2,
+        winner_group_shift_contact_gain_mm: winner.group_shift_contact_gain_mm,
         max_lead_drop_pp,
     });
     Ok(winner.response)
@@ -791,11 +796,13 @@ async fn run_profile_pool_candidate(
     .await?;
     let gap_mm = req.params.kerf_mm + req.params.spacing_mm;
     Ok(ProfilePoolCandidate {
+        visual_waste_regions: response_waste_regions(&response, 0.0),
         waste_regions: response_waste_regions(&response, gap_mm),
         lead_util_pct: response_lead_util_pct(&response),
         max_corner_mm2: response_max_corner_mm2(&response),
         group_shift_opportunity_after_mm2: response_group_shift_opportunity_after_mm2(&response),
         group_shift_opportunity_delta_mm2: response_group_shift_opportunity_delta_mm2(&response),
+        group_shift_contact_gain_mm: response_group_shift_contact_gain_mm(&response),
         response,
         seed,
         zone_penalty,
@@ -854,13 +861,25 @@ fn profile_pool_winner_idx(
     max_lead_drop_pp: f64,
     rescue_accept_min_max_corner_mm2: Option<f64>,
 ) -> usize {
-    let best_lead = candidates
+    let min_sheet_count = candidates
         .iter()
         .filter(|candidate| {
             !profile_pool_candidate_rejected_by_rescue_guard(
                 candidate,
                 rescue_accept_min_max_corner_mm2,
             )
+        })
+        .map(|candidate| candidate.response.summary.used_stock_count)
+        .min();
+    let best_lead = candidates
+        .iter()
+        .filter(|candidate| {
+            !profile_pool_candidate_rejected_by_rescue_guard(
+                candidate,
+                rescue_accept_min_max_corner_mm2,
+            ) && min_sheet_count.is_some_and(|sheet_count| {
+                candidate.response.summary.used_stock_count == sheet_count
+            })
         })
         .map(|candidate| candidate.lead_util_pct)
         .fold(0.0_f64, f64::max);
@@ -872,8 +891,12 @@ fn profile_pool_winner_idx(
         ) {
             continue;
         }
-        let eligible =
-            candidate.lead_util_pct + max_lead_drop_pp >= best_lead || candidate.waste_regions <= 4;
+        if min_sheet_count
+            .is_some_and(|sheet_count| candidate.response.summary.used_stock_count != sheet_count)
+        {
+            continue;
+        }
+        let eligible = candidate.lead_util_pct + max_lead_drop_pp >= best_lead;
         if !eligible {
             continue;
         }
@@ -893,7 +916,9 @@ fn profile_pool_winner_idx(
                 !profile_pool_candidate_rejected_by_rescue_guard(
                     candidate,
                     rescue_accept_min_max_corner_mm2,
-                )
+                ) && min_sheet_count.is_some_and(|sheet_count| {
+                    candidate.response.summary.used_stock_count == sheet_count
+                })
             })
             .min_by(|(_, a), (_, b)| {
                 profile_pool_candidate_order(a, b).unwrap_or(std::cmp::Ordering::Equal)
@@ -918,11 +943,24 @@ fn profile_pool_candidate_order(
     b: &ProfilePoolCandidate,
 ) -> Option<std::cmp::Ordering> {
     Some(
-        (a.response.summary.used_stock_count, a.waste_regions)
-            .cmp(&(b.response.summary.used_stock_count, b.waste_regions))
+        (
+            a.response.summary.used_stock_count,
+            a.visual_waste_regions,
+            a.waste_regions,
+        )
+            .cmp(&(
+                b.response.summary.used_stock_count,
+                b.visual_waste_regions,
+                b.waste_regions,
+            ))
             .then_with(|| {
                 a.group_shift_opportunity_after_mm2
                     .partial_cmp(&b.group_shift_opportunity_after_mm2)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                b.group_shift_contact_gain_mm
+                    .partial_cmp(&a.group_shift_contact_gain_mm)
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
             .then_with(|| {
@@ -986,6 +1024,14 @@ fn response_group_shift_opportunity_delta_mm2(resp: &OptimizeResponse) -> f64 {
         .group_shift
         .as_ref()
         .map(|group_shift| group_shift.corridor_opportunity_delta_mm2)
+        .unwrap_or(0.0)
+}
+
+fn response_group_shift_contact_gain_mm(resp: &OptimizeResponse) -> f64 {
+    resp.summary
+        .group_shift
+        .as_ref()
+        .map(|group_shift| group_shift.contact_gain_mm)
         .unwrap_or(0.0)
 }
 
@@ -4552,6 +4598,7 @@ struct GroupShiftMove {
     direction: ShiftDirection,
     shift_mm: f64,
     corridor_closed_area_mm2: f64,
+    contact_gain_mm: f64,
     selected_area_mm2: f64,
 }
 
@@ -4581,6 +4628,7 @@ fn apply_group_shift_postprocess(
         parts_moved: 0,
         passes_run: 0,
         corridor_closed_area_mm2: 0.0,
+        contact_gain_mm: 0.0,
         corridor_opportunity_before_mm2: 0.0,
         corridor_opportunity_after_mm2: 0.0,
         corridor_opportunity_delta_mm2: 0.0,
@@ -4616,6 +4664,7 @@ fn apply_group_shift_postprocess(
         telemetry.moves_applied += 1;
         telemetry.parts_moved += best_move.placement_indices.len() as u32;
         telemetry.corridor_closed_area_mm2 += best_move.corridor_closed_area_mm2;
+        telemetry.contact_gain_mm += best_move.contact_gain_mm;
         telemetry.max_shift_mm = telemetry.max_shift_mm.max(best_move.shift_mm);
     }
 
@@ -4943,6 +4992,7 @@ fn consider_group_shift_candidate(
         min_shift_mm,
         direction,
         selected,
+        anchor_mask,
     ) {
         let replace = best
             .as_ref()
@@ -4961,6 +5011,7 @@ fn evaluate_group_shift_candidate(
     min_shift_mm: f64,
     direction: ShiftDirection,
     selected: Vec<usize>,
+    anchor_mask: Option<&[bool]>,
 ) -> Option<GroupShiftMove> {
     let n = solution.placements.len();
     if selected.is_empty() || selected.len() == n {
@@ -5037,13 +5088,26 @@ fn evaluate_group_shift_candidate(
     if corridor_closed_area_mm2 <= GROUP_SHIFT_EPS {
         return None;
     }
-
+    let contact_before_mm = placement_contact_score_for_selection(
+        &solution.placements,
+        gap_mm,
+        &selected_mask,
+        anchor_mask,
+    );
+    let mut shifted = solution.placements.clone();
+    shift_placements(&mut shifted, &selected, direction, shift_mm);
+    let contact_gain_mm = normalize_group_shift_metric(
+        placement_contact_score_for_selection(&shifted, gap_mm, &selected_mask, anchor_mask)
+            - contact_before_mm,
+    )
+    .max(0.0);
     Some(GroupShiftMove {
         solution_index,
         placement_indices: selected,
         direction,
         shift_mm,
         corridor_closed_area_mm2,
+        contact_gain_mm,
         selected_area_mm2: selected_area,
     })
 }
@@ -5141,23 +5205,80 @@ fn selected_group_perpendicular_span(
 
 fn apply_group_shift_move(solutions: &mut [Solution], group_shift_move: &GroupShiftMove) {
     let solution = &mut solutions[group_shift_move.solution_index];
-    for idx in &group_shift_move.placement_indices {
-        let placement = &mut solution.placements[*idx];
-        match group_shift_move.direction {
-            ShiftDirection::Left => placement.x_mm -= group_shift_move.shift_mm,
-            ShiftDirection::Right => placement.x_mm += group_shift_move.shift_mm,
-            ShiftDirection::Up => placement.y_mm -= group_shift_move.shift_mm,
-            ShiftDirection::Down => placement.y_mm += group_shift_move.shift_mm,
+    shift_placements(
+        &mut solution.placements,
+        &group_shift_move.placement_indices,
+        group_shift_move.direction,
+        group_shift_move.shift_mm,
+    );
+}
+
+fn shift_placements(
+    placements: &mut [Placement],
+    placement_indices: &[usize],
+    direction: ShiftDirection,
+    shift_mm: f64,
+) {
+    for idx in placement_indices {
+        let placement = &mut placements[*idx];
+        match direction {
+            ShiftDirection::Left => placement.x_mm -= shift_mm,
+            ShiftDirection::Right => placement.x_mm += shift_mm,
+            ShiftDirection::Up => placement.y_mm -= shift_mm,
+            ShiftDirection::Down => placement.y_mm += shift_mm,
         }
     }
 }
 
 fn compare_group_shift_moves(a: &GroupShiftMove, b: &GroupShiftMove) -> std::cmp::Ordering {
-    a.corridor_closed_area_mm2
-        .total_cmp(&b.corridor_closed_area_mm2)
+    a.contact_gain_mm
+        .total_cmp(&b.contact_gain_mm)
+        .then_with(|| {
+            a.corridor_closed_area_mm2
+                .total_cmp(&b.corridor_closed_area_mm2)
+        })
         .then_with(|| a.shift_mm.total_cmp(&b.shift_mm))
         .then_with(|| b.selected_area_mm2.total_cmp(&a.selected_area_mm2))
         .then_with(|| b.placement_indices.len().cmp(&a.placement_indices.len()))
+}
+
+fn placement_contact_score_for_selection(
+    placements: &[Placement],
+    gap_mm: f64,
+    selected_mask: &[bool],
+    anchor_mask: Option<&[bool]>,
+) -> f64 {
+    let contact_gap = gap_mm + GROUP_SHIFT_EPS;
+    let mut score = 0.0;
+    for (idx, a) in placements.iter().enumerate() {
+        for (other_idx, b) in placements.iter().enumerate().skip(idx + 1) {
+            let a_selected = selected_mask[idx];
+            let b_selected = selected_mask[other_idx];
+            if a_selected == b_selected {
+                continue;
+            }
+            if let Some(anchor_mask) = anchor_mask {
+                let a_anchor = anchor_mask[idx];
+                let b_anchor = anchor_mask[other_idx];
+                if !(a_selected && b_anchor || b_selected && a_anchor) {
+                    continue;
+                }
+            }
+            let horizontal_gap = axis_gap(a.x_mm, a.x_mm + a.width_mm, b.x_mm, b.x_mm + b.width_mm);
+            let vertical_gap = axis_gap(a.y_mm, a.y_mm + a.height_mm, b.y_mm, b.y_mm + b.height_mm);
+            if horizontal_gap <= contact_gap && vertical_gap <= GROUP_SHIFT_EPS {
+                score += overlap_length(a.y_mm, a.y_mm + a.height_mm, b.y_mm, b.y_mm + b.height_mm);
+            }
+            if vertical_gap <= contact_gap && horizontal_gap <= GROUP_SHIFT_EPS {
+                score += overlap_length(a.x_mm, a.x_mm + a.width_mm, b.x_mm, b.x_mm + b.width_mm);
+            }
+        }
+    }
+    score
+}
+
+fn overlap_length(a_min: f64, a_max: f64, b_min: f64, b_max: f64) -> f64 {
+    (a_max.min(b_max) - a_min.max(b_min)).max(0.0)
 }
 
 fn usable_width_mm(solution: &Solution) -> f64 {
@@ -5743,12 +5864,46 @@ mod tests {
         group_shift_opportunity_after_mm2: f64,
         group_shift_opportunity_delta_mm2: f64,
     ) -> ProfilePoolCandidate {
+        test_profile_pool_candidate_with_visual(
+            waste_regions,
+            waste_regions,
+            lead_util_pct,
+            group_shift_opportunity_after_mm2,
+            group_shift_opportunity_delta_mm2,
+        )
+    }
+
+    fn test_profile_pool_candidate_with_visual(
+        visual_waste_regions: u32,
+        waste_regions: u32,
+        lead_util_pct: f64,
+        group_shift_opportunity_after_mm2: f64,
+        group_shift_opportunity_delta_mm2: f64,
+    ) -> ProfilePoolCandidate {
+        test_profile_pool_candidate_with_sheet_count(
+            4,
+            visual_waste_regions,
+            waste_regions,
+            lead_util_pct,
+            group_shift_opportunity_after_mm2,
+            group_shift_opportunity_delta_mm2,
+        )
+    }
+
+    fn test_profile_pool_candidate_with_sheet_count(
+        used_stock_count: u32,
+        visual_waste_regions: u32,
+        waste_regions: u32,
+        lead_util_pct: f64,
+        group_shift_opportunity_after_mm2: f64,
+        group_shift_opportunity_delta_mm2: f64,
+    ) -> ProfilePoolCandidate {
         ProfilePoolCandidate {
             response: OptimizeResponse {
                 status: "ok",
                 summary: Summary {
                     objective: Objective::MinWaste,
-                    used_stock_count: 4,
+                    used_stock_count,
                     total_waste_area_mm2: 0.0,
                     waste_percent: 0.0,
                     time_ms: 0,
@@ -5778,12 +5933,48 @@ mod tests {
             seed: 1,
             zone_penalty: 0.3,
             is_rescue: false,
+            visual_waste_regions,
             waste_regions,
             lead_util_pct,
             max_corner_mm2: 100_000.0,
             group_shift_opportunity_after_mm2,
             group_shift_opportunity_delta_mm2,
+            group_shift_contact_gain_mm: 0.0,
         }
+    }
+
+    fn test_profile_pool_candidate_with_group_shift_contact(
+        visual_waste_regions: u32,
+        waste_regions: u32,
+        lead_util_pct: f64,
+        group_shift_opportunity_after_mm2: f64,
+        group_shift_opportunity_delta_mm2: f64,
+        group_shift_contact_gain_mm: f64,
+    ) -> ProfilePoolCandidate {
+        let mut candidate = test_profile_pool_candidate_with_sheet_count(
+            4,
+            visual_waste_regions,
+            waste_regions,
+            lead_util_pct,
+            group_shift_opportunity_after_mm2,
+            group_shift_opportunity_delta_mm2,
+        );
+        candidate.response.summary.group_shift = Some(GroupShiftTelemetry {
+            enabled: true,
+            time_ms: 0,
+            moves_applied: 1,
+            parts_moved: 2,
+            passes_run: 1,
+            corridor_closed_area_mm2: 0.0,
+            contact_gain_mm: group_shift_contact_gain_mm,
+            corridor_opportunity_before_mm2: group_shift_opportunity_after_mm2
+                + group_shift_opportunity_delta_mm2,
+            corridor_opportunity_after_mm2: group_shift_opportunity_after_mm2,
+            corridor_opportunity_delta_mm2: group_shift_opportunity_delta_mm2,
+            max_shift_mm: 0.0,
+        });
+        candidate.group_shift_contact_gain_mm = group_shift_contact_gain_mm;
+        candidate
     }
 
     #[test]
@@ -5800,6 +5991,62 @@ mod tests {
         assert!(
             profile_pool_candidate_better(&same_residual_more_delta, &cleaner),
             "same residual should prefer the candidate where group_shift closed more opportunity"
+        );
+    }
+
+    #[test]
+    fn profile_pool_prefers_visual_zones_before_cut_gap_zones() {
+        let visually_cleaner = test_profile_pool_candidate_with_visual(4, 5, 95.0, 0.0, 0.0);
+        let cut_gap_cleaner = test_profile_pool_candidate_with_visual(5, 4, 95.0, 0.0, 0.0);
+
+        assert!(
+            profile_pool_candidate_better(&visually_cleaner, &cut_gap_cleaner),
+            "visual zones should be the primary topology tie-break before cut-gap zones"
+        );
+    }
+
+    #[test]
+    fn profile_pool_prefers_group_shift_contact_gain_after_zone_ties() {
+        let stronger_contact = test_profile_pool_candidate_with_group_shift_contact(
+            5, 5, 95.0, 10_000.0, 40_000.0, 120.0,
+        );
+        let weaker_contact = test_profile_pool_candidate_with_group_shift_contact(
+            5, 5, 95.0, 10_000.0, 40_000.0, 10.0,
+        );
+
+        assert!(
+            profile_pool_candidate_better(&stronger_contact, &weaker_contact),
+            "same sheets/zones/residual/delta should prefer higher group_shift contact gain"
+        );
+    }
+
+    #[test]
+    fn profile_pool_lead_guard_is_scoped_to_min_sheet_count_bucket() {
+        let four_sheet_candidate =
+            test_profile_pool_candidate_with_sheet_count(4, 6, 7, 89.0, 0.0, 0.0);
+        let high_lead_five_sheet_candidate =
+            test_profile_pool_candidate_with_sheet_count(5, 1, 1, 95.0, 0.0, 0.0);
+        let candidates = vec![four_sheet_candidate, high_lead_five_sheet_candidate];
+
+        let winner_idx = profile_pool_winner_idx(&candidates, 0.8, None);
+
+        assert_eq!(
+            winner_idx, 0,
+            "lead guard must not let a higher-lead 5-sheet candidate eliminate all 4-sheet candidates"
+        );
+    }
+
+    #[test]
+    fn profile_pool_lead_guard_rejects_low_density_four_zone_candidate() {
+        let dense = test_profile_pool_candidate(5, 95.0, 0.0, 0.0);
+        let low_density_four_zone = test_profile_pool_candidate(4, 93.9, 0.0, 0.0);
+        let candidates = vec![dense, low_density_four_zone];
+
+        let winner_idx = profile_pool_winner_idx(&candidates, 0.8, None);
+
+        assert_eq!(
+            winner_idx, 0,
+            "4-zone candidates must not bypass max_lead_drop_pp"
         );
     }
 
@@ -5834,6 +6081,41 @@ mod tests {
         assert_eq!(solutions[0].placements[3].x_mm, 110.0);
         assert_eq!(solutions[0].placements[0].x_mm, 0.0);
         assert_eq!(solutions[0].placements[1].x_mm, 0.0);
+    }
+
+    #[test]
+    fn group_shift_prefers_contact_gain_over_large_low_contact_corridor() {
+        let mut solutions = vec![test_solution(vec![
+            test_placement("tiny_stop", 0.0, 0.0, 10.0, 10.0),
+            test_placement("tall_far", 250.0, 0.0, 50.0, 100.0),
+            test_placement("anchor_main", 0.0, 120.0, 100.0, 30.0),
+            test_placement("anchor_extension", 0.0, 155.0, 100.0, 40.0),
+            test_placement("side_panel", 160.0, 120.0, 100.0, 30.0),
+        ])];
+
+        let telemetry = apply_group_shift_postprocess(
+            &mut solutions,
+            10.0,
+            GroupShiftOptions {
+                enabled: true,
+                min_shift_mm: 5.0,
+                max_passes: 1,
+            },
+        );
+
+        assert_eq!(telemetry.moves_applied, 1);
+        assert_eq!(
+            solutions[0].placements[1].x_mm, 250.0,
+            "the tall low-contact candidate should not win by closed area alone"
+        );
+        assert_eq!(
+            solutions[0].placements[4].x_mm, 110.0,
+            "the side panel should move into near-contact with the anchor group"
+        );
+        assert!(
+            telemetry.contact_gain_mm > 0.0,
+            "the accepted move should report a measurable contact gain"
+        );
     }
 
     #[test]

@@ -1129,11 +1129,19 @@ async fn optimize_profile_pool_returns_telemetry() {
         .expect("expected winner_zone_penalty");
     assert!((winner - 0.3).abs() < f64::EPSILON || (winner - 0.5).abs() < f64::EPSILON);
     assert!(pool
+        .get("winner_visual_waste_regions")
+        .and_then(Value::as_u64)
+        .is_some());
+    assert!(pool
         .get("winner_group_shift_opportunity_after_mm2")
         .and_then(Value::as_f64)
         .is_some());
     assert!(pool
         .get("winner_group_shift_opportunity_delta_mm2")
+        .and_then(Value::as_f64)
+        .is_some());
+    assert!(pool
+        .get("winner_group_shift_contact_gain_mm")
         .and_then(Value::as_f64)
         .is_some());
     assert!(json.pointer("/summary/group_shift").is_some());
