@@ -9,8 +9,9 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY Cargo.toml Cargo.lock ./
-COPY src ./src
 COPY rust-toolchain.toml ./
+COPY vendor ./vendor
+COPY src ./src
 
 RUN cargo build --release
 
