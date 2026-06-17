@@ -12,7 +12,7 @@ use cut_optimizer_2d::{
 use crate::config::AppConfig;
 use crate::models::{
     AlnsOperatorTelemetry, AlnsTelemetry, Artifacts, BeamTelemetry, CandidateSelectionTelemetry,
-    ErrorResponse, GaOverrideParams, GaProfile, GroupShiftTelemetry, LayoutMode, Objective,
+    Engine, ErrorResponse, GaOverrideParams, GaProfile, GroupShiftTelemetry, LayoutMode, Objective,
     OptimizeRequest, OptimizeResponse, Params, PartitionTelemetry, PatternDirection, Placement,
     PortfolioTelemetry, ProfilePoolPreset, ProfilePoolTelemetry, RestartPolicyTelemetry,
     RetryStrategy, RetryTelemetry, SlaProfile, Solution, Summary, Trim, UnplacedItem,
@@ -2591,6 +2591,29 @@ async fn run_restarts_with_budget(
             ) {
                 best = Some(candidate);
             }
+        }
+    }
+
+    // V58/H5: engine=heuristic short-circuits the GA entirely. The synchronous
+    // multi-variant FFD seed above is already the answer, so return it
+    // immediately instead of burning the time budget on a GA that (on large
+    // jobs) cannot converge and would fall back to this same layout anyway.
+    if matches!(req.params.engine, Some(Engine::Heuristic)) {
+        if let Some(best) = best {
+            let candidate_selection = Some(build_candidate_selection_telemetry(
+                &selection_counters,
+                &best,
+            ));
+            return Ok(RunOutcome {
+                candidate: best,
+                restarts_used: 0,
+                timeout_reason: None,
+                restart_policy: None,
+                portfolio: None,
+                beam: None,
+                alns: None,
+                candidate_selection,
+            });
         }
     }
 
