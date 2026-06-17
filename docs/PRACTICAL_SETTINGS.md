@@ -1,13 +1,13 @@
 # Freecut Practical Settings Guide
 
-Эта инструкция разделяет параметры Freecut на две группы:
+This guide separates Freecut settings into two groups:
 
-- практические настройки, которые реально нужны в рабочем API;
-- исследовательские настройки, которые нужны для перебора гипотез, benchmark-скриптов и визуального анализа, но не должны быть обычным production default.
+- practical settings that are useful in a real production API;
+- research settings that are useful for hypothesis testing, parameter sweeps, benchmark scripts, and visual analysis, but should not be regular production defaults.
 
-## Короткий вывод
+## Short Summary
 
-Для обычного практического использования достаточно управлять:
+For normal practical use, the client usually needs to control only:
 
 - `kerf_mm`;
 - `spacing_mm`;
@@ -17,14 +17,22 @@
 - `time_limit_ms`;
 - `restarts`;
 - `include_svg`;
-- `seed`, если нужна воспроизводимость;
-- `group_shift`, если нужно пост-уплотнение крайних групп деталей.
+- `seed`, when reproducibility is required;
+- `group_shift`, when post-process compaction of peripheral part groups is required.
 
-Остальное (`ga_override`, ручные `zone_penalties`, `seed_offsets`, `portfolio`, `beam`, `alns`, `partition`) лучше считать исследовательскими или advanced-настройками.
+The following settings should be treated as advanced or research-only by default:
+
+- `ga_override`;
+- manual `zone_penalties`;
+- `seed_offsets`;
+- `portfolio`;
+- `beam`;
+- `alns`;
+- `partition`.
 
 ## Kerf vs Spacing
 
-`kerf_mm` и `spacing_mm` оба участвуют в расчете расстояния между деталями, но означают разные вещи.
+`kerf_mm` and `spacing_mm` both contribute to the distance between parts, but they mean different things.
 
 ```text
 effective_gap_mm = kerf_mm + spacing_mm
@@ -32,61 +40,61 @@ effective_gap_mm = kerf_mm + spacing_mm
 
 ### kerf_mm
 
-`kerf_mm` - это физическая ширина реза, то есть сколько материала съедает инструмент.
+`kerf_mm` is the physical width of the cut. It is the material removed by the tool.
 
-Примеры:
+Examples:
 
-- пильный диск шириной 3.2 мм;
-- фреза диаметром 6.0 мм;
-- лазерный рез с эффективной шириной 0.2 мм.
+- a 3.2 mm saw blade;
+- a 6.0 mm router bit;
+- a laser cut with an effective 0.2 mm width.
 
-Если две детали стоят рядом и между ними проходит рез, инструмент должен иметь место для своей толщины. Эта толщина не остается ни одной детали, она превращается в потерянный материал.
+If two parts are adjacent and the cut goes between them, the tool needs physical space. That space does not belong to either part; it becomes removed material.
 
-Практическое правило:
+Practical rule:
 
 ```json
 "kerf_mm": 3.2
 ```
 
-ставить равным реальной ширине пропила/фрезы/луча.
+Set this to the real saw-blade width, router-bit diameter, or effective laser/plasma cut width.
 
 ### spacing_mm
 
-`spacing_mm` - это дополнительный технологический зазор сверх ширины инструмента.
+`spacing_mm` is additional process clearance beyond tool width.
 
-Он нужен не потому, что инструмент такой широкий, а потому что производство требует дополнительного безопасного расстояния.
+It is not the physical tool width. It represents extra distance required by the manufacturing process.
 
-Причины для spacing:
+Reasons to use spacing:
 
-- нужен запас, чтобы детали не касались друг друга;
-- материал может иметь сколы, вибрацию, люфт, прижимы;
-- нужна перемычка между деталями;
-- оператор хочет оставить технологический резерв;
-- нужно снизить риск повреждения кромки соседней детали.
+- prevent parts from touching;
+- account for chips, vibration, backlash, clamps, or material instability;
+- leave tabs or bridges;
+- leave a safety margin for the operator;
+- reduce risk of damaging the neighboring part edge.
 
-Практическое правило:
+Practical rule:
 
 ```json
 "spacing_mm": 0.0
 ```
 
-если дополнительный зазор не нужен.
+when no extra clearance is required.
 
 ```json
 "spacing_mm": 1.0
 ```
 
-если нужен небольшой технологический запас.
+for a small process margin.
 
 ```json
 "spacing_mm": 3.0
 ```
 
-если материал/станок требуют заметный запас между деталями.
+when the material or machine requires a noticeable extra gap.
 
-### Примеры
+### Examples
 
-Пильный диск 3.2 мм, дополнительный запас не нужен:
+Saw blade 3.2 mm, no extra margin:
 
 ```json
 {
@@ -95,7 +103,7 @@ effective_gap_mm = kerf_mm + spacing_mm
 }
 ```
 
-Фреза 6 мм и нужен 1 мм технологический запас:
+Router bit 6 mm with 1 mm process margin:
 
 ```json
 {
@@ -104,7 +112,7 @@ effective_gap_mm = kerf_mm + spacing_mm
 }
 ```
 
-Лазер 0.2 мм и детали можно класть почти вплотную:
+Laser cut 0.2 mm, parts can be placed very close:
 
 ```json
 {
@@ -113,13 +121,13 @@ effective_gap_mm = kerf_mm + spacing_mm
 }
 ```
 
-Итоговый зазор между деталями будет:
+The final gap between neighboring parts is:
 
 ```text
 kerf_mm + spacing_mm
 ```
 
-Например:
+Example:
 
 ```json
 {
@@ -128,11 +136,11 @@ kerf_mm + spacing_mm
 }
 ```
 
-даст эффективный зазор `4.2 мм`.
+Effective gap: `4.2 mm`.
 
-### Что ставить на практике
+### Practical Values
 
-Для CNC/фрезеровки:
+For CNC routing:
 
 ```json
 {
@@ -141,7 +149,7 @@ kerf_mm + spacing_mm
 }
 ```
 
-или:
+or:
 
 ```json
 {
@@ -150,7 +158,7 @@ kerf_mm + spacing_mm
 }
 ```
 
-Для мебельного раскроя пилой:
+For panel saw cutting:
 
 ```json
 {
@@ -159,7 +167,7 @@ kerf_mm + spacing_mm
 }
 ```
 
-или:
+or:
 
 ```json
 {
@@ -168,7 +176,7 @@ kerf_mm + spacing_mm
 }
 ```
 
-Для лазера:
+For laser cutting:
 
 ```json
 {
@@ -177,7 +185,7 @@ kerf_mm + spacing_mm
 }
 ```
 
-или:
+or:
 
 ```json
 {
@@ -186,11 +194,11 @@ kerf_mm + spacing_mm
 }
 ```
 
-Если есть сомнение, лучше не завышать оба параметра одновременно. Завышение `kerf_mm + spacing_mm` ухудшает плотность раскроя.
+If unsure, avoid inflating both values at once. Overstating `kerf_mm + spacing_mm` reduces packing density.
 
-## Рекомендуемый Production Default
+## Recommended Production Default
 
-Это базовый профиль для рабочего API, где важны скорость, стабильность и предсказуемое поведение.
+This profile is suitable for a working API where speed, stability, and predictable behavior matter.
 
 ```json
 {
@@ -215,17 +223,17 @@ kerf_mm + spacing_mm
 }
 ```
 
-Почему так:
+Rationale:
 
-- `layout_mode: "guillotine"` безопаснее как default для производства, где важна реалистичная последовательность реза.
-- `objective: "min_waste"` обычно соответствует задаче минимизации остатка.
-- `time_limit_ms: 2000` и `restarts: 10` дают нормальный баланс качества и времени.
-- `retry_strategy: "smart"` полезен в рабочем API: сервис может сам сделать recovery-попытку при неудачном первом результате.
-- `include_svg: true` удобно для аудита результата, но в высоконагруженной интеграции можно ставить `false`.
+- `layout_mode: "guillotine"` is a safer default for production workflows where cut feasibility matters.
+- `objective: "min_waste"` usually matches the goal of minimizing leftover material.
+- `time_limit_ms: 2000` and `restarts: 10` provide a reasonable quality/time balance.
+- `retry_strategy: "smart"` is useful in a real API: the service can run a recovery attempt if the first result is poor or incomplete.
+- `include_svg: true` is useful for auditing. High-throughput integrations may set it to `false`.
 
 ## Production Quality Profile
 
-Если раскрой сложнее и допустима более высокая цена по времени:
+Use this when the layout is more difficult and a higher response time is acceptable.
 
 ```json
 {
@@ -242,20 +250,20 @@ kerf_mm + spacing_mm
 }
 ```
 
-Использовать для:
+Use it for:
 
-- дорогого материала;
-- заказов с большим количеством деталей;
-- случаев, где важнее качество раскроя, чем быстрый ответ;
-- ручного подтверждения раскроя оператором.
+- expensive material;
+- jobs with many parts;
+- cases where layout quality matters more than response time;
+- layouts that will be reviewed by an operator.
 
-Не стоит делать это единственным default для всех запросов, потому что время ответа будет выше.
+Do not use it as the only global default for all requests, because it increases response time.
 
-## Настройки Group Shift Для Практического Использования
+## Practical Group Shift Settings
 
-`group_shift` - это postprocess, который сдвигает периферийные группы деталей к основной плотной группе. Это именно тот механизм, который был проверен в V29-V33 и дальше переоценен через contact/anchor метрики.
+`group_shift` is a post-process that moves peripheral groups of parts toward the main dense group. This is the mechanism studied in V29-V33 and later re-evaluated using contact/anchor metrics.
 
-Рекомендуемый практический профиль:
+Recommended practical profile:
 
 ```json
 {
@@ -269,13 +277,13 @@ kerf_mm + spacing_mm
 }
 ```
 
-Эти значения совпадают с рабочим режимом V29-V33:
+These values match the effective V29-V33 mode:
 
-- `min_shift_mm: 5.0` отсекает мелкие бессмысленные движения;
-- `max_passes: 4` обычно достаточно, чтобы сдвинуть не одну деталь, а несколько групп;
-- `debug_artifacts` не включается, чтобы не раздувать response.
+- `min_shift_mm: 5.0` filters out tiny movements that do not matter visually;
+- `max_passes: 4` is usually enough to move several groups, not just one part;
+- `debug_artifacts` is not enabled, so the response does not become unnecessarily large.
 
-Минимально можно передать:
+Minimal equivalent:
 
 ```json
 {
@@ -285,16 +293,16 @@ kerf_mm + spacing_mm
 }
 ```
 
-Если объект `group_shift` присутствует, текущие defaults такие:
+When the `group_shift` object is present, current defaults are:
 
 - `enabled = true`;
 - `min_shift_mm = 5.0`;
 - `max_passes = 4`;
 - `debug_artifacts = false`.
 
-## Group Shift Для Визуального Аудита
+## Group Shift For Visual Audit
 
-Если нужно понять, что именно сдвинулось, включать debug SVG:
+When you need to see exactly what moved, enable debug SVG artifacts:
 
 ```json
 {
@@ -311,29 +319,29 @@ kerf_mm + spacing_mm
 }
 ```
 
-В ответе появятся:
+The response will include:
 
-- `artifacts.svg` - финальный раскрой после group shift;
-- `artifacts.group_shift_before_svg` - раскрой до group shift;
-- `artifacts.group_shift_diff_svg` - визуальный diff сдвигов.
+- `artifacts.svg`: final layout after group shift;
+- `artifacts.group_shift_before_svg`: layout before group shift;
+- `artifacts.group_shift_diff_svg`: visual diff of the shifts.
 
-Для честного before/after сравнения лучше ставить:
+For honest before/after comparison, prefer:
 
 ```json
 "retry_strategy": "disabled"
 ```
 
-И задавать фиксированный:
+and set a fixed:
 
 ```json
 "seed": 12345
 ```
 
-Так вы сравниваете один и тот же исходный раскрой до/после postprocess, а не разные случайные попытки.
+This compares the same initial layout before and after the post-process, instead of comparing two different stochastic attempts.
 
-## Более Сильный Group Shift
+## Stronger Group Shift
 
-Если нужно агрессивнее сдвигать крайние группы:
+If you need more aggressive compaction of peripheral groups:
 
 ```json
 {
@@ -347,13 +355,13 @@ kerf_mm + spacing_mm
 }
 ```
 
-Использовать осторожно:
+Use this carefully:
 
-- `min_shift_mm: 3.0` разрешает больше мелких движений;
-- `max_passes: 6` даёт больше попыток;
-- качество может стать лучше визуально, но иногда ухудшается форма остатка по zone-метрикам.
+- `min_shift_mm: 3.0` allows more small moves;
+- `max_passes: 6` allows more accepted shifts;
+- the layout may look more compact, but zone metrics can sometimes get worse.
 
-Для production default лучше оставить:
+For production default, prefer:
 
 ```json
 {
@@ -362,9 +370,9 @@ kerf_mm + spacing_mm
 }
 ```
 
-## Практический Профиль С Group Shift
+## Practical Profile With Group Shift
 
-Хороший рабочий payload для обычного использования:
+Good working payload for normal use:
 
 ```json
 {
@@ -397,29 +405,29 @@ kerf_mm + spacing_mm
 }
 ```
 
-Здесь `stock` и `items` должны быть заполнены реальными листами и деталями.
+`stock` and `items` must be filled with real sheet and part data.
 
-## Когда Включать Group Shift
+## When To Enable Group Shift
 
-Включать:
+Enable it when:
 
-- когда на визуальном раскрое остаются узкие коридоры между основной группой и крайними деталями;
-- когда нужна более плотная группа деталей и более цельный остаток;
-- когда оператор визуально проверяет SVG;
-- когда важна компактность группы, а не только формальный процент отхода.
+- the SVG shows narrow corridors between the main group and edge parts;
+- a more compact cluster and a more coherent remnant are important;
+- an operator reviews the SVG;
+- compactness matters, not only formal waste percentage.
 
-Не включать вслепую:
+Do not enable it blindly when:
 
-- если раскрой уже плотный и без заметных внутренних коридоров;
-- если каждая миллисекунда ответа важна;
-- если downstream-система не готова принимать postprocess-сдвиги;
-- если вам нужна строгая неизменность baseline-результата для benchmark.
+- the layout is already compact and has no visible internal corridors;
+- every millisecond of response time matters;
+- the downstream system is not prepared for post-processed coordinates;
+- you need strict baseline stability for benchmarking.
 
-## Profile Pool В Практике
+## Profile Pool In Practice
 
-`profile_pool` запускает несколько вариантов `zone_penalty` и выбирает лучший. Это полезно, но дороже по времени.
+`profile_pool` runs several `zone_penalty` variants and selects a winner. It can improve layout quality, but it increases compute time.
 
-Практический умеренный вариант для сложных раскроев:
+Moderate practical version for difficult jobs:
 
 ```json
 {
@@ -433,22 +441,22 @@ kerf_mm + spacing_mm
 }
 ```
 
-Использовать:
+Use it for:
 
-- для сложных заказов;
-- когда обычный результат визуально дробит остаток;
-- когда время ответа 4-10 секунд допустимо;
-- для дорогих материалов.
+- difficult orders;
+- cases where the basic result visually fragments the remnant;
+- workflows where 4-10 second responses are acceptable;
+- expensive materials.
 
-Не делать обычным default для всех запросов:
+Do not make it the default for every request:
 
-- profile pool умножает число внутренних запусков;
-- `seed_offsets` резко увеличивают время;
-- без визуального контроля можно получить математически приемлемый, но визуально спорный результат.
+- profile pool multiplies internal runs;
+- `seed_offsets` can increase runtime sharply;
+- without visual review, a mathematically acceptable result can still be visually questionable.
 
 ## Profile Pool + Group Shift
 
-Для максимально качественного, но более дорогого режима:
+For maximum quality at a higher runtime cost:
 
 ```json
 {
@@ -476,19 +484,19 @@ kerf_mm + spacing_mm
 }
 ```
 
-Это не production default. Это quality/research режим.
+This is not a production default. It is a quality/research mode.
 
-По результатам V52/V53:
+Results from V52/V53:
 
-- `seed_offsets` помогают найти 4-листовой раскрой там, где обычный pool мог дать 5 листов;
-- `group_shift` может визуально улучшать компактность;
-- но `group_shift` без дополнительного acceptance guard иногда ухудшает zone count.
+- `seed_offsets` can find a 4-sheet layout where the basic pool produced 5 sheets;
+- `group_shift` can improve visual compactness;
+- without an additional acceptance guard, `group_shift` can sometimes worsen zone counts.
 
-Поэтому этот режим полезен для сложных раскроев, но требует просмотра SVG и telemetry.
+Use this mode for difficult layouts, but inspect SVG and telemetry.
 
-## Что Оставить Только Для Исследований
+## Research-Only Settings
 
-Следующие параметры не стоит отдавать обычному пользователю как стандартные настройки.
+The following settings should not be exposed to normal users as standard controls.
 
 ### ga_override
 
@@ -505,16 +513,16 @@ kerf_mm + spacing_mm
 }
 ```
 
-Использовать только для:
+Use only for:
 
-- benchmark;
-- подбора параметров;
-- регрессионных исследований;
-- сравнения гипотез.
+- benchmarks;
+- parameter tuning;
+- regression research;
+- comparing hypotheses.
 
-В рабочем API лучше использовать `ga_profile`.
+For working API usage, prefer `ga_profile`.
 
-### Ручные zone_penalties
+### Manual zone_penalties
 
 ```json
 {
@@ -524,7 +532,7 @@ kerf_mm + spacing_mm
 }
 ```
 
-Это research-level настройка. Для production лучше:
+This is a research-level setting. For production, prefer:
 
 ```json
 {
@@ -544,7 +552,7 @@ kerf_mm + spacing_mm
 }
 ```
 
-Полезно для исследований и дорогого quality mode, но не для обычного default. Причина: каждый offset умножает число candidate runs.
+Useful for research and expensive quality mode, but not as a normal default. Each offset multiplies candidate runs.
 
 ### debug_artifacts
 
@@ -556,19 +564,19 @@ kerf_mm + spacing_mm
 }
 ```
 
-Нужно для визуального аудита и разработки. В production обычно ставить `false`, иначе response становится больше.
+Useful for visual audit and development. In production, keep it `false` because it increases response size.
 
 ### portfolio, beam, alns
 
-Эти режимы полезны для экспериментов и альтернативных orchestration-стратегий.
+These modes are useful for experiments and alternative orchestration strategies.
 
-Обычному API-клиенту лучше начинать с:
+Normal API clients should start with:
 
-```json
-"POST /v1/optimize"
+```text
+POST /v1/optimize
 ```
 
-А не с:
+not:
 
 ```text
 POST /v1/optimize/beam
@@ -577,22 +585,22 @@ POST /v1/optimize/alns
 
 ### partition
 
-`partition` может быть полезен для экспериментов с dense-first раскладкой, но не должен быть default, пока нет стабильной политики выбора случаев, где он улучшает результат.
+`partition` can be useful for dense-first layout experiments, but it should not be a default until there is a stable case-selection policy.
 
-## Что Показывать Пользователю В UI
+## What To Show In A UI
 
-Для пользовательского интерфейса лучше не показывать все внутренние параметры.
+Do not expose every internal parameter in a normal user interface.
 
-Показывать:
+Show:
 
 - `layout_mode`: guillotine / nested;
 - `objective`: minimum waste / minimum sheets;
 - quality level: fast / balanced / quality;
-- checkbox `Уплотнять группы деталей`;
-- checkbox `Показывать SVG`;
+- checkbox: compact peripheral part groups;
+- checkbox: include SVG;
 - optional seed for reproducibility.
 
-Не показывать обычному пользователю:
+Do not show to normal users:
 
 - `ga_override`;
 - `zone_penalties`;
@@ -604,7 +612,7 @@ POST /v1/optimize/alns
 - `reaction_factor`;
 - `partition.sheet_budget_ms`.
 
-## Mapping UI Quality Level To API
+## Mapping UI Quality Levels To API
 
 ### Fast
 
@@ -669,9 +677,9 @@ POST /v1/optimize/alns
 }
 ```
 
-## Рекомендуемые Defaults Для Интеграции
+## Recommended Defaults For Integration
 
-Если нужно выбрать один практический default:
+Single practical default:
 
 ```json
 {
@@ -686,7 +694,7 @@ POST /v1/optimize/alns
 }
 ```
 
-Если нужно выбрать один practical quality default с group shift:
+Single practical quality default with group shift:
 
 ```json
 {
@@ -706,7 +714,7 @@ POST /v1/optimize/alns
 }
 ```
 
-Если нужно выбрать research preset для поиска лучших раскроев:
+Research preset for searching high-quality layouts:
 
 ```json
 {
@@ -736,12 +744,12 @@ POST /v1/optimize/alns
 ## Operational Rules
 
 1. For production, start with simple settings and inspect SVG.
-2. Enable `group_shift` when visual gaps between edge groups and main group matter.
+2. Enable `group_shift` when visual gaps between edge groups and the main group matter.
 3. Enable `debug_artifacts` only for analysis.
-4. Use fixed `seed` when comparing layouts.
-5. Use `retry_strategy: "disabled"` for exact before/after benchmark.
-6. Use `retry_strategy: "smart"` for real user-facing API.
+4. Use a fixed `seed` when comparing layouts.
+5. Use `retry_strategy: "disabled"` for exact before/after benchmarks.
+6. Use `retry_strategy: "smart"` for real user-facing APIs.
 7. Do not expose raw GA and profile-pool internals to ordinary users.
 8. Keep `profile_pool.seed_offsets` for expensive quality mode or research.
-9. Treat `waste_percent` as necessary but not sufficient; always inspect SVG for important jobs.
-10. For group-shift quality, look at `summary.group_shift.contact_gain_mm`, `moves_applied`, and before/diff SVG.
+9. Treat `waste_percent` as necessary but not sufficient; inspect SVG for important jobs.
+10. For group-shift quality, inspect `summary.group_shift.contact_gain_mm`, `moves_applied`, and before/diff SVG.

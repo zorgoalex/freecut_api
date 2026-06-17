@@ -1,26 +1,26 @@
 # Freecut API Specification
 
-Актуально для текущей реализации сервиса Freecut в этой ветке.
+This document describes the current Freecut HTTP API.
 
-Freecut - HTTP-сервис для 2D раскроя прямоугольных деталей по листам. Сервис принимает JSON с листами, деталями и параметрами раскроя, выполняет оптимизацию, возвращает размещение деталей по листам, метрики результата и SVG-визуализацию.
+Freecut is a service for 2D rectangular sheet-cut optimization. It accepts stock sheets, rectangular parts, and cutting parameters, then returns sheet layouts, placement coordinates, optimization telemetry, and optional SVG visualization.
 
-Все размеры передаются и возвращаются в миллиметрах.
+All dimensions are provided and returned in millimeters.
 
 ## Base URL
 
-По умолчанию сервис слушает:
+Default local URL:
 
 ```text
 http://localhost:8088
 ```
 
-Порт задается переменной окружения `PORT`.
+The port is configured with the `PORT` environment variable.
 
 ## Service Endpoints
 
 ### GET /health/live
 
-Проверка, что процесс жив.
+Liveness probe.
 
 Response `200 text/plain`:
 
@@ -30,7 +30,7 @@ ok
 
 ### GET /health/ready
 
-Проверка готовности сервиса.
+Readiness probe.
 
 Response `200 text/plain`:
 
@@ -40,7 +40,7 @@ ok
 
 ### GET /version
 
-Версия сервиса.
+Service version.
 
 Response `200 application/json`:
 
@@ -57,18 +57,20 @@ Swagger UI.
 
 ### GET /openapi.json
 
-OpenAPI JSON.
+OpenAPI JSON schema.
 
 ## Optimization Endpoints
 
-Все optimization endpoints принимают одинаковое тело `OptimizeRequest`.
+All optimization endpoints accept the same `OptimizeRequest` JSON payload.
 
 ### POST /v1/optimize
 
-Основной endpoint. Использует стандартный pipeline оптимизации:
+Main optimization endpoint.
 
-- `layout_mode: "guillotine"` или `"nested"`;
-- multi-start GA;
+It supports:
+
+- `layout_mode: "guillotine"` or `"nested"`;
+- multi-start GA optimization;
 - optional `profile_pool`;
 - optional `partition`;
 - optional `group_shift`;
@@ -76,11 +78,11 @@ OpenAPI JSON.
 
 ### POST /v1/optimize/beam
 
-Beam-search orchestration. Тело запроса то же, настройки beam передаются в `params.beam`.
+Beam-search orchestration endpoint. It uses the same request schema. Beam settings are passed in `params.beam`.
 
 ### POST /v1/optimize/alns
 
-ALNS/LNS orchestration. Тело запроса то же, настройки ALNS передаются в `params.alns`.
+ALNS/LNS orchestration endpoint. It uses the same request schema. ALNS settings are passed in `params.alns`.
 
 ## Headers
 
@@ -98,7 +100,7 @@ Content-Type: application/json
 
 ## OptimizeRequest
 
-Минимальная структура:
+Basic request shape:
 
 ```json
 {
@@ -155,12 +157,12 @@ Content-Type: application/json
 
 | Field | Type | Required | Valid values | Description |
 |---|---:|---:|---|---|
-| `kerf_mm` | number | yes | `>= 0` | Cut width / blade thickness. |
-| `spacing_mm` | number | yes | `>= 0` | Extra clearance between parts. |
+| `kerf_mm` | number | yes | `>= 0` | Physical cutting width / tool width. |
+| `spacing_mm` | number | yes | `>= 0` | Additional clearance beyond kerf. |
 | `trim_mm` | object | yes | all values `>= 0` | Unusable sheet margins. |
 | `objective` | string | yes | `"min_waste"`, `"min_sheets"` | Optimization objective. |
 
-Effective clearance between parts is:
+The effective spacing between neighboring parts is:
 
 ```text
 effective_gap_mm = kerf_mm + spacing_mm
@@ -176,9 +178,9 @@ effective_gap_mm = kerf_mm + spacing_mm
 | `layout_mode` | string | `"guillotine"` | `"guillotine"`, `"nested"` | Layout/cutting mode. |
 | `sla_profile` | string | `"balanced"` | `"fast"`, `"balanced"`, `"quality"` | Restart-budget profile for `/v1/optimize`. |
 | `ga_profile` | string | `"balanced"` | `"fast"`, `"balanced"`, `"quality"` | GA internal profile. |
-| `include_svg` | boolean | `true` | `true`, `false` | Include `artifacts.svg` in response. |
-| `retry_strategy` | string | `"smart"` | `"disabled"`, `"smart"` | Fault-aware retry mode. |
-| `max_retry_attempts` | integer | `3` | `>= 1`; values below 1 are clamped to 1 | Total attempts including first attempt when retry is smart. |
+| `include_svg` | boolean | `true` | `true`, `false` | Include `artifacts.svg` in the response. |
+| `retry_strategy` | string | `"smart"` | `"disabled"`, `"smart"` | Fault-aware retry behavior. |
+| `max_retry_attempts` | integer | `3` | `>= 1`; values below 1 are clamped to 1 | Total attempts including the first attempt when retry is smart. |
 | `ga_override` | object | omitted | see below | Advanced GA tuning. |
 | `profile_pool` | object | omitted | see below | Multi-profile zone/remnant-aware selection. |
 | `portfolio` | object | omitted | see below | Portfolio orchestration. |
@@ -186,6 +188,23 @@ effective_gap_mm = kerf_mm + spacing_mm
 | `alns` | object | omitted | see below | ALNS/LNS orchestration. |
 | `partition` | object | omitted | see below | Dense-first peeling/partition mode. |
 | `group_shift` | object | omitted | see below | Post-process group compaction. |
+
+## Kerf vs Spacing
+
+`kerf_mm` is the physical width of the cut. It is the material removed by the tool: saw blade, router bit, laser beam, plasma cut, etc.
+
+`spacing_mm` is extra process clearance beyond the tool width. It can represent safety clearance, tabs, clamping tolerance, vibration allowance, or edge-quality margin.
+
+Example:
+
+```json
+{
+  "kerf_mm": 6.0,
+  "spacing_mm": 1.0
+}
+```
+
+The effective gap between adjacent parts is `7.0 mm`.
 
 ## trim_mm
 
@@ -227,7 +246,7 @@ Both usable dimensions must be `> 0`.
 | `height_mm` | number | yes | `> 0` | Full sheet height. |
 | `qty` | integer/null | no | `>= 0` | Available sheet quantity. If omitted or `0`, stock is treated as unlimited. |
 
-`stock` array limits:
+`stock` limits:
 
 - must not be empty;
 - ids must be unique;
@@ -255,17 +274,13 @@ Both usable dimensions must be `> 0`.
 | `rotation` | string | yes | `"forbid"`, `"allow_90"` | Whether 90-degree rotation is allowed. |
 | `pattern_direction` | string | yes | `"none"`, `"along_width"`, `"along_height"` | Grain/pattern direction. |
 
-Total item instances limit defaults to `MAX_INSTANCES=5000`.
+Total item instances default limit is `MAX_INSTANCES=5000`.
 
 Oversized parts are not rejected at request-validation level. They may be returned in `unplaced_items`.
 
 ## Enums
 
 ### objective
-
-```json
-"min_waste"
-```
 
 Values:
 
@@ -274,10 +289,6 @@ Values:
 
 ### layout_mode
 
-```json
-"guillotine"
-```
-
 Values:
 
 - `"guillotine"`: guillotine-style cuts.
@@ -285,20 +296,12 @@ Values:
 
 ### rotation
 
-```json
-"allow_90"
-```
-
 Values:
 
 - `"forbid"`
 - `"allow_90"`
 
 ### pattern_direction
-
-```json
-"none"
-```
 
 Values:
 
@@ -348,9 +351,9 @@ Advanced GA tuning.
 
 ## profile_pool
 
-Multi-profile orchestration. It evaluates multiple `zone_penalty` profiles and picks a winner using sheet count, visual waste regions, cut-gap waste regions, lead utilization and group-shift related telemetry.
+Multi-profile orchestration. It evaluates multiple `zone_penalty` profiles and selects a winner by sheet count, visual waste regions, cut-gap waste regions, lead utilization, and group-shift telemetry.
 
-Recommended research payload:
+Research-quality example:
 
 ```json
 {
@@ -380,9 +383,9 @@ Fields:
 
 Preset values:
 
-- `"cheap"`: smaller/cheaper profile pool.
+- `"cheap"`: smaller, cheaper profile pool.
 - `"balanced_quality"`: balanced delayed rescue with reusable-corner guard.
-- `"aggressive"`: always evaluates broader pool.
+- `"aggressive"`: always evaluates a broader pool.
 
 ## group_shift
 
@@ -419,8 +422,6 @@ Dense-first peeling/partition mode.
 }
 ```
 
-Fields:
-
 | Field | Type | Default | Description |
 |---|---:|---:|---|
 | `enabled` | boolean | `true` when object is present | Enable partition mode. |
@@ -437,8 +438,6 @@ Anytime portfolio orchestration.
   "candidate_count": 4
 }
 ```
-
-Fields:
 
 | Field | Type | Default | Valid values |
 |---|---:|---:|---|
@@ -459,8 +458,6 @@ Beam search settings, primarily for `POST /v1/optimize/beam`.
   "branch_factor": 2
 }
 ```
-
-Fields:
 
 | Field | Type | Default | Valid values |
 |---|---:|---:|---|
@@ -485,8 +482,6 @@ ALNS/LNS settings, primarily for `POST /v1/optimize/alns`.
   "reaction_factor": 0.3
 }
 ```
-
-Fields:
 
 | Field | Type | Default | Valid values |
 |---|---:|---:|---|
@@ -637,8 +632,6 @@ Each entry is one used sheet.
 }
 ```
 
-Fields:
-
 | Field | Type | Description |
 |---|---:|---|
 | `stock_id` | string | Source stock id. |
@@ -692,8 +685,8 @@ Present when some items could not be placed.
 
 Known reasons:
 
-- `"oversized"`
-- `"qty_limit"`
+- `"oversized"`;
+- `"qty_limit"`.
 
 ### artifacts
 
@@ -776,7 +769,7 @@ Important fields:
 
 - `moves_applied`: accepted group shifts.
 - `parts_moved`: total moved parts.
-- `contact_gain_mm`: how much additional edge contact was created toward anchor clusters.
+- `contact_gain_mm`: additional edge contact created toward anchor clusters.
 - `corridor_closed_area_mm2`: closed/shifted corridor area.
 - `corridor_opportunity_after_mm2`: remaining detected group-shift opportunity.
 
@@ -792,8 +785,6 @@ All errors use:
   "details": null
 }
 ```
-
-Fields:
 
 | Field | Type | Description |
 |---|---:|---|
@@ -836,13 +827,13 @@ Request validation:
 - `kerf_mm >= 0`.
 - `spacing_mm >= 0`.
 - `trim_mm.* >= 0`.
-- trim must leave positive usable area on every stock type.
+- Trim must leave positive usable area on every stock type.
 - `time_limit_ms >= 100` if provided.
 - `restarts >= 1` if provided.
-- total item instances must be `<= MAX_INSTANCES`.
-- stock dimensions must be `> 0`.
-- item dimensions must be `> 0`.
-- item `qty >= 1`.
+- Total item instances must be `<= MAX_INSTANCES`.
+- Stock dimensions must be `> 0`.
+- Item dimensions must be `> 0`.
+- Item `qty >= 1`.
 
 ## cURL Example
 
@@ -878,4 +869,3 @@ curl -sS -X POST "http://localhost:8088/v1/optimize" \
     ]
   }'
 ```
-

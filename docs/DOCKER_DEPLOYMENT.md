@@ -1,37 +1,37 @@
 # Freecut Docker Deployment Guide
 
-Эта инструкция описывает, как развернуть Freecut как Docker-сервис.
+This guide explains how to deploy Freecut as a Docker service.
 
-## Что Собирает Dockerfile
+## What The Dockerfile Builds
 
-Текущий `Dockerfile` использует multi-stage build:
+The current `Dockerfile` uses a multi-stage build:
 
-1. `rust:1.93-bookworm` собирает release binary.
-2. `debian:bookworm-slim` запускает готовый `/app/freecut`.
+1. `rust:1.93-bookworm` builds the release binary.
+2. `debian:bookworm-slim` runs the compiled `/app/freecut` binary.
 
-Runtime image содержит:
+The runtime image contains:
 
-- бинарник `/app/freecut`;
-- `curl` для Docker healthcheck;
+- `/app/freecut`;
+- `curl` for Docker health checks;
 - `ca-certificates`;
-- env defaults сервиса.
+- default service environment variables.
 
-По умолчанию контейнер слушает порт:
+By default, the container listens on:
 
 ```text
 8088
 ```
 
-## Быстрый Запуск
+## Quick Start
 
-Из корня репозитория:
+From the repository root:
 
 ```bash
 docker build -t freecut-mvp .
 docker run --rm -p 8088:8088 freecut-mvp
 ```
 
-Проверка:
+Check service health:
 
 ```bash
 curl http://127.0.0.1:8088/health/live
@@ -45,7 +45,7 @@ Swagger UI:
 http://127.0.0.1:8088/docs
 ```
 
-OpenAPI:
+OpenAPI JSON:
 
 ```text
 http://127.0.0.1:8088/openapi.json
@@ -53,7 +53,7 @@ http://127.0.0.1:8088/openapi.json
 
 ## Production Run Command
 
-Практический вариант запуска:
+Practical production-style `docker run` command:
 
 ```bash
 docker run -d \
@@ -69,7 +69,7 @@ docker run -d \
   freecut-mvp
 ```
 
-Проверить статус:
+Check status:
 
 ```bash
 docker ps
@@ -77,7 +77,7 @@ docker logs -f freecut
 docker inspect --format='{{json .State.Health}}' freecut
 ```
 
-Остановить:
+Stop and remove:
 
 ```bash
 docker stop freecut
@@ -90,13 +90,13 @@ docker rm freecut
 |---|---:|---|
 | `PORT` | `8088` | HTTP port inside the container. |
 | `RUST_LOG` | `info` | Rust tracing/log level. |
-| `MAX_BODY_BYTES` | `5242880` | Max JSON request body size. |
-| `MAX_INSTANCES` | `5000` | Max total item instances in one request. |
-| `DEFAULT_TIME_LIMIT_MS` | `2000` | Default optimizer time budget if request omits `params.time_limit_ms`. |
-| `DEFAULT_RESTARTS` | `10` | Default restarts if request omits `params.restarts`. |
-| `MAX_CONCURRENT_OPTIMIZE` | CPU count, min `1` | Max concurrent optimize requests. |
+| `MAX_BODY_BYTES` | `5242880` | Maximum JSON request body size. |
+| `MAX_INSTANCES` | `5000` | Maximum total item instances in one request. |
+| `DEFAULT_TIME_LIMIT_MS` | `2000` | Default optimizer time budget when request omits `params.time_limit_ms`. |
+| `DEFAULT_RESTARTS` | `10` | Default restart count when request omits `params.restarts`. |
+| `MAX_CONCURRENT_OPTIMIZE` | CPU count, minimum `1` | Maximum concurrent optimize requests. |
 
-Если контейнерный порт меняется через `PORT`, надо менять и Docker port mapping:
+If you change the internal `PORT`, also change the Docker port mapping:
 
 ```bash
 docker run -d \
@@ -106,7 +106,7 @@ docker run -d \
   freecut-mvp
 ```
 
-Обычно проще оставить `PORT=8088` внутри контейнера и менять только внешний порт:
+Usually it is simpler to keep `PORT=8088` inside the container and change only the host port:
 
 ```bash
 docker run -d \
@@ -115,7 +115,7 @@ docker run -d \
   freecut-mvp
 ```
 
-Тогда сервис будет доступен с хоста:
+The service will then be available on the host at:
 
 ```text
 http://127.0.0.1:9000
@@ -123,7 +123,7 @@ http://127.0.0.1:9000
 
 ## docker compose
 
-Создать `docker-compose.yml`:
+Example `docker-compose.yml`:
 
 ```yaml
 services:
@@ -152,19 +152,19 @@ services:
       retries: 3
 ```
 
-Запуск:
+Start:
 
 ```bash
 docker compose up -d --build
 ```
 
-Логи:
+Logs:
 
 ```bash
 docker compose logs -f freecut
 ```
 
-Остановка:
+Stop:
 
 ```bash
 docker compose down
@@ -172,47 +172,47 @@ docker compose down
 
 ## Smoke Test
 
-В репозитории есть smoke test:
+The repository includes a smoke test script:
 
 ```bash
 ./scripts/docker_smoke.sh
 ```
 
-Он проверяет:
+It checks:
 
 - `/health/live`;
 - `/health/ready`;
 - `/version`;
 - `/openapi.json`;
 - `/docs`;
-- валидный `/v1/optimize`;
-- invalid trim case;
-- invalid JSON case.
+- a valid `/v1/optimize` request;
+- invalid trim handling;
+- invalid JSON handling.
 
-Перед запуском smoke test контейнер должен быть уже запущен:
+The Freecut container must already be running:
 
 ```bash
 docker build -t freecut-mvp .
 docker run --rm -p 8088:8088 freecut-mvp
 ```
 
-В другом терминале:
+In another terminal:
 
 ```bash
 ./scripts/docker_smoke.sh
 ```
 
-Если сервис доступен на другом адресе:
+If the service is available at another URL:
 
 ```bash
 BASE_URL=http://127.0.0.1:9000 ./scripts/docker_smoke.sh
 ```
 
-На Linux скрипт использует `docker run --network host` для curl-контейнера.
+On Linux, the script uses `docker run --network host` for the curl container.
 
-## Проверка Optimize API
+## Test The Optimize API
 
-Пример запроса:
+Example request:
 
 ```bash
 curl -sS -X POST "http://127.0.0.1:8088/v1/optimize" \
@@ -220,7 +220,7 @@ curl -sS -X POST "http://127.0.0.1:8088/v1/optimize" \
   --data-binary @examples/optimize_request.json
 ```
 
-Без SVG, чтобы ответ был меньше:
+Smaller response without SVG:
 
 ```bash
 curl -sS -X POST "http://127.0.0.1:8088/v1/optimize" \
@@ -249,9 +249,9 @@ curl -sS -X POST "http://127.0.0.1:8088/v1/optimize" \
 
 ## Resource Settings
 
-Для production желательно ограничить CPU/RAM контейнера на уровне Docker/Compose/оркестратора.
+For production, limit CPU/RAM at the Docker, Compose, or orchestration layer.
 
-Пример `docker run`:
+Example `docker run`:
 
 ```bash
 docker run -d \
@@ -264,15 +264,15 @@ docker run -d \
   freecut-mvp
 ```
 
-Практическое правило:
+Practical rules:
 
-- `MAX_CONCURRENT_OPTIMIZE` не ставить сильно выше доступных CPU cores;
-- если запросы тяжелые, начать с `MAX_CONCURRENT_OPTIMIZE=2..4`;
-- если много мелких запросов, можно увеличить после нагрузочного теста.
+- do not set `MAX_CONCURRENT_OPTIMIZE` much higher than available CPU cores;
+- for heavy requests, start with `MAX_CONCURRENT_OPTIMIZE=2..4`;
+- for many small requests, increase it only after load testing.
 
 ## Updating The Service
 
-Обновление при локальной сборке:
+Update after local source changes:
 
 ```bash
 git pull
@@ -286,7 +286,7 @@ docker run -d \
   freecut-mvp
 ```
 
-Если используется compose:
+With Compose:
 
 ```bash
 git pull
@@ -295,13 +295,13 @@ docker compose up -d --build
 
 ## Logs
 
-Посмотреть логи:
+View logs:
 
 ```bash
 docker logs -f freecut
 ```
 
-Увеличить детализацию:
+Increase logging detail:
 
 ```bash
 docker run -d \
@@ -311,7 +311,7 @@ docker run -d \
   freecut-mvp
 ```
 
-Для обычного production лучше:
+For normal production use:
 
 ```text
 RUST_LOG=info
@@ -319,20 +319,20 @@ RUST_LOG=info
 
 ## Healthcheck
 
-В Dockerfile уже задан:
+The Dockerfile already defines:
 
 ```dockerfile
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD curl -fsS "http://localhost:${PORT}/health/live" || exit 1
 ```
 
-Проверка:
+Check status:
 
 ```bash
 docker inspect --format='{{.State.Health.Status}}' freecut
 ```
 
-Ожидаемый статус:
+Expected status:
 
 ```text
 healthy
@@ -342,19 +342,19 @@ healthy
 
 ### Port already in use
 
-Симптом:
+Symptom:
 
 ```text
 Bind for 0.0.0.0:8088 failed: port is already allocated
 ```
 
-Решение:
+Fix:
 
 ```bash
 docker run -d --name freecut -p 9000:8088 freecut-mvp
 ```
 
-И обращаться к:
+Then use:
 
 ```text
 http://127.0.0.1:9000
@@ -362,13 +362,13 @@ http://127.0.0.1:9000
 
 ### Container is unhealthy
 
-Проверить логи:
+Check logs:
 
 ```bash
 docker logs freecut
 ```
 
-Проверить endpoint из контейнера:
+Check endpoint from inside the container:
 
 ```bash
 docker exec freecut curl -fsS http://localhost:8088/health/live
@@ -376,7 +376,7 @@ docker exec freecut curl -fsS http://localhost:8088/health/live
 
 ### Request body too large
 
-Увеличить:
+Increase:
 
 ```bash
 -e MAX_BODY_BYTES=10485760
@@ -384,19 +384,19 @@ docker exec freecut curl -fsS http://localhost:8088/health/live
 
 ### Too many concurrent requests
 
-Сервис вернет `429 OVERLOADED`, если заняты все optimize slots.
+The service returns `429 OVERLOADED` when all optimize slots are busy.
 
-Увеличить:
+Increase:
 
 ```bash
 -e MAX_CONCURRENT_OPTIMIZE=8
 ```
 
-Но только если хватает CPU/RAM.
+Only do this if the host has enough CPU/RAM.
 
-### Optimization too slow
+### Optimization is too slow
 
-Для API-клиента уменьшить:
+For faster API responses, reduce request-side budget:
 
 ```json
 {
@@ -406,7 +406,7 @@ docker exec freecut curl -fsS http://localhost:8088/health/live
 }
 ```
 
-Для качества увеличить:
+For higher quality, increase it:
 
 ```json
 {
@@ -417,7 +417,7 @@ docker exec freecut curl -fsS http://localhost:8088/health/live
 
 ## Recommended Production Defaults
 
-Для контейнера:
+For the container:
 
 ```bash
 -e RUST_LOG=info
@@ -428,7 +428,7 @@ docker exec freecut curl -fsS http://localhost:8088/health/live
 -e MAX_CONCURRENT_OPTIMIZE=4
 ```
 
-Для API-запросов:
+For API requests:
 
 ```json
 {
@@ -441,7 +441,7 @@ docker exec freecut curl -fsS http://localhost:8088/health/live
 }
 ```
 
-Если нужен group-shift postprocess:
+If group-shift postprocess is needed:
 
 ```json
 {
@@ -452,4 +452,3 @@ docker exec freecut curl -fsS http://localhost:8088/health/live
   }
 }
 ```
-
