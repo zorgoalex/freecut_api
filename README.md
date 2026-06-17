@@ -66,7 +66,8 @@ docker run --rm -p 8088:8088 freecut-mvp
 - `GET /version`
 - `GET /openapi.json`
 - `GET /docs`
- - Generated schema file: `openapi.json`
+- Generated schema file: `openapi.json`
+- Detailed API specification: [`docs/API_SPEC.md`](docs/API_SPEC.md)
 
 ## Main Endpoints
 - `POST /v1/optimize` - standard optimizer (with optional portfolio mode).
