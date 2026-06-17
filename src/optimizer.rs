@@ -2562,6 +2562,38 @@ async fn run_restarts_with_budget(
     let stock_templates = Arc::new(prepared.stock_pieces.clone());
     let cut_templates = Arc::new(prepared.cut_pieces.clone());
 
+    // H1/V55: seed `best` with a cheap synchronous FFD heuristic before the
+    // timed restart loop. On large jobs every GA slice can time out and abort
+    // (taking its in-task heuristic with it), leaving `best == None` and
+    // producing a 408 that discards a perfectly usable layout. Computing the
+    // heuristic up front guarantees the existing Ok+timeout_reason return path
+    // always has a valid partial solution to hand back instead of erroring.
+    {
+        let mut seed_opt = Optimizer::new();
+        seed_opt
+            .set_random_seed(base_seed)
+            .set_cut_width(prepared.cut_width)
+            .add_stock_pieces(prepared.stock_pieces.iter().cloned())
+            .add_cut_pieces(prepared.cut_pieces.iter().cloned());
+        let heuristic_solutions = match layout_mode {
+            LayoutMode::Nested => seed_opt.build_nested_heuristic(),
+            LayoutMode::Guillotine => seed_opt.build_guillotine_heuristic(),
+        };
+        if !heuristic_solutions.is_empty() {
+            let set = cut_optimizer_2d::SolutionSet {
+                solutions: heuristic_solutions,
+            };
+            if let Some(candidate) = pick_best_candidate(
+                set,
+                &req.params.objective,
+                &mut selection_counters,
+                kerf_gap_units,
+            ) {
+                best = Some(candidate);
+            }
+        }
+    }
+
     let slice_schedule_ms = restart_plan.map(|p| p.schedule_ms.as_slice());
     let planned_restarts = slice_schedule_ms
         .map(|s| s.len() as u64)
