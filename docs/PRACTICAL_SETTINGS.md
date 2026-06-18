@@ -359,7 +359,17 @@ Use this carefully:
 
 - `min_shift_mm: 3.0` allows more small moves;
 - `max_passes: 6` allows more accepted shifts;
-- the layout may look more compact, but zone metrics can sometimes get worse.
+- quality-guarded group shift should reject moves that worsen remnant topology,
+  but higher pass counts still cost extra CPU and should be benchmarked on your
+  own request set.
+
+For practical quality checks, inspect:
+
+- `summary.group_shift.quality_score_delta`;
+- `summary.group_shift.topology_score_delta`;
+- `summary.group_shift.part_contact_delta_mm`;
+- `summary.group_shift.quality_guard_rejections`;
+- before/final/diff SVG when `debug_artifacts=true`.
 
 For production default, prefer:
 
@@ -752,4 +762,4 @@ Research preset for searching high-quality layouts:
 7. Do not expose raw GA and profile-pool internals to ordinary users.
 8. Keep `profile_pool.seed_offsets` for expensive quality mode or research.
 9. Treat `waste_percent` as necessary but not sufficient; inspect SVG for important jobs.
-10. For group-shift quality, inspect `summary.group_shift.contact_gain_mm`, `moves_applied`, and before/diff SVG.
+10. For group-shift quality, inspect `summary.group_shift.quality_score_delta`, `topology_score_delta`, `part_contact_delta_mm`, `quality_guard_rejections`, and before/diff SVG.

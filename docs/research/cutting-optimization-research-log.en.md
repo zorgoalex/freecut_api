@@ -26,6 +26,7 @@ v67-ladder-benchmark
 v59-v61-productionization-a-cut-quality
 v59-v61-productionization-b-async-postprocess
 v70-group-shift-remnant-audit
+v71-guarded-group-shift-metrics
 -->
 
 Language: English.
@@ -472,3 +473,37 @@ and 8 increased local contact/closed area but produced two topology regressions
 (seeds 6 and 9). Next branch should implement guarded `group_shift`: accept a
 single-part or group move only if paired `remnant_score` improves, with a hard
 guard against topology loss.
+
+## V71 Guarded Group Shift Metrics
+
+- Branch: `feat/v71-guarded-group-shift-metrics`; draft:
+  `docs/research/drafts/2026-06-18-v71-guarded-group-shift-metrics.md`.
+- Code change: the V70 paired quality metric was moved into the actual
+  `group_shift` candidate guard.
+- Guard formula:
+  - `topology_score_after >= topology_score_before`;
+  - `part_contact_mm_after > part_contact_mm_before`;
+  - combined score improves, where score is
+    `topology_score + 0.25 * part_contact_ratio`.
+- Telemetry added to `summary.group_shift`:
+  `quality_guard_rejections`, `quality_score_*`, `topology_score_*`,
+  `part_contact_*_mm`.
+- Tests: `cargo test group_shift -- --test-threads=1` passed (11 tests);
+  `cargo test optimize_accepts_group_shift_and_reports_telemetry -- --test-threads=1`
+  passed.
+
+Same 12-seed fixture comparison:
+
+| run | moved | improved | worsened | moves | parts | rejected | delta score | delta topology | delta contact |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| V70 pass4 | 11 | 9 | 2 | 28 | 38 | n/a | -0.0083389 | -0.0235249 | +7231mm |
+| V70 pass8 | 11 | 9 | 2 | 29 | 39 | n/a | -0.0074568 | -0.0235249 | +7651mm |
+| V71 pass4 | 11 | 11 | 0 | 25 | 35 | 9 | +0.0185736 | 0 | +8844mm |
+| V71 pass8 | 11 | 11 | 0 | 25 | 35 | 9 | +0.0185736 | 0 | +8844mm |
+
+Conclusion: V71 confirms the group_shift direction and fixes the main V70 risk.
+The guard removed the observed topology regressions while preserving and even
+increasing total part-contact improvement. `max_passes=4` remains the practical
+setting; pass8 produced the same final result after rejected unsafe candidates.
+Next work should expand candidate generation around the anchor-group perimeter,
+but keep the V71 guard mandatory.
