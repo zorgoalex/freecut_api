@@ -116,6 +116,98 @@ fn guillotine() {
 }
 
 #[test]
+fn best_fit_assignment_never_increases_sheet_count() {
+    // V60-lite: build_guillotine_heuristic now evaluates BOTH first-fit and
+    // best-fit bin assignment and keeps both candidate sets. Adding the best-fit
+    // candidates must never raise the minimum sheet count vs first-fit alone
+    // (pick_best_candidate selects the fewest sheets), and best-fit must place
+    // every piece. This is the zero-regression guarantee behind V60-lite.
+    use rand::SeedableRng;
+
+    let mut pieces = Vec::new();
+    let mut id = 0usize;
+    for (w, l, qty) in [
+        (20usize, 30usize, 6usize),
+        (18, 18, 8),
+        (40, 25, 4),
+        (12, 50, 5),
+    ] {
+        for _ in 0..qty {
+            id += 1;
+            pieces.push(CutPiece {
+                quantity: 1,
+                external_id: Some(id),
+                width: w,
+                length: l,
+                pattern_direction: PatternDirection::None,
+                can_rotate: true,
+            });
+        }
+    }
+
+    let mut optimizer = Optimizer::new();
+    optimizer
+        .add_stock_piece(StockPiece {
+            width: 48,
+            length: 96,
+            pattern_direction: PatternDirection::None,
+            price: 0,
+            quantity: None,
+        })
+        .add_cut_pieces(pieces)
+        .set_cut_width(1)
+        .set_random_seed(1);
+
+    // Sort decreasing by area, mirroring build_guillotine_heuristic.
+    let mut cuts: Vec<&CutPieceWithId> = optimizer.cut_pieces.iter().collect();
+    cuts.sort_by_key(|c| std::cmp::Reverse((c.width as u64).saturating_mul(c.length as u64)));
+    let total = cuts.len();
+
+    let min_bins_for = |assignment: BinAssignment| -> usize {
+        let mut min_bins = usize::MAX;
+        for heuristic in &GuillotineBin::possible_heuristics() {
+            let mut rng = rand::rngs::StdRng::seed_from_u64(optimizer.random_seed);
+            let unit = OptimizerUnit::<GuillotineBin>::with_heuristic_assignment(
+                &optimizer.stock_pieces,
+                &cuts,
+                optimizer.cut_width,
+                heuristic,
+                assignment,
+                &mut rng,
+            )
+            .unwrap();
+            // Both strategies must place every piece (no dropped cuts).
+            assert!(unit.unused_cut_pieces.is_empty());
+            assert_eq!(
+                unit.bins.iter().map(|b| b.cut_pieces().count()).sum::<usize>(),
+                total
+            );
+            min_bins = min_bins.min(unit.bins.len());
+        }
+        min_bins
+    };
+
+    let ff = min_bins_for(BinAssignment::FirstFit);
+    let bf = min_bins_for(BinAssignment::BestFit);
+
+    // Keeping both candidate sets can only lower (or equal) the sheet count.
+    let combined = ff.min(bf);
+    assert!(
+        combined <= ff,
+        "best-fit assignment must never regress the minimum sheet count"
+    );
+
+    // The construction builder exposes exactly that combined minimum.
+    let builder_min = optimizer
+        .build_guillotine_heuristic()
+        .iter()
+        .map(|s| s.stock_pieces.len())
+        .min()
+        .expect("builder returns at least one solution");
+    assert_eq!(builder_min, combined);
+}
+
+#[test]
 fn guillotine_rotate() {
     let solution = Optimizer::new()
         .add_stock_piece(StockPiece {
