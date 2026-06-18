@@ -34,6 +34,7 @@ v71-guarded-group-shift-metrics
 v72-anchor-perimeter-group-shift
 v73-profile-pool-group-shift-quality
 v74-profile-pool-candidate-quality-audit
+v75-backfill-headroom-spike
 -->
 
 Language: Russian.
@@ -1566,3 +1567,25 @@ candidates обычно различаются раньше, чем новый q
 candidate set нет лучших same-sheet/same-zone layouts, которые quality scoring
 мог бы выбрать. Дальше нужно генерировать структурно другие candidates или
 targeted repair candidates, и только потом снова дорабатывать scoring formula.
+
+## V75: Backfill headroom spike (measurement-only)
+
+- Branch: `feat/backfill-spike`; draft:
+  `docs/research/drafts/2026-06-18-v75-backfill-headroom-spike.md`.
+- Вопрос перед постройкой backfill / sheet-count пост-оптимизации: оставляет ли
+  текущий LNS реальный headroom по числу листов на большом N? Без кода; машинерия
+  `cut_quality=max` прогнана по LNS-окну {6,8} и итерациям {4000,8000} на миксах,
+  у которых area lower bound ~40 и ~50 листов.
+- Результаты (лучшие листы vs area lower bound):
+  - LB~40 (N50, 524 детали): лучшее **43** (guillotine w6/w8; nested w6) → **+3**;
+  - LB~50 (N64, 670 деталей): лучшее **54** (guillotine w8) → **+4**.
+- Находки: разрыв **структурный, не бюджетный** — расширение окна до 8 и удвоение
+  итераций почти не двигают (LB40 остаётся 43; LB50 55→54). И он **доказуемо
+  бьётся**: V67 намерил PackingSolver 10s на 51 для LB50 (vs наши 54), ~−3 листа.
+  nested на паритете при LB40 (43), но ~2 хуже при LB50 (56 vs 54), а `w8` для
+  nested перелетает (согласуется с V71).
+- Вывод: backfill целит в реальный структурный разрыв ~3–4 листа над area lower
+  bound, который тюнинг LNS не закрывает. Обосновывает прототип
+  backfill / freeze-and-nibble (отдельная ветка), мерить против этого baseline
+  (43 @ LB40, 54 @ LB50) и area lower bound. Это рычаг по числу листов, не по
+  остатку (остаток закрыт V71).

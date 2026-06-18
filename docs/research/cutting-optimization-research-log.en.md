@@ -34,6 +34,7 @@ v71-guarded-group-shift-metrics
 v72-anchor-perimeter-group-shift
 v73-profile-pool-group-shift-quality
 v74-profile-pool-candidate-quality-audit
+v75-backfill-headroom-spike
 -->
 
 Language: English.
@@ -670,3 +671,25 @@ Conclusion: the next bottleneck is not profile_pool ordering. The current
 candidate set does not contain better same-sheet/same-zone layouts for quality
 scoring to select. Next work should generate structurally different candidates or
 targeted repair candidates before investing more in scoring formula changes.
+
+## V75: Backfill Headroom Spike (measurement-only)
+
+- Branch: `feat/backfill-spike`; draft:
+  `docs/research/drafts/2026-06-18-v75-backfill-headroom-spike.md`.
+- Question before building a backfill / sheet-count post-optimization: does the
+  current LNS leave real sheet-count headroom at large N? No code change; the
+  `cut_quality=max` machinery was swept over LNS window {6,8} and iters
+  {4000,8000} on part mixes whose area lower bound is ~40 and ~50 sheets.
+- Results (best sheets vs area lower bound):
+  - LB~40 (N50, 524 parts): best **43** (guillotine w6/w8; nested w6) → **+3**;
+  - LB~50 (N64, 670 parts): best **54** (guillotine w8) → **+4**.
+- Findings: the gap is **structural, not budget** — widening the window to 8 and
+  doubling iters barely moves it (LB40 stays 43; LB50 55→54). It is also
+  **provably beatable**: V67 measured PackingSolver 10s at 51 for LB50 (vs our
+  54), ~−3 sheets. nested is at parity at LB40 (43) but ~2 worse at LB50 (56 vs
+  54), and `w8` overshoots for nested (consistent with V71).
+- Conclusion: backfill targets a real ~3–4-sheet structural gap over the area
+  lower bound that LNS tuning cannot close. Justifies a backfill / freeze-and-nibble
+  prototype (own branch), measured against this baseline (43 @ LB40, 54 @ LB50)
+  and the area lower bound. This is a sheet-count lever, not a remnant one
+  (remnant settled by V71).
