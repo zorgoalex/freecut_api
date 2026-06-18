@@ -29,6 +29,7 @@ v70-group-shift-remnant-audit
 v71-guarded-group-shift-metrics
 v72-anchor-perimeter-group-shift
 v73-profile-pool-group-shift-quality
+v74-profile-pool-candidate-quality-audit
 -->
 
 Language: English.
@@ -557,3 +558,35 @@ selection, but the current profile_pool candidate set rarely reaches that
 tie-breaker: earlier sheet/visual-zone/cut-gap ordering already selects the
 same winner. The next practical work should focus on candidate diversity or a
 new composite quality gate, not only on reordering existing candidates.
+
+## V74 Profile Pool Candidate Quality Audit
+
+- Branch: `feat/v74-profile-pool-candidate-quality-audit`; draft:
+  `docs/research/drafts/2026-06-18-v74-profile-pool-candidate-quality-audit.md`.
+- Added script:
+  `scripts/test_v74_profile_pool_candidate_quality_audit.py`.
+- Method: run each `zone_penalty` profile as a standalone candidate, collect
+  sheets/zones/lead/corner/group_shift quality, and compare legacy ordering
+  with V73 quality-aware ordering.
+- Benchmark: seeds 1..12, profiles `[0.2,0.3,0.4,0.5,0.6,0.8]`, off/on
+  group_shift, 144 candidate rows.
+- Artifacts:
+  `ai_docs/tmp/v74_profile_pool_candidate_quality_audit/`.
+
+Result:
+
+| candidate groups | rows | quality winner differed from legacy |
+|---:|---:|---:|
+| 24 | 144 | 0 |
+
+Additional observation: in most groups, different `zone_penalty` profiles
+produce identical or near-identical winners under the decisive sheet/zones
+criteria. The one clear pure-quality alternative found on seed 10 required a
+worse visual-zone count, so promoting raw quality above zones would likely
+degrade visual topology.
+
+Conclusion: V74 confirms that the next bottleneck is not profile_pool ordering.
+The current candidate set does not contain better same-sheet/same-zone layouts
+for quality scoring to select. Next work should generate structurally different
+candidates or targeted repair candidates before investing more in scoring
+formula changes.
