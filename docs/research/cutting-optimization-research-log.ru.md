@@ -25,6 +25,7 @@ v66-sat-feasibility
 v67-ladder-benchmark
 v59-v61-productionization-a-cut-quality
 v59-v61-productionization-b-async-postprocess
+v70-group-shift-remnant-audit
 -->
 
 Language: Russian.
@@ -1327,3 +1328,36 @@ V67 conclusions:
 - Реальная цена deep-mode в prod profile: N50 `max_iters=4000` около **13.1s**
   wall на 1.5cpu против ~2-3s на 3-cpu dev box; в prod держать
   `MAX_CONCURRENT_OPTIMIZE` малым.
+
+## V70: group_shift remnant audit
+
+- Ветка: `feat/v70-group-shift-remnant-audit`; черновик:
+  `docs/research/drafts/2026-06-18-v70-group-shift-remnant-audit.md`.
+- Скрипт: `scripts/test_v70_group_shift_remnant_audit.py`.
+- Артефакты:
+  `ai_docs/tmp/v70_group_shift_pass1/`,
+  `ai_docs/tmp/v70_group_shift_pass4/`,
+  `ai_docs/tmp/v70_group_shift_pass8/`.
+- Новые paired-метрики разделяют визуальное качество на:
+  `topology_score` для формы/связности остатка и `part_contact_mm` для сдвига
+  крайних деталей к основной плотной группе. Combined `remnant_score`:
+  `topology_score + 0.25 * part_contact_ratio`.
+- Fixture/seeds: `multisheet_varied_4sheets.json`, guillotine, 3s, 3 restarts,
+  seeds 1..12, `group_shift.min_shift_mm=5`.
+
+Результаты:
+
+| max_passes | moved | improved | worsened | moves | parts | delta score | delta topology | delta contact |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 11 | 11 | 0 | 11 | 15 | +0.0102077 | 0 | +4860.5mm |
+| 4 | 11 | 9 | 2 | 28 | 38 | -0.0083389 | -0.0235249 | +7231.0mm |
+| 8 | 11 | 9 | 2 | 29 | 39 | -0.0074568 | -0.0235249 | +7651.0mm |
+
+Вывод: пользовательская гипотеза подтверждена и раньше была недооценена из-за
+неправильных метрик. `group_shift` часто улучшает визуальную компактность через
+рост контакта деталей, даже если zones/topology не меняются. Но multi-pass
+chain-shift без paired acceptance guard небезопасен: passes 4/8 увеличили
+локальный contact/closed area, но дали 2 topology regressions (seed 6 и seed 9).
+Следующая ветка должна реализовать guarded `group_shift`: применять одиночный
+или групповой сдвиг только если paired `remnant_score` улучшается, с hard guard
+против потери `topology_score`.
