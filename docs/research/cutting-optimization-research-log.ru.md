@@ -26,6 +26,7 @@ v67-ladder-benchmark
 v59-v61-productionization-a-cut-quality
 v59-v61-productionization-b-async-postprocess
 v72-remnant-telemetry
+v73-nested-remnant-accept
 -->
 
 Language: Russian.
@@ -1356,3 +1357,26 @@ V67 conclusions:
   внутренние staircase-щели, не разорванный основной остаток. Это переобосновывает
   remnant-aware шаг для nested с реальной целью. Метрика mode-agnostic, полезна
   сама по себе.
+
+## V73: Nested remnant-aware LNS acceptance — отклонён
+
+- Branch: `feat/nested-remnant-accept`; draft:
+  `docs/research/drafts/2026-06-18-nested-remnant-accept.md`.
+- Пробовали (Phase 1 Компонент 2): в `lns_refine` для nested принимать
+  equal-sheet repack, который увеличивает угловой остаток
+  (`corner_free_area_units`), не уменьшая `max_sheet_free_area`, чтобы вытянуть
+  свободное из внутренних staircase-щелей.
+- Строгий A/B (sweep по 4 seed'ам, nested N35 `cut_quality=max`,
+  `lns.max_window=6`): выигрыш по remnant маргинальный и внутри шума
+  (`mean_sheet_largest_free_frac` 0.916 против baseline 0.894, разброс 0.82–0.94),
+  **но регресс по листам на 2 из 4 seed'ов** (31 против 30) — corner-aware приёмка
+  уводит LNS с траектории сброса листа. Листы — приоритет №1, поэтому
+  дисквалификация.
+- Реальная находка: при `max_window=6` **baseline** nested уже на паритете с
+  guillotine (mean ~0.894 против ~0.90). Разрыв V72 (0.795) был артефактом
+  `max_window=4` — широкое окно V71 закрыло и разрыв по листам, и по остатку.
+  Component 2 гоняется за уже закрытым разрывом и рискует листом.
+- Решение: отклонён; правка `lns_refine` откачена (код не шипнут). Метрика V72
+  остаётся. Безопасный будущий вариант (если remnant понадобится двигать дальше) —
+  post-LNS проход только same-sheet-count угловыми ходами, который по построению
+  не регрессит листы; сейчас не делаем (headroom в пределах шума при window=6).
