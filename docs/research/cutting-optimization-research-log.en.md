@@ -29,6 +29,11 @@ v70-nested-approach-parity
 v71-nested-aware-lns
 v72-remnant-telemetry
 v73-nested-remnant-accept
+v70-group-shift-remnant-audit
+v71-guarded-group-shift-metrics
+v72-anchor-perimeter-group-shift
+v73-profile-pool-group-shift-quality
+v74-profile-pool-candidate-quality-audit
 -->
 
 Language: English.
@@ -555,3 +560,113 @@ Conclusions:
   V72 remnant metric stays. A safer future option (only if remnant is pushed
   further) is a post-LNS same-sheet-count corner pass that cannot regress sheets;
   not pursued now (headroom within noise at window=6).
+
+## V70 Group Shift Remnant Audit
+
+- Branch: `feat/v70-group-shift-remnant-audit`; draft:
+  `docs/research/drafts/2026-06-18-v70-group-shift-remnant-audit.md`.
+- Added `scripts/test_v70_group_shift_remnant_audit.py` to evaluate `group_shift`
+  as a paired remnant-quality post-process, not only through waste-region counts.
+- Metric split:
+  - `topology_score`: free-space/remnant topology;
+  - `part_contact_mm`: adjacency length between parts at `kerf + spacing`;
+  - `remnant_score = topology_score + 0.25 * part_contact_ratio`.
+
+Result on the 12-seed guillotine fixture:
+
+| run | moved | improved | worsened | moves | parts | delta score | delta topology | delta contact |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| pass1 | 11 | 11 | 0 | 11 | 16 | +0.0199016 | 0 | +9476mm |
+| pass4 | 11 | 9 | 2 | 28 | 38 | -0.0083389 | -0.0235249 | +7231mm |
+| pass8 | 11 | 9 | 2 | 29 | 39 | -0.0074568 | -0.0235249 | +7651mm |
+
+Conclusion: the user hypothesis is confirmed in a measurable way: group shifting
+often improves visible compactness through increased part contact. But multi-pass
+chain shifting is unsafe without a paired acceptance guard.
+
+## V71 Guarded Group Shift Metrics
+
+- Branch: `feat/v71-guarded-group-shift-metrics`; draft:
+  `docs/research/drafts/2026-06-18-v71-guarded-group-shift-metrics.md`.
+- Code change: moved the V70 paired quality metric into the actual `group_shift`
+  candidate guard.
+- Guard formula:
+  - `topology_score_after >= topology_score_before`;
+  - `part_contact_mm_after > part_contact_mm_before`;
+  - combined score improves.
+- Added telemetry to `summary.group_shift`: `quality_guard_rejections`,
+  `quality_score_*`, `topology_score_*`, `part_contact_*_mm`.
+
+Same fixture comparison:
+
+| run | moved | improved | worsened | moves | parts | rejected | delta score | delta topology | delta contact |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| V70 pass8 | 11 | 9 | 2 | 29 | 39 | n/a | -0.0074568 | -0.0235249 | +7651mm |
+| V71 pass4 | 11 | 11 | 0 | 25 | 35 | 9 | +0.0185736 | 0 | +8844mm |
+| V71 pass8 | 11 | 11 | 0 | 25 | 35 | 9 | +0.0185736 | 0 | +8844mm |
+
+Conclusion: V71 is the strongest production candidate in this line. The guard
+removed the observed topology regressions while preserving and increasing total
+part-contact improvement. Practical setting remains `max_passes=4`.
+
+## V72 Anchor Perimeter Group Shift
+
+- Branch: `feat/v72-anchor-perimeter-group-shift`; draft:
+  `docs/research/drafts/2026-06-18-v72-anchor-perimeter-group-shift.md`.
+- Added anchor-perimeter/refined side-group candidate generation after V71's
+  quality guard.
+
+Result:
+
+| run | moved | improved | worsened | moves | parts | rejected | perimeter candidates | delta score | delta topology | delta contact |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| V71 pass4 | 11 | 11 | 0 | 25 | 35 | 9 | n/a | +0.0185736 | 0 | +8844mm |
+| V72 pass4 | 11 | 11 | 0 | 25 | 35 | 9 | 650 | +0.0185736 | 0 | +8844mm |
+| V72 pass8 | 11 | 11 | 0 | 25 | 35 | 9 | 723 | +0.0185736 | 0 | +8844mm |
+
+Conclusion: V72 is a useful negative result. It generated many additional
+candidates but produced the same final quality as V71, so the extra candidate
+source should not be promoted as-is.
+
+## V73 Profile Pool Group Shift Quality
+
+- Branch: `feat/v73-profile-pool-group-shift-quality`; draft:
+  `docs/research/drafts/2026-06-18-v73-profile-pool-group-shift-quality.md`.
+- Added profile-pool telemetry for guarded group-shift quality and compared the
+  quality-aware winner against the legacy winner.
+- Unit validation: `cargo test profile_pool -- --test-threads=1` passed
+  (18 tests).
+
+Benchmarks:
+
+| run | rows | quality changed winner | note |
+|---|---:|---:|---|
+| seed 11/13 with seed-offset rescue | 4 | 0 | V73 matched V71 exactly. |
+| seeds 1..12, no rescue, no SVG | 24 | 0 | Current and legacy profile_pool winner matched on every row. |
+
+Conclusion: V73 is useful telemetry and a valid unit-level selection rule, but
+not a production quality improvement on the current fixtures. Existing
+profile_pool candidates usually differ before the new quality tie-breaker is
+reached.
+
+## V74 Profile Pool Candidate Quality Audit
+
+- Branch: `feat/v74-profile-pool-candidate-quality-audit`; draft:
+  `docs/research/drafts/2026-06-18-v74-profile-pool-candidate-quality-audit.md`.
+- Added `scripts/test_v74_profile_pool_candidate_quality_audit.py`.
+- Method: run each `zone_penalty` profile as a standalone candidate, collect
+  sheets/zones/lead/corner/group_shift quality, and compare legacy ordering with
+  V73 quality-aware ordering.
+- Benchmark: seeds 1..12, profiles `[0.2,0.3,0.4,0.5,0.6,0.8]`, off/on
+  group_shift, 144 candidate rows.
+
+Result:
+
+| candidate groups | rows | quality winner differed from legacy |
+|---:|---:|---:|
+| 24 | 144 | 0 |
+
+Conclusion: the next bottleneck is not profile_pool ordering. The current
+candidate set does not contain better same-sheet/same-zone layouts for quality
+scoring to select. Next work should generate structurally different candidates or
+targeted repair candidates before investing more in scoring formula changes.

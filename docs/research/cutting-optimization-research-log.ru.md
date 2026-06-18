@@ -29,6 +29,11 @@ v70-nested-approach-parity
 v71-nested-aware-lns
 v72-remnant-telemetry
 v73-nested-remnant-accept
+v70-group-shift-remnant-audit
+v71-guarded-group-shift-metrics
+v72-anchor-perimeter-group-shift
+v73-profile-pool-group-shift-quality
+v74-profile-pool-candidate-quality-audit
 -->
 
 Language: Russian.
@@ -1450,3 +1455,114 @@ V67 conclusions:
   остаётся. Безопасный будущий вариант (если remnant понадобится двигать дальше) —
   post-LNS проход только same-sheet-count угловыми ходами, который по построению
   не регрессит листы; сейчас не делаем (headroom в пределах шума при window=6).
+
+## V70: group_shift remnant audit
+
+- Ветка: `feat/v70-group-shift-remnant-audit`; черновик:
+  `docs/research/drafts/2026-06-18-v70-group-shift-remnant-audit.md`.
+- Добавлен `scripts/test_v70_group_shift_remnant_audit.py`, чтобы оценивать
+  `group_shift` как paired remnant-quality post-process, а не только через
+  `waste_regions`.
+- Разделение метрик:
+  - `topology_score`: topology свободного остатка;
+  - `part_contact_mm`: длина соседства деталей на зазоре `kerf + spacing`;
+  - `remnant_score = topology_score + 0.25 * part_contact_ratio`.
+
+Результат на 12-seed guillotine fixture:
+
+| run | moved | improved | worsened | moves | parts | delta score | delta topology | delta contact |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| pass1 | 11 | 11 | 0 | 11 | 16 | +0.0199016 | 0 | +9476mm |
+| pass4 | 11 | 9 | 2 | 28 | 38 | -0.0083389 | -0.0235249 | +7231mm |
+| pass8 | 11 | 9 | 2 | 29 | 39 | -0.0074568 | -0.0235249 | +7651mm |
+
+Вывод: пользовательская гипотеза подтверждается измеримо: group shifting часто
+улучшает визуальную компактность через рост контакта деталей. Но multi-pass
+цепочки небезопасны без paired acceptance guard.
+
+## V71: guarded group_shift metrics
+
+- Ветка: `feat/v71-guarded-group-shift-metrics`; черновик:
+  `docs/research/drafts/2026-06-18-v71-guarded-group-shift-metrics.md`.
+- Изменение кода: V70 paired quality metric перенесена внутрь actual
+  `group_shift` candidate guard.
+- Guard formula:
+  - `topology_score_after >= topology_score_before`;
+  - `part_contact_mm_after > part_contact_mm_before`;
+  - combined score улучшается.
+- В `summary.group_shift` добавлена telemetry: `quality_guard_rejections`,
+  `quality_score_*`, `topology_score_*`, `part_contact_*_mm`.
+
+Сравнение на том же fixture:
+
+| run | moved | improved | worsened | moves | parts | rejected | delta score | delta topology | delta contact |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| V70 pass8 | 11 | 9 | 2 | 29 | 39 | n/a | -0.0074568 | -0.0235249 | +7651mm |
+| V71 pass4 | 11 | 11 | 0 | 25 | 35 | 9 | +0.0185736 | 0 | +8844mm |
+| V71 pass8 | 11 | 11 | 0 | 25 | 35 | 9 | +0.0185736 | 0 | +8844mm |
+
+Вывод: V71 — самый сильный production-кандидат в этой линии. Guard убрал
+наблюдавшиеся topology regressions, сохранив и увеличив суммарный прирост
+контакта деталей. Практическая настройка остаётся `max_passes=4`.
+
+## V72: anchor perimeter group_shift
+
+- Ветка: `feat/v72-anchor-perimeter-group-shift`; черновик:
+  `docs/research/drafts/2026-06-18-v72-anchor-perimeter-group-shift.md`.
+- Поверх V71 quality guard добавлена генерация anchor-perimeter/refined
+  side-group candidates.
+
+Результат:
+
+| run | moved | improved | worsened | moves | parts | rejected | perimeter candidates | delta score | delta topology | delta contact |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| V71 pass4 | 11 | 11 | 0 | 25 | 35 | 9 | n/a | +0.0185736 | 0 | +8844mm |
+| V72 pass4 | 11 | 11 | 0 | 25 | 35 | 9 | 650 | +0.0185736 | 0 | +8844mm |
+| V72 pass8 | 11 | 11 | 0 | 25 | 35 | 9 | 723 | +0.0185736 | 0 | +8844mm |
+
+Вывод: V72 — полезный отрицательный результат. Новый источник сгенерировал
+много дополнительных candidates, но итоговое качество совпало с V71. В текущем
+виде candidate source не стоит продвигать.
+
+## V73: profile_pool group_shift quality
+
+- Ветка: `feat/v73-profile-pool-group-shift-quality`; черновик:
+  `docs/research/drafts/2026-06-18-v73-profile-pool-group-shift-quality.md`.
+- Добавлена telemetry guarded group-shift quality в `profile_pool` и сравнение
+  quality-aware winner с legacy winner.
+- Unit validation: `cargo test profile_pool -- --test-threads=1` passed
+  (18 tests).
+
+Benchmarks:
+
+| run | rows | quality changed winner | note |
+|---|---:|---:|---|
+| seed 11/13 with seed-offset rescue | 4 | 0 | V73 полностью совпал с V71. |
+| seeds 1..12, no rescue, no SVG | 24 | 0 | Current и legacy profile_pool winner совпали во всех rows. |
+
+Вывод: V73 полезен как telemetry и unit-level selection rule, но на текущих
+fixtures не является production-улучшением качества. Существующие profile_pool
+candidates обычно различаются раньше, чем новый quality tie-breaker начинает
+влиять на выбор.
+
+## V74: profile_pool candidate quality audit
+
+- Ветка: `feat/v74-profile-pool-candidate-quality-audit`; черновик:
+  `docs/research/drafts/2026-06-18-v74-profile-pool-candidate-quality-audit.md`.
+- Добавлен `scripts/test_v74_profile_pool_candidate_quality_audit.py`.
+- Метод: каждый `zone_penalty` profile запускается как отдельный candidate,
+  собираются sheets/zones/lead/corner/group_shift quality, затем сравнивается
+  legacy ordering с V73 quality-aware ordering.
+- Benchmark: seeds 1..12, profiles `[0.2,0.3,0.4,0.5,0.6,0.8]`, off/on
+  group_shift, 144 candidate rows.
+
+Результат:
+
+| candidate groups | rows | quality winner differed from legacy |
+|---:|---:|---:|
+| 24 | 144 | 0 |
+
+Вывод: следующий bottleneck не в порядке сортировки profile_pool. В текущем
+candidate set нет лучших same-sheet/same-zone layouts, которые quality scoring
+мог бы выбрать. Дальше нужно генерировать структурно другие candidates или
+targeted repair candidates, и только потом снова дорабатывать scoring formula.
