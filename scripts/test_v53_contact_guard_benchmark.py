@@ -1,9 +1,9 @@
-"""V53: benchmark group_shift contact-aware profile_pool scoring.
+"""V53/V73: benchmark group_shift-aware profile_pool scoring.
 
 This is a research harness, not a production path. It starts the current
 Freecut service, runs paired profile_pool requests with seed-offset rescue,
 saves JSON/SVG artifacts, and reports visual zones, cut-gap zones, and
-group_shift contact telemetry.
+group_shift contact/quality telemetry.
 """
 
 from __future__ import annotations
@@ -202,14 +202,31 @@ def summarize_response(name: str, response: dict[str, Any], cut_gap_mm: float) -
         "winner_waste_regions": pool.get("winner_waste_regions"),
         "winner_lead_util_pct": pool.get("winner_lead_util_pct"),
         "winner_group_shift_contact_gain_mm": pool.get("winner_group_shift_contact_gain_mm"),
+        "winner_group_shift_quality_score_after": pool.get("winner_group_shift_quality_score_after"),
+        "winner_group_shift_quality_score_delta": pool.get("winner_group_shift_quality_score_delta"),
+        "winner_group_shift_topology_score_delta": pool.get("winner_group_shift_topology_score_delta"),
+        "winner_group_shift_part_contact_delta_mm": pool.get("winner_group_shift_part_contact_delta_mm"),
         "winner_group_shift_after_mm2": pool.get("winner_group_shift_opportunity_after_mm2"),
         "winner_group_shift_delta_mm2": pool.get("winner_group_shift_opportunity_delta_mm2"),
+        "quality_scoring_changed_winner": pool.get("quality_scoring_changed_winner"),
+        "legacy_winner_seed": pool.get("legacy_winner_seed"),
+        "legacy_winner_zone_penalty": pool.get("legacy_winner_zone_penalty"),
+        "legacy_winner_group_shift_quality_score_after": pool.get(
+            "legacy_winner_group_shift_quality_score_after"
+        ),
+        "legacy_winner_group_shift_quality_score_delta": pool.get(
+            "legacy_winner_group_shift_quality_score_delta"
+        ),
         "rescue_triggered": pool.get("rescue_triggered"),
         "seed_offsets_used": pool.get("seed_offsets_used"),
         "candidates_completed": pool.get("candidates_completed"),
         "group_shift_moves": group_shift.get("moves_applied"),
         "group_shift_parts_moved": group_shift.get("parts_moved"),
         "group_shift_contact_gain_mm": group_shift.get("contact_gain_mm"),
+        "group_shift_quality_score_after": group_shift.get("quality_score_after"),
+        "group_shift_quality_score_delta": group_shift.get("quality_score_delta"),
+        "group_shift_topology_score_delta": group_shift.get("topology_score_delta"),
+        "group_shift_part_contact_delta_mm": group_shift.get("part_contact_delta_mm"),
         "group_shift_closed_area_mm2": group_shift.get("corridor_closed_area_mm2"),
         "group_shift_time_ms": group_shift.get("time_ms"),
     }
@@ -248,14 +265,27 @@ def write_outputs(rows: list[dict[str, Any]], responses: dict[str, dict[str, Any
         "winner_waste_regions",
         "winner_lead_util_pct",
         "winner_group_shift_contact_gain_mm",
+        "winner_group_shift_quality_score_after",
+        "winner_group_shift_quality_score_delta",
+        "winner_group_shift_topology_score_delta",
+        "winner_group_shift_part_contact_delta_mm",
         "winner_group_shift_after_mm2",
         "winner_group_shift_delta_mm2",
+        "quality_scoring_changed_winner",
+        "legacy_winner_seed",
+        "legacy_winner_zone_penalty",
+        "legacy_winner_group_shift_quality_score_after",
+        "legacy_winner_group_shift_quality_score_delta",
         "rescue_triggered",
         "seed_offsets_used",
         "candidates_completed",
         "group_shift_moves",
         "group_shift_parts_moved",
         "group_shift_contact_gain_mm",
+        "group_shift_quality_score_after",
+        "group_shift_quality_score_delta",
+        "group_shift_topology_score_delta",
+        "group_shift_part_contact_delta_mm",
         "group_shift_closed_area_mm2",
         "group_shift_time_ms",
     ]
@@ -266,31 +296,40 @@ def write_outputs(rows: list[dict[str, Any]], responses: dict[str, dict[str, Any
             writer.writerow({field: row.get(field) for field in fields})
 
     lines = [
-        "# V53 contact-aware profile_pool benchmark",
+        "# V53/V73 group_shift-aware profile_pool benchmark",
         "",
         f"cut_gap_mm: {cut_gap_mm}",
         "",
-        "| case | sheets | visual0 | cut_gap | lead % | zp | winner contact | moves | actual contact | time ms | completed |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| case | sheets | visual0 | cut_gap | lead % | zp | changed | legacy zp | winner q after | legacy q after | winner q delta | winner contact | moves | actual q delta | actual contact | time ms | completed |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         lines.append(
             f"| {row['case']} | {row['sheets']} | {row['zones_visual0']} | {row['zones_cut_gap']} | "
             f"{row['lead_util_pct']} | {row['winner_zone_penalty']} | "
+            f"{row['quality_scoring_changed_winner']} | "
+            f"{row['legacy_winner_zone_penalty']} | "
+            f"{row['winner_group_shift_quality_score_after']} | "
+            f"{row['legacy_winner_group_shift_quality_score_after']} | "
+            f"{row['winner_group_shift_quality_score_delta']} | "
             f"{row['winner_group_shift_contact_gain_mm']} | {row['group_shift_moves']} | "
+            f"{row['group_shift_quality_score_delta']} | "
             f"{row['group_shift_contact_gain_mm']} | {row['service_time_ms']} | "
             f"{row['candidates_completed']} |"
         )
     lines.append("")
     lines.append(
         "Interpretation: compare *_off vs *_on for the same seed. The *_on rows include "
-        "group_shift and expose winner/actual contact gain, so V53 can be judged against "
-        "visual zones, cut-gap zones, and local anchor compaction."
+        "group_shift and expose winner/actual contact and quality deltas, so V53/V73 "
+        "can be judged against visual zones, cut-gap zones, and local anchor compaction."
     )
     (OUT_DIR / "v53_summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def run_benchmark(args: argparse.Namespace) -> None:
+    global OUT_DIR
+    if args.out_dir:
+        OUT_DIR = Path(args.out_dir)
     base_url = args.server_url or f"http://127.0.0.1:{args.port}"
     server: subprocess.Popen[str] | None = None
     try:
@@ -338,6 +377,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--group-shift-min-shift-mm", type=float, default=5.0)
     parser.add_argument("--group-shift-max-passes", type=int, default=4)
     parser.add_argument("--cut-gap-mm", type=float, default=6.5)
+    parser.add_argument("--out-dir")
     parser.add_argument("--request-timeout-s", type=float, default=240.0)
     parser.add_argument("--startup-timeout-s", type=float, default=120.0)
     parser.add_argument("--include-svg", action=argparse.BooleanOptionalAction, default=True)

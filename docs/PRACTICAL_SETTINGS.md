@@ -502,6 +502,14 @@ Results from V52/V53:
 - `group_shift` can improve visual compactness;
 - without an additional acceptance guard, `group_shift` can sometimes worsen zone counts.
 
+V73 adds profile-pool diagnostics for guarded group-shift quality:
+
+- inspect `summary.profile_pool.winner_group_shift_quality_score_after`;
+- inspect `summary.profile_pool.winner_group_shift_quality_score_delta`;
+- inspect `summary.profile_pool.quality_scoring_changed_winner`;
+- when `quality_scoring_changed_winner=false`, the quality score was measured
+  but did not change the selected `profile_pool` winner.
+
 Use this mode for difficult layouts, but inspect SVG and telemetry.
 
 ## Research-Only Settings

@@ -535,6 +535,15 @@ pub struct ProfilePoolTelemetry {
     pub winner_group_shift_opportunity_after_mm2: f64,
     pub winner_group_shift_opportunity_delta_mm2: f64,
     pub winner_group_shift_contact_gain_mm: f64,
+    pub winner_group_shift_quality_score_after: f64,
+    pub winner_group_shift_quality_score_delta: f64,
+    pub winner_group_shift_topology_score_delta: f64,
+    pub winner_group_shift_part_contact_delta_mm: f64,
+    pub quality_scoring_changed_winner: bool,
+    pub legacy_winner_seed: u64,
+    pub legacy_winner_zone_penalty: f64,
+    pub legacy_winner_group_shift_quality_score_after: f64,
+    pub legacy_winner_group_shift_quality_score_delta: f64,
     pub max_lead_drop_pp: f64,
 }
 

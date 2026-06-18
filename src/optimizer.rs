@@ -583,6 +583,10 @@ struct ProfilePoolCandidate {
     group_shift_opportunity_after_mm2: f64,
     group_shift_opportunity_delta_mm2: f64,
     group_shift_contact_gain_mm: f64,
+    group_shift_quality_score_after: f64,
+    group_shift_quality_score_delta: f64,
+    group_shift_topology_score_delta: f64,
+    group_shift_part_contact_delta_mm: f64,
 }
 
 fn preset_zone_penalties(preset: ProfilePoolPreset) -> Vec<f64> {
@@ -743,6 +747,19 @@ async fn optimize_profile_pool(
         max_lead_drop_pp,
         rescue_accept_min_max_corner_mm2,
     );
+    let legacy_winner_idx = profile_pool_legacy_winner_idx(
+        &candidates,
+        max_lead_drop_pp,
+        rescue_accept_min_max_corner_mm2,
+    );
+    let legacy_winner = &candidates[legacy_winner_idx];
+    let quality_scoring_changed_winner = winner_idx != legacy_winner_idx;
+    let legacy_winner_seed = legacy_winner.seed;
+    let legacy_winner_zone_penalty = legacy_winner.zone_penalty;
+    let legacy_winner_group_shift_quality_score_after =
+        legacy_winner.group_shift_quality_score_after;
+    let legacy_winner_group_shift_quality_score_delta =
+        legacy_winner.group_shift_quality_score_delta;
     let completed = candidates.len() as u32;
     let mut winner = candidates.swap_remove(winner_idx);
     winner.response.summary.time_ms = started_at.elapsed().as_millis() as u64;
@@ -771,6 +788,15 @@ async fn optimize_profile_pool(
         winner_group_shift_opportunity_after_mm2: winner.group_shift_opportunity_after_mm2,
         winner_group_shift_opportunity_delta_mm2: winner.group_shift_opportunity_delta_mm2,
         winner_group_shift_contact_gain_mm: winner.group_shift_contact_gain_mm,
+        winner_group_shift_quality_score_after: winner.group_shift_quality_score_after,
+        winner_group_shift_quality_score_delta: winner.group_shift_quality_score_delta,
+        winner_group_shift_topology_score_delta: winner.group_shift_topology_score_delta,
+        winner_group_shift_part_contact_delta_mm: winner.group_shift_part_contact_delta_mm,
+        quality_scoring_changed_winner,
+        legacy_winner_seed,
+        legacy_winner_zone_penalty,
+        legacy_winner_group_shift_quality_score_after,
+        legacy_winner_group_shift_quality_score_delta,
         max_lead_drop_pp,
     });
     Ok(winner.response)
@@ -818,6 +844,10 @@ async fn run_profile_pool_candidate(
         group_shift_opportunity_after_mm2: response_group_shift_opportunity_after_mm2(&response),
         group_shift_opportunity_delta_mm2: response_group_shift_opportunity_delta_mm2(&response),
         group_shift_contact_gain_mm: response_group_shift_contact_gain_mm(&response),
+        group_shift_quality_score_after: response_group_shift_quality_score_after(&response),
+        group_shift_quality_score_delta: response_group_shift_quality_score_delta(&response),
+        group_shift_topology_score_delta: response_group_shift_topology_score_delta(&response),
+        group_shift_part_contact_delta_mm: response_group_shift_part_contact_delta_mm(&response),
         response,
         seed,
         zone_penalty,
@@ -876,6 +906,36 @@ fn profile_pool_winner_idx(
     max_lead_drop_pp: f64,
     rescue_accept_min_max_corner_mm2: Option<f64>,
 ) -> usize {
+    profile_pool_winner_idx_with_order(
+        candidates,
+        max_lead_drop_pp,
+        rescue_accept_min_max_corner_mm2,
+        profile_pool_candidate_order,
+    )
+}
+
+fn profile_pool_legacy_winner_idx(
+    candidates: &[ProfilePoolCandidate],
+    max_lead_drop_pp: f64,
+    rescue_accept_min_max_corner_mm2: Option<f64>,
+) -> usize {
+    profile_pool_winner_idx_with_order(
+        candidates,
+        max_lead_drop_pp,
+        rescue_accept_min_max_corner_mm2,
+        profile_pool_candidate_order_legacy,
+    )
+}
+
+type ProfilePoolOrderFn =
+    fn(&ProfilePoolCandidate, &ProfilePoolCandidate) -> Option<std::cmp::Ordering>;
+
+fn profile_pool_winner_idx_with_order(
+    candidates: &[ProfilePoolCandidate],
+    max_lead_drop_pp: f64,
+    rescue_accept_min_max_corner_mm2: Option<f64>,
+    order_fn: ProfilePoolOrderFn,
+) -> usize {
     let min_sheet_count = candidates
         .iter()
         .filter(|candidate| {
@@ -916,7 +976,11 @@ fn profile_pool_winner_idx(
             continue;
         }
         if let Some(current_idx) = winner_idx {
-            if profile_pool_candidate_better(candidate, &candidates[current_idx]) {
+            if profile_pool_candidate_better_with_order(
+                candidate,
+                &candidates[current_idx],
+                order_fn,
+            ) {
                 winner_idx = Some(idx);
             }
         } else {
@@ -935,9 +999,7 @@ fn profile_pool_winner_idx(
                     candidate.response.summary.used_stock_count == sheet_count
                 })
             })
-            .min_by(|(_, a), (_, b)| {
-                profile_pool_candidate_order(a, b).unwrap_or(std::cmp::Ordering::Equal)
-            })
+            .min_by(|(_, a), (_, b)| order_fn(a, b).unwrap_or(std::cmp::Ordering::Equal))
             .map(|(idx, _)| idx)
             .unwrap_or(0)
     })
@@ -947,13 +1009,77 @@ fn profile_pool_candidate_better(
     candidate: &ProfilePoolCandidate,
     best: &ProfilePoolCandidate,
 ) -> bool {
-    matches!(
-        profile_pool_candidate_order(candidate, best),
-        Some(std::cmp::Ordering::Less)
-    )
+    profile_pool_candidate_better_with_order(candidate, best, profile_pool_candidate_order)
+}
+
+fn profile_pool_candidate_better_with_order(
+    candidate: &ProfilePoolCandidate,
+    best: &ProfilePoolCandidate,
+    order_fn: ProfilePoolOrderFn,
+) -> bool {
+    matches!(order_fn(candidate, best), Some(std::cmp::Ordering::Less))
 }
 
 fn profile_pool_candidate_order(
+    a: &ProfilePoolCandidate,
+    b: &ProfilePoolCandidate,
+) -> Option<std::cmp::Ordering> {
+    Some(
+        (
+            a.response.summary.used_stock_count,
+            a.visual_waste_regions,
+            a.waste_regions,
+        )
+            .cmp(&(
+                b.response.summary.used_stock_count,
+                b.visual_waste_regions,
+                b.waste_regions,
+            ))
+            .then_with(|| {
+                b.group_shift_quality_score_after
+                    .total_cmp(&a.group_shift_quality_score_after)
+            })
+            .then_with(|| {
+                b.group_shift_quality_score_delta
+                    .total_cmp(&a.group_shift_quality_score_delta)
+            })
+            .then_with(|| {
+                b.group_shift_topology_score_delta
+                    .total_cmp(&a.group_shift_topology_score_delta)
+            })
+            .then_with(|| {
+                b.group_shift_part_contact_delta_mm
+                    .total_cmp(&a.group_shift_part_contact_delta_mm)
+            })
+            .then_with(|| {
+                a.group_shift_opportunity_after_mm2
+                    .partial_cmp(&b.group_shift_opportunity_after_mm2)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                b.group_shift_contact_gain_mm
+                    .partial_cmp(&a.group_shift_contact_gain_mm)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                b.group_shift_opportunity_delta_mm2
+                    .partial_cmp(&a.group_shift_opportunity_delta_mm2)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                b.lead_util_pct
+                    .partial_cmp(&a.lead_util_pct)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                b.max_corner_mm2
+                    .partial_cmp(&a.max_corner_mm2)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }),
+    )
+}
+
+fn profile_pool_candidate_order_legacy(
     a: &ProfilePoolCandidate,
     b: &ProfilePoolCandidate,
 ) -> Option<std::cmp::Ordering> {
@@ -1047,6 +1173,38 @@ fn response_group_shift_contact_gain_mm(resp: &OptimizeResponse) -> f64 {
         .group_shift
         .as_ref()
         .map(|group_shift| group_shift.contact_gain_mm)
+        .unwrap_or(0.0)
+}
+
+fn response_group_shift_quality_score_after(resp: &OptimizeResponse) -> f64 {
+    resp.summary
+        .group_shift
+        .as_ref()
+        .map(|group_shift| group_shift.quality_score_after)
+        .unwrap_or(0.0)
+}
+
+fn response_group_shift_quality_score_delta(resp: &OptimizeResponse) -> f64 {
+    resp.summary
+        .group_shift
+        .as_ref()
+        .map(|group_shift| group_shift.quality_score_delta)
+        .unwrap_or(0.0)
+}
+
+fn response_group_shift_topology_score_delta(resp: &OptimizeResponse) -> f64 {
+    resp.summary
+        .group_shift
+        .as_ref()
+        .map(|group_shift| group_shift.topology_score_delta)
+        .unwrap_or(0.0)
+}
+
+fn response_group_shift_part_contact_delta_mm(resp: &OptimizeResponse) -> f64 {
+    resp.summary
+        .group_shift
+        .as_ref()
+        .map(|group_shift| group_shift.part_contact_delta_mm)
         .unwrap_or(0.0)
 }
 
@@ -6825,6 +6983,10 @@ mod tests {
             group_shift_opportunity_after_mm2,
             group_shift_opportunity_delta_mm2,
             group_shift_contact_gain_mm: 0.0,
+            group_shift_quality_score_after: 0.0,
+            group_shift_quality_score_delta: 0.0,
+            group_shift_topology_score_delta: 0.0,
+            group_shift_part_contact_delta_mm: 0.0,
         }
     }
 
@@ -6872,6 +7034,56 @@ mod tests {
         candidate
     }
 
+    fn test_profile_pool_candidate_with_group_shift_quality(
+        visual_waste_regions: u32,
+        waste_regions: u32,
+        lead_util_pct: f64,
+        group_shift_opportunity_after_mm2: f64,
+        group_shift_opportunity_delta_mm2: f64,
+        group_shift_quality_score_after: f64,
+        group_shift_quality_score_delta: f64,
+        group_shift_topology_score_delta: f64,
+        group_shift_part_contact_delta_mm: f64,
+    ) -> ProfilePoolCandidate {
+        let mut candidate = test_profile_pool_candidate_with_sheet_count(
+            4,
+            visual_waste_regions,
+            waste_regions,
+            lead_util_pct,
+            group_shift_opportunity_after_mm2,
+            group_shift_opportunity_delta_mm2,
+        );
+        candidate.response.summary.group_shift = Some(GroupShiftTelemetry {
+            enabled: true,
+            time_ms: 0,
+            moves_applied: 1,
+            quality_guard_rejections: 0,
+            parts_moved: 2,
+            passes_run: 1,
+            corridor_closed_area_mm2: 0.0,
+            contact_gain_mm: 0.0,
+            quality_score_before: group_shift_quality_score_after - group_shift_quality_score_delta,
+            quality_score_after: group_shift_quality_score_after,
+            quality_score_delta: group_shift_quality_score_delta,
+            topology_score_before: 0.0,
+            topology_score_after: group_shift_topology_score_delta,
+            topology_score_delta: group_shift_topology_score_delta,
+            part_contact_before_mm: 0.0,
+            part_contact_after_mm: group_shift_part_contact_delta_mm,
+            part_contact_delta_mm: group_shift_part_contact_delta_mm,
+            corridor_opportunity_before_mm2: group_shift_opportunity_after_mm2
+                + group_shift_opportunity_delta_mm2,
+            corridor_opportunity_after_mm2: group_shift_opportunity_after_mm2,
+            corridor_opportunity_delta_mm2: group_shift_opportunity_delta_mm2,
+            max_shift_mm: 0.0,
+        });
+        candidate.group_shift_quality_score_after = group_shift_quality_score_after;
+        candidate.group_shift_quality_score_delta = group_shift_quality_score_delta;
+        candidate.group_shift_topology_score_delta = group_shift_topology_score_delta;
+        candidate.group_shift_part_contact_delta_mm = group_shift_part_contact_delta_mm;
+        candidate
+    }
+
     #[test]
     fn profile_pool_tie_breaks_on_group_shift_residual_then_delta() {
         let cleaner = test_profile_pool_candidate(5, 94.0, 10_000.0, 40_000.0);
@@ -6912,6 +7124,21 @@ mod tests {
         assert!(
             profile_pool_candidate_better(&stronger_contact, &weaker_contact),
             "same sheets/zones/residual/delta should prefer higher group_shift contact gain"
+        );
+    }
+
+    #[test]
+    fn profile_pool_prefers_group_shift_quality_before_residual() {
+        let higher_quality = test_profile_pool_candidate_with_group_shift_quality(
+            5, 5, 95.0, 80_000.0, 10_000.0, 1.020, 0.010, 0.0, 800.0,
+        );
+        let lower_residual = test_profile_pool_candidate_with_group_shift_quality(
+            5, 5, 95.0, 10_000.0, 80_000.0, 1.010, 0.005, 0.0, 400.0,
+        );
+
+        assert!(
+            profile_pool_candidate_better(&higher_quality, &lower_residual),
+            "same sheets/zones should prefer higher guarded group_shift quality before residual opportunity"
         );
     }
 
