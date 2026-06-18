@@ -25,6 +25,7 @@ v66-sat-feasibility
 v67-ladder-benchmark
 v59-v61-productionization-a-cut-quality
 v59-v61-productionization-b-async-postprocess
+v72-remnant-telemetry
 -->
 
 Language: Russian.
@@ -1327,3 +1328,31 @@ V67 conclusions:
 - Реальная цена deep-mode в prod profile: N50 `max_iters=4000` около **13.1s**
   wall на 1.5cpu против ~2-3s на 3-cpu dev box; в prod держать
   `MAX_CONCURRENT_OPTIMIZE` малым.
+
+## V72: Честная visual-remnant метрика
+
+- Branch: `feat/remnant-telemetry`; draft:
+  `docs/research/drafts/2026-06-18-remnant-telemetry.md`.
+- Мотив: V70-разрыв по nested мерялся грубым внешним raster-прокси. Построена
+  доверенная in-service метрика, разрыв подтверждён/опровергнут.
+- Существующие метрики кандидата меряют *площадь* свободного, не *связность*:
+  `bbox_void` показывал паритет nested (7.08M vs 6.99M, +1.3%), `corner_free` даже
+  в пользу nested — ни одна не отличает один крупный остаток от множества
+  staircase-щелей той же суммарной площади.
+- Новая `remnant_metrics` (`summary.remnant`): растеризуем каждый лист по сетке
+  20мм, flood-fill пустых ячеек в связные регионы. Поля: `free_fragments`,
+  `largest_free_mm2`, `largest_free_frac`, `mean_sheet_largest_free_frac`.
+  Считается один раз при сборке ответа, gated на `include_svg`; O(cells), без
+  hot-loop стоимости. Unit-тесты (L-форма => 1 фрагмент/frac 1.0; центральная
+  полоса => 2/0.5).
+- Находка — разрыв РЕАЛЕН по связности. N35 `cut_quality=max`: guillotine
+  free_fragments 49 / mean_sheet_largest_free_frac **0.900**; nested 65 /
+  **0.795**. Визуальное подтверждение (самый пустой лист в `ai_docs/tmp`):
+  guillotine = ровные колонки + один L-остаток; nested упаковал *больше* деталей
+  (22 vs 12) с крупным нижним остатком, но с мелкими внутренними staircase-щелями
+  между несовпадающими деталями. Глаз и метрика совпали; `bbox_void` — нет.
+- Вывод: метрика связности исправляет ошибочный «паритет» по `bbox_void` и даёт
+  измеримую цель (`mean_sheet_largest_free_frac`). Failure mode nested —
+  внутренние staircase-щели, не разорванный основной остаток. Это переобосновывает
+  remnant-aware шаг для nested с реальной целью. Метрика mode-agnostic, полезна
+  сама по себе.

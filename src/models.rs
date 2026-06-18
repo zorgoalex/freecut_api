@@ -436,6 +436,10 @@ pub struct Summary {
     /// is enabled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub consolidate: Option<ConsolidateTelemetry>,
+    /// V72 visual-remnant telemetry (connected free-region analysis). Populated
+    /// only when `include_svg` is true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remnant: Option<RemnantTelemetry>,
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone, Default)]
@@ -454,6 +458,32 @@ pub struct ConsolidateTelemetry {
     pub passes: u32,
     /// Wall time spent in consolidation (ms).
     pub time_ms: u64,
+}
+
+/// V72: honest visual-remnant telemetry. Measures how reusable the offcut is by
+/// rasterizing the usable area of every used sheet on a coarse grid and
+/// flood-filling the empty cells into connected regions. Unlike `bbox_void`
+/// (free area inside the part group's bounding box) this counts *connectivity*:
+/// a layout whose free space is one big rectangle scores far better than one
+/// whose free space is split into staircase notches of the same total area.
+/// Computed only when `include_svg` is true (same inspection intent; skipped on
+/// the latency-sensitive `include_svg=false` path).
+#[derive(Debug, Serialize, ToSchema, Clone)]
+pub struct RemnantTelemetry {
+    /// Raster grid step in mm (square cells).
+    pub grid_mm: f64,
+    /// Total number of connected empty regions across all used sheets. Lower is
+    /// better — fewer, larger offcuts.
+    pub free_fragments: u32,
+    /// Area of the single largest connected empty region, in mm2 — the biggest
+    /// reusable remnant in the whole layout.
+    pub largest_free_mm2: f64,
+    /// `largest_free_mm2` as a fraction of total empty area (0..1). 1.0 means all
+    /// free space is one connected region; low values mean fragmented offcuts.
+    pub largest_free_frac: f64,
+    /// Mean over used sheets of each sheet's largest-free-region fraction. Focuses
+    /// on per-sheet remnant quality rather than the whole-layout aggregate.
+    pub mean_sheet_largest_free_frac: f64,
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone)]

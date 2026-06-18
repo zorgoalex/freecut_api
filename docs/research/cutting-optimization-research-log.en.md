@@ -25,6 +25,7 @@ v66-sat-feasibility
 v67-ladder-benchmark
 v59-v61-productionization-a-cut-quality
 v59-v61-productionization-b-async-postprocess
+v72-remnant-telemetry
 -->
 
 Language: English.
@@ -438,3 +439,30 @@ Conclusions:
 - True deep-mode cost on the prod profile: N50 `max_iters=4000` is about
   **13.1s** wall on 1.5cpu versus about 2-3s on the 3-cpu dev box; keep
   `MAX_CONCURRENT_OPTIMIZE` small in production.
+
+## V72: Honest Visual-Remnant Metric
+
+- Branch: `feat/remnant-telemetry`; draft:
+  `docs/research/drafts/2026-06-18-remnant-telemetry.md`.
+- Motivation: the V70 nested visual gap used a crude external raster proxy.
+  Built a trustworthy in-service metric and confirmed/refuted the gap.
+- The existing candidate metrics measure free *area*, not *connectivity*:
+  `bbox_void` said nested was at parity (7.08M vs 6.99M, +1.3%) and `corner_free`
+  even favoured nested — neither can tell one big offcut from many staircase
+  notches of equal area.
+- New `remnant_metrics` (`summary.remnant`): rasterize each used sheet on a 20mm
+  grid, flood-fill empty cells into connected regions. Reports `free_fragments`,
+  `largest_free_mm2`, `largest_free_frac`, `mean_sheet_largest_free_frac`.
+  Computed once at response build, gated on `include_svg`; O(cells), no hot-loop
+  cost. Unit-tested (L-shape => 1 fragment/frac 1.0; central bar => 2/0.5).
+- Finding — the gap IS real by connectivity. N35 `cut_quality=max`: guillotine
+  free_fragments 49 / mean_sheet_largest_free_frac **0.900**; nested 65 /
+  **0.795**. Visual confirmation (emptiest sheet rendered to `ai_docs/tmp`):
+  guillotine = clean aligned columns + one L-shaped remnant; nested packs *more*
+  parts (22 vs 12) with a large bottom remnant but small internal staircase
+  notches between mismatched parts. Eye and metric agree; `bbox_void` did not.
+- Conclusion: the connectivity metric corrects the misleading `bbox_void` parity
+  and gives a measurable target (`mean_sheet_largest_free_frac`). Nested's failure
+  mode is internal staircase notches, not a fragmented main offcut. Re-justifies a
+  remnant-aware nested step with a real objective. Metric is mode-agnostic infra,
+  useful independent of any nested fix.
