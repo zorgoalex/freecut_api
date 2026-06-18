@@ -70,7 +70,9 @@ docker run --rm -p 8088:8088 freecut-mvp
 - Detailed API specification: [`docs/API_SPEC.md`](docs/API_SPEC.md)
 - Practical settings guide: [`docs/PRACTICAL_SETTINGS.md`](docs/PRACTICAL_SETTINGS.md)
 - Docker deployment guide: [`docs/DOCKER_DEPLOYMENT.md`](docs/DOCKER_DEPLOYMENT.md)
-- Cutting optimization research log: [`docs/research/cutting-optimization-research-log.md`](docs/research/cutting-optimization-research-log.md)
+- Cutting optimization research log:
+  [`RU`](docs/research/cutting-optimization-research-log.ru.md) /
+  [`EN`](docs/research/cutting-optimization-research-log.en.md)
 
 ## Main Endpoints
 - `POST /v1/optimize` - standard optimizer (with optional portfolio mode).
