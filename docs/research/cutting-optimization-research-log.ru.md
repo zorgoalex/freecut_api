@@ -27,6 +27,7 @@ v59-v61-productionization-a-cut-quality
 v59-v61-productionization-b-async-postprocess
 v70-group-shift-remnant-audit
 v71-guarded-group-shift-metrics
+v72-anchor-perimeter-group-shift
 -->
 
 Language: Russian.
@@ -1396,3 +1397,31 @@ Guard убрал наблюдавшиеся topology regressions, сохрани
 `max_passes=4`; pass8 после reject unsafe candidates дал тот же итог. Следующий
 шаг — расширять candidate generation вокруг периметра anchor-группы, но V71
 guard должен оставаться обязательным.
+
+## V72: anchor perimeter group_shift
+
+- Ветка: `feat/v72-anchor-perimeter-group-shift`; черновик:
+  `docs/research/drafts/2026-06-18-v72-anchor-perimeter-group-shift.md`.
+- Изменение кода: добавлена генерация anchor-perimeter/refined side-group
+  candidates поверх V71 quality guard.
+- В `summary.group_shift` добавлена telemetry:
+  `anchor_perimeter_candidates`.
+- Tests: `cargo test group_shift -- --test-threads=1` passed (11 tests).
+
+Сравнение с V71 на том же 12-seed fixture:
+
+| run | moved | improved | worsened | moves | parts | rejected | perimeter candidates | delta score | delta topology | delta contact | elapsed |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| V71 pass4 | 11 | 11 | 0 | 25 | 35 | 9 | n/a | +0.0185736 | 0 | +8844mm | 36.07s |
+| V71 pass8 | 11 | 11 | 0 | 25 | 35 | 9 | n/a | +0.0185736 | 0 | +8844mm | 35.14s |
+| V72 pass4 | 11 | 11 | 0 | 25 | 35 | 9 | 650 | +0.0185736 | 0 | +8844mm | 40.74s |
+| V72 pass8 | 11 | 11 | 0 | 25 | 35 | 9 | 723 | +0.0185736 | 0 | +8844mm | 35.45s |
+
+Вывод: V72 — полезный отрицательный результат. Новый источник
+anchor-perimeter candidates реально генерирует много дополнительных кандидатов,
+но V71 guard их отклоняет или они проигрывают существующим side-group moves, а
+итоговое качество полностью совпадает с V71. В текущем виде V72 не стоит
+продвигать в production; лучшей production-кандидатурой остаётся V71. Следующее
+направление — использовать V71 quality score в `profile_pool` selection или
+искать fixtures, где визуально явные perimeter gaps ещё не покрыты cutline
+side-group candidates.

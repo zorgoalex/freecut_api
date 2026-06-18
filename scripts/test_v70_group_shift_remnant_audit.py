@@ -516,6 +516,7 @@ def run_case(seed: int, req: dict[str, Any], response: dict[str, Any], args: arg
         "group_closed_area_mm2": group_shift.get("corridor_closed_area_mm2", 0.0),
         "group_contact_gain_mm": group_shift.get("contact_gain_mm", 0.0),
         "group_quality_guard_rejections": group_shift.get("quality_guard_rejections", 0),
+        "group_anchor_perimeter_candidates": group_shift.get("anchor_perimeter_candidates", 0),
         "group_quality_score_before": group_shift.get("quality_score_before", 0.0),
         "group_quality_score_after": group_shift.get("quality_score_after", 0.0),
         "group_quality_score_delta": group_shift.get("quality_score_delta", 0.0),
@@ -626,6 +627,9 @@ def main() -> int:
             "closed_area_mm2": sum(row.get("group_closed_area_mm2", 0.0) for row in rows),
             "contact_gain_mm": sum(row.get("group_contact_gain_mm", 0.0) for row in rows),
             "quality_guard_rejections": sum(row.get("group_quality_guard_rejections", 0) for row in rows),
+            "anchor_perimeter_candidates": sum(
+                row.get("group_anchor_perimeter_candidates", 0) for row in rows
+            ),
             "telemetry_quality_score_delta": sum(row.get("group_quality_score_delta", 0.0) for row in rows),
             "telemetry_topology_score_delta": sum(row.get("group_topology_score_delta", 0.0) for row in rows),
             "telemetry_part_contact_delta_mm": sum(row.get("group_part_contact_delta_mm", 0.0) for row in rows),

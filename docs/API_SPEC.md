@@ -755,6 +755,7 @@ When `params.group_shift.enabled=true`, response may include:
   "time_ms": 0,
   "moves_applied": 4,
   "quality_guard_rejections": 2,
+  "anchor_perimeter_candidates": 12,
   "parts_moved": 6,
   "passes_run": 4,
   "corridor_closed_area_mm2": 248360.0,
@@ -779,6 +780,7 @@ Important fields:
 
 - `moves_applied`: accepted group shifts.
 - `quality_guard_rejections`: geometrically valid candidate shifts rejected because they would not improve paired remnant/contact quality.
+- `anchor_perimeter_candidates`: diagnostic count of experimental anchor-perimeter candidates considered by the group-shift search. This is search telemetry, not a direct quality metric.
 - `parts_moved`: total moved parts.
 - `contact_gain_mm`: additional edge contact created toward anchor clusters.
 - `quality_score_delta`: paired visual-quality delta after the post-process. It combines remnant topology with total part-contact ratio.

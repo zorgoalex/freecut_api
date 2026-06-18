@@ -1273,6 +1273,10 @@ async fn optimize_accepts_group_shift_and_reports_telemetry() {
         .and_then(Value::as_u64)
         .is_some());
     assert!(group_shift
+        .get("anchor_perimeter_candidates")
+        .and_then(Value::as_u64)
+        .is_some());
+    assert!(group_shift
         .get("quality_score_before")
         .and_then(Value::as_f64)
         .is_some());

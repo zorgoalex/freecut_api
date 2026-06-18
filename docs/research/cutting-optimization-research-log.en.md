@@ -27,6 +27,7 @@ v59-v61-productionization-a-cut-quality
 v59-v61-productionization-b-async-postprocess
 v70-group-shift-remnant-audit
 v71-guarded-group-shift-metrics
+v72-anchor-perimeter-group-shift
 -->
 
 Language: English.
@@ -507,3 +508,29 @@ increasing total part-contact improvement. `max_passes=4` remains the practical
 setting; pass8 produced the same final result after rejected unsafe candidates.
 Next work should expand candidate generation around the anchor-group perimeter,
 but keep the V71 guard mandatory.
+
+## V72 Anchor Perimeter Group Shift
+
+- Branch: `feat/v72-anchor-perimeter-group-shift`; draft:
+  `docs/research/drafts/2026-06-18-v72-anchor-perimeter-group-shift.md`.
+- Code change: added anchor-perimeter/refined side-group candidate generation
+  after V71's quality guard.
+- Telemetry added to `summary.group_shift`: `anchor_perimeter_candidates`.
+- Tests: `cargo test group_shift -- --test-threads=1` passed (11 tests).
+
+Comparison against V71 on the same 12-seed fixture:
+
+| run | moved | improved | worsened | moves | parts | rejected | perimeter candidates | delta score | delta topology | delta contact | elapsed |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| V71 pass4 | 11 | 11 | 0 | 25 | 35 | 9 | n/a | +0.0185736 | 0 | +8844mm | 36.07s |
+| V71 pass8 | 11 | 11 | 0 | 25 | 35 | 9 | n/a | +0.0185736 | 0 | +8844mm | 35.14s |
+| V72 pass4 | 11 | 11 | 0 | 25 | 35 | 9 | 650 | +0.0185736 | 0 | +8844mm | 40.74s |
+| V72 pass8 | 11 | 11 | 0 | 25 | 35 | 9 | 723 | +0.0185736 | 0 | +8844mm | 35.45s |
+
+Conclusion: V72 is a useful negative result. The expanded anchor-perimeter
+candidate source generated many additional candidates, but V71's guard rejected
+or out-ranked them and the final layout quality was identical to V71. Do not
+promote this expansion as-is; V71 remains the better production candidate.
+Further work should focus on using the V71 quality score in profile_pool
+selection or on fixtures where visually obvious perimeter gaps are not already
+covered by cutline side-group candidates.

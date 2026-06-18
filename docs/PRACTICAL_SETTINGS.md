@@ -369,6 +369,8 @@ For practical quality checks, inspect:
 - `summary.group_shift.topology_score_delta`;
 - `summary.group_shift.part_contact_delta_mm`;
 - `summary.group_shift.quality_guard_rejections`;
+- `summary.group_shift.anchor_perimeter_candidates`, if present, only as a
+  candidate-source diagnostic;
 - before/final/diff SVG when `debug_artifacts=true`.
 
 For production default, prefer:

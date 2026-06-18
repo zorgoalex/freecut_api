@@ -480,6 +480,7 @@ pub struct GroupShiftTelemetry {
     pub time_ms: u64,
     pub moves_applied: u32,
     pub quality_guard_rejections: u32,
+    pub anchor_perimeter_candidates: u32,
     pub parts_moved: u32,
     pub passes_run: u32,
     pub corridor_closed_area_mm2: f64,

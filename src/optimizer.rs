@@ -304,6 +304,7 @@ async fn optimize_request_internal(
                     time_ms: 0,
                     moves_applied: 0,
                     quality_guard_rejections: 0,
+                    anchor_perimeter_candidates: 0,
                     parts_moved: 0,
                     passes_run: 0,
                     corridor_closed_area_mm2: 0.0,
@@ -5191,6 +5192,7 @@ struct GroupShiftQualityMetrics {
 struct GroupShiftSearchResult {
     best: Option<GroupShiftMove>,
     quality_guard_rejections: u32,
+    anchor_perimeter_candidates: u32,
 }
 
 fn group_shift_options(params: &Params) -> Option<GroupShiftOptions> {
@@ -5217,6 +5219,7 @@ fn apply_group_shift_postprocess(
         time_ms: 0,
         moves_applied: 0,
         quality_guard_rejections: 0,
+        anchor_perimeter_candidates: 0,
         parts_moved: 0,
         passes_run: 0,
         corridor_closed_area_mm2: 0.0,
@@ -5259,6 +5262,7 @@ fn apply_group_shift_postprocess(
                 options.min_shift_mm,
             );
             quality_guard_rejections += result.quality_guard_rejections;
+            telemetry.anchor_perimeter_candidates += result.anchor_perimeter_candidates;
             if let Some(candidate) = result.best {
                 let replace = best_move
                     .as_ref()
@@ -5354,8 +5358,18 @@ fn best_group_shift_for_solution(
             gap_mm,
             min_shift_mm,
             ShiftDirection::Left,
-            selected,
+            selected.clone(),
             anchor_mask.as_deref(),
+            quality_before,
+            &mut result,
+        );
+        consider_perimeter_refined_side_candidate(
+            solution,
+            solution_index,
+            gap_mm,
+            min_shift_mm,
+            ShiftDirection::Left,
+            selected,
             quality_before,
             &mut result,
         );
@@ -5375,8 +5389,18 @@ fn best_group_shift_for_solution(
             gap_mm,
             min_shift_mm,
             ShiftDirection::Right,
-            selected,
+            selected.clone(),
             anchor_mask.as_deref(),
+            quality_before,
+            &mut result,
+        );
+        consider_perimeter_refined_side_candidate(
+            solution,
+            solution_index,
+            gap_mm,
+            min_shift_mm,
+            ShiftDirection::Right,
+            selected,
             quality_before,
             &mut result,
         );
@@ -5391,8 +5415,18 @@ fn best_group_shift_for_solution(
             gap_mm,
             min_shift_mm,
             ShiftDirection::Up,
-            selected,
+            selected.clone(),
             anchor_mask.as_deref(),
+            quality_before,
+            &mut result,
+        );
+        consider_perimeter_refined_side_candidate(
+            solution,
+            solution_index,
+            gap_mm,
+            min_shift_mm,
+            ShiftDirection::Up,
+            selected,
             quality_before,
             &mut result,
         );
@@ -5412,8 +5446,18 @@ fn best_group_shift_for_solution(
             gap_mm,
             min_shift_mm,
             ShiftDirection::Down,
-            selected,
+            selected.clone(),
             anchor_mask.as_deref(),
+            quality_before,
+            &mut result,
+        );
+        consider_perimeter_refined_side_candidate(
+            solution,
+            solution_index,
+            gap_mm,
+            min_shift_mm,
+            ShiftDirection::Down,
+            selected,
             quality_before,
             &mut result,
         );
@@ -5442,6 +5486,16 @@ fn best_group_shift_for_solution(
                 );
             }
         }
+        consider_anchor_perimeter_band_candidates(
+            solution,
+            solution_index,
+            gap_mm,
+            min_shift_mm,
+            &components[anchor_component_idx],
+            anchor_mask,
+            quality_before,
+            &mut result,
+        );
     }
 
     result
@@ -5677,6 +5731,246 @@ fn placement_contact_score_all(placements: &[Placement], gap_mm: f64) -> f64 {
     normalize_group_shift_metric(score)
 }
 
+fn consider_perimeter_refined_side_candidate(
+    solution: &Solution,
+    solution_index: usize,
+    gap_mm: f64,
+    min_shift_mm: f64,
+    direction: ShiftDirection,
+    selected: Vec<usize>,
+    quality_before: GroupShiftQualityMetrics,
+    result: &mut GroupShiftSearchResult,
+) {
+    let n = solution.placements.len();
+    if selected.is_empty() || selected.len() == n {
+        return;
+    }
+
+    let mut selected_mask = vec![false; n];
+    for idx in &selected {
+        selected_mask[*idx] = true;
+    }
+    let anchor_indices = (0..n)
+        .filter(|idx| !selected_mask[*idx])
+        .collect::<Vec<_>>();
+    let Some((anchor_min_x, anchor_min_y, anchor_max_x, anchor_max_y)) =
+        component_bbox(solution, &anchor_indices)
+    else {
+        return;
+    };
+    let overlap_slack_mm = gap_mm.max(min_shift_mm);
+    let refined = selected
+        .iter()
+        .copied()
+        .filter(|idx| {
+            let placement = &solution.placements[*idx];
+            match direction {
+                ShiftDirection::Left | ShiftDirection::Right => ranges_overlap_with_slack(
+                    placement.y_mm,
+                    placement.y_mm + placement.height_mm,
+                    anchor_min_y,
+                    anchor_max_y,
+                    overlap_slack_mm,
+                ),
+                ShiftDirection::Up | ShiftDirection::Down => ranges_overlap_with_slack(
+                    placement.x_mm,
+                    placement.x_mm + placement.width_mm,
+                    anchor_min_x,
+                    anchor_max_x,
+                    overlap_slack_mm,
+                ),
+            }
+        })
+        .collect::<Vec<_>>();
+    if refined.is_empty() || refined.len() == selected.len() {
+        return;
+    }
+
+    let mut anchor_mask = vec![true; n];
+    for idx in &refined {
+        anchor_mask[*idx] = false;
+    }
+    result.anchor_perimeter_candidates += 1;
+    consider_group_shift_candidate(
+        solution,
+        solution_index,
+        gap_mm,
+        min_shift_mm,
+        direction,
+        refined,
+        Some(&anchor_mask),
+        quality_before,
+        result,
+    );
+}
+
+fn consider_anchor_perimeter_band_candidates(
+    solution: &Solution,
+    solution_index: usize,
+    gap_mm: f64,
+    min_shift_mm: f64,
+    anchor_component: &[usize],
+    anchor_mask: &[bool],
+    quality_before: GroupShiftQualityMetrics,
+    result: &mut GroupShiftSearchResult,
+) {
+    let Some((anchor_min_x, anchor_min_y, anchor_max_x, anchor_max_y)) =
+        component_bbox(solution, anchor_component)
+    else {
+        return;
+    };
+    let overlap_slack_mm = gap_mm.max(min_shift_mm);
+    let side_gap_mm = gap_mm + min_shift_mm - GROUP_SHIFT_EPS;
+
+    let right_band = selected_indices_indexed(solution, |idx, placement| {
+        !anchor_mask[idx]
+            && placement.x_mm >= anchor_max_x + side_gap_mm
+            && ranges_overlap_with_slack(
+                placement.y_mm,
+                placement.y_mm + placement.height_mm,
+                anchor_min_y,
+                anchor_max_y,
+                overlap_slack_mm,
+            )
+    });
+    consider_anchor_perimeter_band_candidate(
+        solution,
+        solution_index,
+        gap_mm,
+        min_shift_mm,
+        ShiftDirection::Left,
+        right_band,
+        anchor_mask,
+        quality_before,
+        result,
+    );
+
+    let left_band = selected_indices_indexed(solution, |idx, placement| {
+        !anchor_mask[idx]
+            && placement.x_mm + placement.width_mm <= anchor_min_x - side_gap_mm
+            && ranges_overlap_with_slack(
+                placement.y_mm,
+                placement.y_mm + placement.height_mm,
+                anchor_min_y,
+                anchor_max_y,
+                overlap_slack_mm,
+            )
+    });
+    consider_anchor_perimeter_band_candidate(
+        solution,
+        solution_index,
+        gap_mm,
+        min_shift_mm,
+        ShiftDirection::Right,
+        left_band,
+        anchor_mask,
+        quality_before,
+        result,
+    );
+
+    let lower_band = selected_indices_indexed(solution, |idx, placement| {
+        !anchor_mask[idx]
+            && placement.y_mm >= anchor_max_y + side_gap_mm
+            && ranges_overlap_with_slack(
+                placement.x_mm,
+                placement.x_mm + placement.width_mm,
+                anchor_min_x,
+                anchor_max_x,
+                overlap_slack_mm,
+            )
+    });
+    consider_anchor_perimeter_band_candidate(
+        solution,
+        solution_index,
+        gap_mm,
+        min_shift_mm,
+        ShiftDirection::Up,
+        lower_band,
+        anchor_mask,
+        quality_before,
+        result,
+    );
+
+    let upper_band = selected_indices_indexed(solution, |idx, placement| {
+        !anchor_mask[idx]
+            && placement.y_mm + placement.height_mm <= anchor_min_y - side_gap_mm
+            && ranges_overlap_with_slack(
+                placement.x_mm,
+                placement.x_mm + placement.width_mm,
+                anchor_min_x,
+                anchor_max_x,
+                overlap_slack_mm,
+            )
+    });
+    consider_anchor_perimeter_band_candidate(
+        solution,
+        solution_index,
+        gap_mm,
+        min_shift_mm,
+        ShiftDirection::Down,
+        upper_band,
+        anchor_mask,
+        quality_before,
+        result,
+    );
+}
+
+fn consider_anchor_perimeter_band_candidate(
+    solution: &Solution,
+    solution_index: usize,
+    gap_mm: f64,
+    min_shift_mm: f64,
+    direction: ShiftDirection,
+    selected: Vec<usize>,
+    anchor_mask: &[bool],
+    quality_before: GroupShiftQualityMetrics,
+    result: &mut GroupShiftSearchResult,
+) {
+    if selected.is_empty() {
+        return;
+    }
+    result.anchor_perimeter_candidates += 1;
+    consider_group_shift_candidate(
+        solution,
+        solution_index,
+        gap_mm,
+        min_shift_mm,
+        direction,
+        selected,
+        Some(anchor_mask),
+        quality_before,
+        result,
+    );
+}
+
+fn component_bbox(solution: &Solution, component: &[usize]) -> Option<(f64, f64, f64, f64)> {
+    if component.is_empty() {
+        return None;
+    }
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for idx in component {
+        let placement = &solution.placements[*idx];
+        min_x = min_x.min(placement.x_mm);
+        min_y = min_y.min(placement.y_mm);
+        max_x = max_x.max(placement.x_mm + placement.width_mm);
+        max_y = max_y.max(placement.y_mm + placement.height_mm);
+    }
+    Some((min_x, min_y, max_x, max_y))
+}
+
+fn ranges_overlap_with_slack(
+    a_min: f64,
+    a_max: f64,
+    b_min: f64,
+    b_max: f64,
+    slack_mm: f64,
+) -> bool {
+    a_min < b_max + slack_mm && a_max > b_min - slack_mm
+}
+
 fn selected_indices<F>(solution: &Solution, mut predicate: F) -> Vec<usize>
 where
     F: FnMut(&Placement) -> bool,
@@ -5686,6 +5980,18 @@ where
         .iter()
         .enumerate()
         .filter_map(|(idx, placement)| predicate(placement).then_some(idx))
+        .collect()
+}
+
+fn selected_indices_indexed<F>(solution: &Solution, mut predicate: F) -> Vec<usize>
+where
+    F: FnMut(usize, &Placement) -> bool,
+{
+    solution
+        .placements
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, placement)| predicate(idx, placement).then_some(idx))
         .collect()
 }
 
@@ -6849,6 +7155,7 @@ mod tests {
             time_ms: 0,
             moves_applied: 1,
             quality_guard_rejections: 0,
+            anchor_perimeter_candidates: 0,
             parts_moved: 2,
             passes_run: 1,
             corridor_closed_area_mm2: 0.0,
