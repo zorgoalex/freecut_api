@@ -12,10 +12,11 @@ use cut_optimizer_2d::{
 use crate::config::AppConfig;
 use crate::models::{
     AlnsOperatorTelemetry, AlnsTelemetry, Artifacts, BeamTelemetry, CandidateSelectionTelemetry,
-    Engine, ErrorResponse, GaOverrideParams, GaProfile, GroupShiftTelemetry, LayoutMode, Objective,
-    OptimizeRequest, OptimizeResponse, Params, PartitionTelemetry, PatternDirection, Placement,
-    PortfolioTelemetry, ProfilePoolPreset, ProfilePoolTelemetry, RestartPolicyTelemetry,
-    RetryStrategy, RetryTelemetry, SlaProfile, Solution, Summary, Trim, UnplacedItem,
+    ConsolidateTelemetry, Engine, ErrorResponse, GaOverrideParams, GaProfile, GroupShiftTelemetry,
+    LayoutMode, Objective, OptimizeRequest, OptimizeResponse, Params, PartitionTelemetry,
+    PatternDirection, Placement, PortfolioTelemetry, ProfilePoolPreset, ProfilePoolTelemetry,
+    RestartPolicyTelemetry, RetryStrategy, RetryTelemetry, SlaProfile, Solution, Summary, Trim,
+    UnplacedItem,
 };
 use crate::validation::item_fits_any_stock_public;
 
@@ -277,6 +278,7 @@ async fn optimize_request_internal(
         return Ok(OptimizeResponse {
             status: "ok",
             summary: Summary {
+                consolidate: None,
                 objective: req.params.objective,
                 used_stock_count: 0,
                 total_waste_area_mm2: 0.0,
@@ -524,6 +526,7 @@ fn build_response_from_outcome(
         retry: None,
         partition,
         group_shift,
+        consolidate: run_outcome.consolidate,
     };
 
     let svg = if include_svg {
@@ -1083,6 +1086,8 @@ struct RunOutcome {
     beam: Option<BeamTelemetry>,
     alns: Option<AlnsTelemetry>,
     candidate_selection: Option<CandidateSelectionTelemetry>,
+    /// V59 sheet-consolidation telemetry (engine=heuristic only).
+    consolidate: Option<ConsolidateTelemetry>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2157,6 +2162,7 @@ async fn run_partitioned(
     };
     Ok((
         Some(RunOutcome {
+            consolidate: None,
             candidate,
             restarts_used: restarts_total,
             timeout_reason: None,
@@ -2342,6 +2348,7 @@ async fn rebalance_attempt(
     let merged = cut_optimizer_2d::Solution::from_components(fitness, merged_stocks, 0);
     let candidate = build_candidate(merged);
     let outcome = RunOutcome {
+        consolidate: None,
         candidate,
         restarts_used: packs_tried as u32,
         timeout_reason: None,
@@ -2525,6 +2532,273 @@ fn pick_best_candidate(
     best
 }
 
+#[derive(Clone, Copy)]
+struct ConsolidateConfig {
+    max_window: usize,
+    max_passes: u32,
+    window_ga_ms: u64,
+}
+
+fn resolve_consolidate_config(req: &OptimizeRequest) -> Option<ConsolidateConfig> {
+    let params = req.params.consolidate.as_ref()?;
+    if !params.enabled.unwrap_or(true) {
+        return None;
+    }
+    Some(ConsolidateConfig {
+        max_window: params.max_window.unwrap_or(3).clamp(2, 6) as usize,
+        max_passes: params.max_passes.unwrap_or(8).max(1),
+        window_ga_ms: params.window_ga_ms.unwrap_or(0),
+    })
+}
+
+/// Raw placed-piece area on a result sheet (no kerf), used to rank sheets by
+/// fullness for consolidation.
+fn sheet_used_area(sheet: &cut_optimizer_2d::ResultStockPiece) -> u128 {
+    sheet
+        .cut_pieces
+        .iter()
+        .map(|cp| cp.width as u128 * cp.length as u128)
+        .sum()
+}
+
+/// Build a new Solution that drops the `window` sheets and appends `new_sheets`.
+fn splice_window(
+    solution: &cut_optimizer_2d::Solution,
+    window: &[usize],
+    new_sheets: Vec<cut_optimizer_2d::ResultStockPiece>,
+) -> cut_optimizer_2d::Solution {
+    let drop: std::collections::HashSet<usize> = window.iter().copied().collect();
+    let mut sheets: Vec<cut_optimizer_2d::ResultStockPiece> = solution
+        .stock_pieces
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !drop.contains(i))
+        .map(|(_, s)| s.clone())
+        .collect();
+    sheets.extend(new_sheets);
+    let price = sheets.iter().map(|s| s.price).sum();
+    cut_optimizer_2d::Solution::from_components(solution.fitness.max(0.0), sheets, price)
+}
+
+/// V59: try to repack the parts of the `window` sheets into `target` sheets
+/// (target = window length - 1). Returns the repacked sheets only if every
+/// pooled part fits within `target` sheets; otherwise None. Uses the instant
+/// multi-variant FFD construction. Single-stock scope: bails out if the window
+/// mixes stock geometries.
+fn try_repack_window(
+    sheets: &[cut_optimizer_2d::ResultStockPiece],
+    window: &[usize],
+    target: usize,
+    prepared: &PreparedInput,
+    layout_mode: LayoutMode,
+    seed: u64,
+    window_ga_ms: u64,
+) -> Option<Vec<cut_optimizer_2d::ResultStockPiece>> {
+    if target == 0 || window.is_empty() {
+        return None;
+    }
+    let first = &sheets[window[0]];
+    let (sw, sl, sd, sp) = (
+        first.width,
+        first.length,
+        first.pattern_direction,
+        first.price,
+    );
+    if window.iter().any(|&i| {
+        let s = &sheets[i];
+        s.width != sw || s.length != sl || s.pattern_direction != sd || s.price != sp
+    }) {
+        return None;
+    }
+
+    // Pool the original cut pieces of the window via external_id.
+    let mut pooled: Vec<CutPiece> = Vec::new();
+    for &i in window {
+        for placement in &sheets[i].cut_pieces {
+            let eid = placement.external_id?;
+            let original = prepared.cut_pieces.get(eid)?;
+            pooled.push(original.clone());
+        }
+    }
+    if pooled.is_empty() {
+        return None;
+    }
+    let pooled_count = pooled.len();
+
+    // Area lower bound: the pooled parts can never fit in `target` sheets if
+    // their raw area already exceeds the target capacity. Prunes the (many)
+    // hopeless windows before any packing work — this is what keeps the
+    // O(M^2) pair scan cheap.
+    let usable_area = sw as u128 * sl as u128;
+    let pooled_area: u128 = pooled
+        .iter()
+        .map(|p| p.width as u128 * p.length as u128)
+        .sum();
+    if pooled_area > usable_area.saturating_mul(target as u128) {
+        return None;
+    }
+
+    let stock = StockPiece {
+        width: sw,
+        length: sl,
+        pattern_direction: sd,
+        price: sp,
+        quantity: Some(target),
+    };
+
+    let all_placed = |sol: &cut_optimizer_2d::Solution| -> bool {
+        let placed: usize = sol.stock_pieces.iter().map(|s| s.cut_pieces.len()).sum();
+        placed == pooled_count && sol.stock_pieces.len() <= target
+    };
+
+    // 1. Instant multi-variant FFD construction.
+    let mut ffd = Optimizer::new();
+    ffd.set_random_seed(seed)
+        .set_cut_width(prepared.cut_width)
+        .add_stock_pieces(std::iter::once(stock))
+        .add_cut_pieces(pooled.iter().cloned());
+    let solutions = match layout_mode {
+        LayoutMode::Nested => ffd.build_nested_heuristic(),
+        LayoutMode::Guillotine => ffd.build_guillotine_heuristic(),
+    };
+    let mut best: Option<cut_optimizer_2d::Solution> = None;
+    for sol in solutions {
+        if !all_placed(&sol) {
+            continue;
+        }
+        best = Some(match best {
+            Some(cur)
+                if cur.stock_pieces.len() < sol.stock_pieces.len()
+                    || (cur.stock_pieces.len() == sol.stock_pieces.len()
+                        && cur.fitness >= sol.fitness) =>
+            {
+                cur
+            }
+            _ => sol,
+        });
+    }
+    if let Some(sol) = best {
+        return Some(sol.stock_pieces);
+    }
+
+    // 2. Optional per-window GA (opt-in via window_ga_ms). FFD on these pooled
+    // parts couldn't hit the target; a short GA on the small subproblem
+    // (~tens of parts, which converges where the monolithic GA never does) may
+    // find a packing that does. Runs synchronously, so it is off by default.
+    if window_ga_ms > 0 {
+        let epochs = (window_ga_ms / 2).clamp(50, 1000) as u32;
+        let mut ga = Optimizer::new();
+        ga.set_random_seed(seed.wrapping_add(7))
+            .set_cut_width(prepared.cut_width)
+            .set_ga_epochs(epochs)
+            .add_stock_pieces(std::iter::once(stock))
+            .add_cut_pieces(pooled.iter().cloned());
+        let ga_res = match layout_mode {
+            LayoutMode::Nested => ga.optimize_nested_top_k(4, |_| {}),
+            LayoutMode::Guillotine => ga.optimize_guillotine_top_k(4, |_| {}),
+        };
+        if let Ok(set) = ga_res {
+            for sol in set.solutions {
+                if all_placed(&sol) {
+                    return Some(sol.stock_pieces);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// V59 sheet consolidation post-process. Pools the parts of the K least-full
+/// sheets and tries to repack them into K-1 sheets, iterating until no window
+/// improves. Only ever accepts a strictly-fewer-sheet layout, so it can never
+/// regress sheet count; the parts set is preserved exactly (splice removes the
+/// window sheets and re-adds the same parts).
+fn consolidate_underfull_sheets(
+    mut candidate: Candidate,
+    prepared: &PreparedInput,
+    layout_mode: LayoutMode,
+    cfg: ConsolidateConfig,
+    base_seed: u64,
+    kerf_gap_units: usize,
+    deadline_ms: u64,
+) -> (Candidate, ConsolidateTelemetry) {
+    let started = Instant::now();
+    let mut tel = ConsolidateTelemetry {
+        sheets_before: candidate.used_stock_count,
+        ..Default::default()
+    };
+
+    for pass in 0..cfg.max_passes {
+        if started.elapsed().as_millis() as u64 >= deadline_ms {
+            break;
+        }
+        tel.passes = pass + 1;
+        let n = candidate.solution.stock_pieces.len();
+        if n < 2 {
+            break;
+        }
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by_key(|&i| sheet_used_area(&candidate.solution.stock_pieces[i]));
+
+        // Candidate windows, cheapest-promising first:
+        //  1. every PAIR among the M least-full sheets -> 1 sheet. Catches the
+        //     emptiest sheet pairing with a non-adjacent partner whose slack
+        //     complements it, which the greedy K-least-full window would miss.
+        //  2. the K least-full sheets -> K-1, for K = 3..=max_window. Absorbs
+        //     the emptiest sheet into the combined slack of several others.
+        let m = n.min(12);
+        let mut windows: Vec<(Vec<usize>, usize)> = Vec::new();
+        for a in 0..m {
+            for b in (a + 1)..m {
+                windows.push((vec![order[a], order[b]], 1));
+            }
+        }
+        for k in 3..=cfg.max_window.min(n) {
+            windows.push((order[..k].to_vec(), k - 1));
+        }
+
+        let mut improved = false;
+        for (wi, (window, target)) in windows.into_iter().enumerate() {
+            if started.elapsed().as_millis() as u64 >= deadline_ms {
+                break;
+            }
+            tel.windows_tried += 1;
+            let seed = base_seed
+                .wrapping_add((pass as u64).wrapping_mul(1_000_003))
+                .wrapping_add(wi as u64);
+            let Some(new_sheets) = try_repack_window(
+                &candidate.solution.stock_pieces,
+                &window,
+                target,
+                prepared,
+                layout_mode,
+                seed,
+                cfg.window_ga_ms,
+            ) else {
+                continue;
+            };
+            let mut spliced = splice_window(&candidate.solution, &window, new_sheets);
+            compact_solution(&mut spliced, kerf_gap_units);
+            let new_candidate = build_candidate(spliced);
+            if new_candidate.used_stock_count < candidate.used_stock_count {
+                tel.windows_accepted += 1;
+                candidate = new_candidate;
+                improved = true;
+                break;
+            }
+        }
+        if !improved {
+            break;
+        }
+    }
+
+    tel.sheets_after = candidate.used_stock_count;
+    tel.sheets_saved = tel.sheets_before.saturating_sub(tel.sheets_after);
+    tel.time_ms = started.elapsed().as_millis() as u64;
+    (candidate, tel)
+}
+
 async fn run_restarts_with_budget(
     req: &OptimizeRequest,
     prepared: &PreparedInput,
@@ -2600,6 +2874,28 @@ async fn run_restarts_with_budget(
     // jobs) cannot converge and would fall back to this same layout anyway.
     if matches!(req.params.engine, Some(Engine::Heuristic)) {
         if let Some(best) = best {
+            // V59: optionally consolidate under-full sheets before returning.
+            // Large heuristic-floor jobs are exactly where freed slack hides on
+            // a few sparse tail sheets that can be repacked into fewer sheets.
+            let (best, consolidate) = match resolve_consolidate_config(req) {
+                Some(cfg) => {
+                    // engine=heuristic short-circuits the GA, leaving the whole
+                    // time budget free for consolidation to spend piercing the
+                    // floor (FFD-only is near-instant; the opt-in per-window GA
+                    // is bounded by this deadline).
+                    let (cand, tel) = consolidate_underfull_sheets(
+                        best,
+                        prepared,
+                        layout_mode,
+                        cfg,
+                        base_seed,
+                        kerf_gap_units,
+                        total_budget_ms,
+                    );
+                    (cand, Some(tel))
+                }
+                None => (best, None),
+            };
             let candidate_selection = Some(build_candidate_selection_telemetry(
                 &selection_counters,
                 &best,
@@ -2613,6 +2909,7 @@ async fn run_restarts_with_budget(
                 beam: None,
                 alns: None,
                 candidate_selection,
+                consolidate,
             });
         }
     }
@@ -2791,6 +3088,7 @@ async fn run_restarts_with_budget(
             None
         };
         return Ok(RunOutcome {
+            consolidate: None,
             candidate: best,
             restarts_used,
             timeout_reason,
@@ -2863,6 +3161,7 @@ async fn run_restarts_with_budget(
                                 &candidate,
                             ));
                             return Ok(RunOutcome {
+                                consolidate: None,
                                 candidate,
                                 restarts_used: restarts_used.max(1),
                                 timeout_reason: Some("slice_timeout".to_string()),
@@ -3019,6 +3318,7 @@ async fn run_portfolio_anytime(
             None
         };
         return Ok(RunOutcome {
+            consolidate: None,
             candidate,
             restarts_used: winner_restarts_used,
             timeout_reason,
@@ -3192,6 +3492,7 @@ async fn run_beam_anytime(
             None
         };
         return Ok(RunOutcome {
+            consolidate: None,
             candidate: best.candidate,
             restarts_used: best.restarts_used,
             timeout_reason,
@@ -3503,6 +3804,7 @@ async fn run_alns_anytime(
             None
         };
         return Ok(RunOutcome {
+            consolidate: None,
             candidate: winner,
             restarts_used: winner_restarts_used.max(1),
             timeout_reason,
@@ -3567,6 +3869,7 @@ async fn run_alns_anytime(
                 None
             };
             return Ok(RunOutcome {
+                consolidate: None,
                 candidate: fallback.candidate,
                 restarts_used: fallback.restarts_used.max(1),
                 timeout_reason,
@@ -5976,6 +6279,7 @@ mod tests {
                     retry: None,
                     partition: None,
                     group_shift: None,
+                    consolidate: None,
                 },
                 solutions: Vec::new(),
                 unplaced_items: Vec::new(),
