@@ -25,6 +25,7 @@ v66-sat-feasibility
 v67-ladder-benchmark
 v59-v61-productionization-a-cut-quality
 v59-v61-productionization-b-async-postprocess
+v70-group-shift-remnant-audit
 -->
 
 Language: English.
@@ -438,3 +439,36 @@ Conclusions:
 - True deep-mode cost on the prod profile: N50 `max_iters=4000` is about
   **13.1s** wall on 1.5cpu versus about 2-3s on the 3-cpu dev box; keep
   `MAX_CONCURRENT_OPTIMIZE` small in production.
+
+## V70 Group Shift Remnant Audit
+
+- Branch: `feat/v70-group-shift-remnant-audit`; draft:
+  `docs/research/drafts/2026-06-18-v70-group-shift-remnant-audit.md`.
+- Script: `scripts/test_v70_group_shift_remnant_audit.py`.
+- Artifacts:
+  `ai_docs/tmp/v70_group_shift_pass1/`,
+  `ai_docs/tmp/v70_group_shift_pass4/`,
+  `ai_docs/tmp/v70_group_shift_pass8/`.
+- New paired metrics split visual quality into:
+  `topology_score` for free-space/remnant topology and `part_contact_mm` for
+  edge parts moving toward the main dense group. Combined `remnant_score` is
+  `topology_score + 0.25 * part_contact_ratio`.
+- Fixture/seeds: `multisheet_varied_4sheets.json`, guillotine, 3s, 3 restarts,
+  seeds 1..12, `group_shift.min_shift_mm=5`.
+
+Results:
+
+| max_passes | moved | improved | worsened | moves | parts | delta score | delta topology | delta contact |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 11 | 11 | 0 | 11 | 15 | +0.0102077 | 0 | +4860.5mm |
+| 4 | 11 | 9 | 2 | 28 | 38 | -0.0083389 | -0.0235249 | +7231.0mm |
+| 8 | 11 | 9 | 2 | 29 | 39 | -0.0074568 | -0.0235249 | +7651.0mm |
+
+Conclusion: the user hypothesis is confirmed and was previously underrated by
+the wrong metrics. `group_shift` often improves visible compactness through
+part-contact growth even when zone/topology counts do not change. However,
+multi-pass chain shifting is unsafe without a paired acceptance guard: passes 4
+and 8 increased local contact/closed area but produced two topology regressions
+(seeds 6 and 9). Next branch should implement guarded `group_shift`: accept a
+single-part or group move only if paired `remnant_score` improves, with a hard
+guard against topology loss.
