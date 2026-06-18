@@ -523,6 +523,11 @@ trait Bin {
     /// Computes the fitness of this `Bin` on a scale of 0.0 to 1.0, with 1.0 being the most fit.
     fn fitness(&self) -> f64;
 
+    /// Total area (width*length, raw, no blade inflation) of cut pieces currently
+    /// placed in this `Bin`. Used by the best-fit bin-assignment strategy to rank
+    /// bins by how full they already are (V60-lite).
+    fn used_area(&self) -> u64;
+
     fn price(&self) -> usize;
 
     /// Removes `UsedCutPiece`s from this `Bin` and returns how many were removed.
@@ -557,6 +562,15 @@ trait Bin {
 
     /// Returns whether the `StockPiece` is equivalent to this `Bin`.
     fn matches_stock_piece(&self, stock_piece: &StockPiece) -> bool;
+}
+
+/// Strategy for choosing WHICH existing bin a cut piece is assigned to during
+/// greedy construction (V60-lite). `FirstFit` keeps the original behaviour;
+/// `BestFit` prefers the fullest bin to pack tighter and open fewer sheets.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BinAssignment {
+    FirstFit,
+    BestFit,
 }
 
 struct OptimizerUnit<'a, B>
@@ -631,6 +645,34 @@ where
     ) -> Result<OptimizerUnit<'a, B>>
     where
         R: Rng + ?Sized,
+        B: Clone,
+    {
+        // Default (GA path): first-fit bin assignment, unchanged behaviour.
+        Self::with_heuristic_assignment(
+            possible_stock_pieces,
+            cut_pieces,
+            blade_width,
+            heuristic,
+            BinAssignment::FirstFit,
+            rng,
+        )
+    }
+
+    /// Builds a unit by greedily assigning each cut piece to a bin using the
+    /// given placement `heuristic` and the given bin-`assignment` strategy
+    /// (which sheet a piece goes to). Used by the construction heuristic to
+    /// generate both First-Fit and Best-Fit candidates (V60-lite).
+    fn with_heuristic_assignment<R>(
+        possible_stock_pieces: &'a [StockPiece],
+        cut_pieces: &[&CutPieceWithId],
+        blade_width: usize,
+        heuristic: &B::Heuristic,
+        assignment: BinAssignment,
+        rng: &mut R,
+    ) -> Result<OptimizerUnit<'a, B>>
+    where
+        R: Rng + ?Sized,
+        B: Clone,
     {
         let mut unit = OptimizerUnit {
             bins: Vec::new(),
@@ -641,7 +683,11 @@ where
         };
 
         for cut_piece in cut_pieces {
-            if !unit.first_fit_with_heuristic(cut_piece, heuristic, rng) {
+            let placed = match assignment {
+                BinAssignment::FirstFit => unit.first_fit_with_heuristic(cut_piece, heuristic, rng),
+                BinAssignment::BestFit => unit.best_fit_with_heuristic(cut_piece, heuristic, rng),
+            };
+            if !placed {
                 unit.unused_cut_pieces.insert((*cut_piece).clone());
             }
         }
@@ -654,7 +700,10 @@ where
         mut cut_pieces: Vec<&CutPieceWithId>,
         blade_width: usize,
         random_seed: u64,
-    ) -> Result<Vec<OptimizerUnit<'a, B>>> {
+    ) -> Result<Vec<OptimizerUnit<'a, B>>>
+    where
+        B: Clone,
+    {
         let mut set = FnvHashSet::default();
         for cut_piece in &cut_pieces {
             set.insert((
@@ -747,6 +796,42 @@ where
             if bin.insert_cut_piece_with_heuristic(cut_piece, heuristic) {
                 return true;
             }
+        }
+
+        self.add_to_new_bin(cut_piece, rng)
+    }
+
+    /// Best-Fit bin assignment (V60-lite). Instead of dropping a piece into the
+    /// first bin that accepts it, trial-insert it into every existing bin (on a
+    /// clone) and commit to the bin whose resulting fitness is highest — i.e. the
+    /// sheet where the piece packs tightest. This consolidates pieces into
+    /// well-filled sheets and can open fewer sheets than first-fit; it never
+    /// opens more, so pick_best_candidate makes it zero-regression. Falls back to
+    /// a new bin only when no existing bin accepts the piece.
+    fn best_fit_with_heuristic<R>(
+        &mut self,
+        cut_piece: &CutPieceWithId,
+        heuristic: &B::Heuristic,
+        rng: &mut R,
+    ) -> bool
+    where
+        R: Rng + ?Sized,
+        B: Clone,
+    {
+        let mut best: Option<(usize, f64)> = None;
+        for (i, bin) in self.bins.iter().enumerate() {
+            let mut trial = bin.clone();
+            if trial.insert_cut_piece_with_heuristic(cut_piece, heuristic) {
+                let f = trial.fitness();
+                if best.is_none_or(|(_, bf)| f > bf) {
+                    best = Some((i, f));
+                }
+            }
+        }
+
+        if let Some((i, _)) = best {
+            // Re-run the (deterministic) insert on the chosen real bin.
+            return self.bins[i].insert_cut_piece_with_heuristic(cut_piece, heuristic);
         }
 
         self.add_to_new_bin(cut_piece, rng)
@@ -1217,16 +1302,22 @@ impl Optimizer {
             std::cmp::Reverse((c.width as u64).saturating_mul(c.length as u64))
         });
         let mut solutions = Vec::new();
+        // V60-lite: evaluate every placement heuristic under BOTH bin-assignment
+        // strategies (first-fit and best-fit-decreasing). pick_best_candidate
+        // then picks the construction with the fewest sheets — best-fit can open
+        // fewer bins, never more, so this is zero-regression by construction.
+        for assignment in [BinAssignment::FirstFit, BinAssignment::BestFit] {
         for heuristic in &GuillotineBin::possible_heuristics() {
             let mut rng = rand::rngs::StdRng::seed_from_u64(self.random_seed);
-            // V7 fix: with_heuristic already places every cut piece via
-            // first_fit_with_heuristic, so we must NOT iterate cuts a second
-            // time (that would duplicate placements, N -> N*2).
-            let Ok(mut unit) = OptimizerUnit::<GuillotineBin>::with_heuristic(
+            // V7 fix: with_heuristic_assignment already places every cut piece,
+            // so we must NOT iterate cuts a second time (that would duplicate
+            // placements, N -> N*2).
+            let Ok(mut unit) = OptimizerUnit::<GuillotineBin>::with_heuristic_assignment(
                 &self.stock_pieces,
                 &cuts,
                 self.cut_width,
                 heuristic,
+                assignment,
                 &mut rng,
             ) else {
                 continue;
@@ -1241,6 +1332,7 @@ impl Optimizer {
             let price = result_sheets.iter().map(|s| s.price).sum();
             solutions.push(Solution::from_components(fitness, result_sheets, price));
         }
+        }
         solutions
     }
 
@@ -1254,14 +1346,18 @@ impl Optimizer {
             std::cmp::Reverse((c.width as u64).saturating_mul(c.length as u64))
         });
         let mut solutions = Vec::new();
+        // V60-lite: both first-fit and best-fit-decreasing bin assignment.
+        for assignment in [BinAssignment::FirstFit, BinAssignment::BestFit] {
         for heuristic in &MaxRectsBin::possible_heuristics() {
             let mut rng = rand::rngs::StdRng::seed_from_u64(self.random_seed);
-            // V7 fix: with_heuristic already places every cut piece; no 2nd pass.
-            let Ok(mut unit) = OptimizerUnit::<MaxRectsBin>::with_heuristic(
+            // V7 fix: with_heuristic_assignment already places every cut piece;
+            // no 2nd pass.
+            let Ok(mut unit) = OptimizerUnit::<MaxRectsBin>::with_heuristic_assignment(
                 &self.stock_pieces,
                 &cuts,
                 self.cut_width,
                 heuristic,
+                assignment,
                 &mut rng,
             ) else {
                 continue;
@@ -1275,6 +1371,7 @@ impl Optimizer {
             let fitness = unit.fitness();
             let price = result_sheets.iter().map(|s| s.price).sum();
             solutions.push(Solution::from_components(fitness, result_sheets, price));
+        }
         }
         solutions
     }
