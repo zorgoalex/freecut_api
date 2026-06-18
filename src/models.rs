@@ -73,6 +73,32 @@ pub struct Params {
     /// improves or the pass budget is exhausted. Aimed at large `engine=heuristic`
     /// jobs that ride the construction floor, where the GA never converges.
     pub consolidate: Option<ConsolidateParams>,
+    /// V61: optional anytime Large-Neighborhood-Search polish. Runs after
+    /// consolidation in the `engine=heuristic` path. Each iteration destroys a
+    /// stochastic window of sheets (always including the emptiest) and repacks
+    /// it; strictly-fewer-sheet repacks are accepted, and equal-sheet repacks
+    /// are accepted when they concentrate the free area onto one sheet (a
+    /// lateral move that sets up a later sheet drop). Deadline-bounded by
+    /// `time_limit_ms`. Distinct from `consolidate` in that it accepts lateral
+    /// moves and explores randomized windows, so it can escape the greedy
+    /// consolidation local optimum.
+    pub lns: Option<LnsParams>,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
+pub struct LnsParams {
+    /// Enable the LNS polish. Optional, defaults to true when the `lns` object
+    /// is provided.
+    pub enabled: Option<bool>,
+    /// Maximum destroy/repair iterations. Optional, defaults to 2000 (the
+    /// deadline usually binds first). Clamped to 1..=200000.
+    pub max_iters: Option<u32>,
+    /// Largest destroy window (number of sheets pooled per iteration). Optional,
+    /// defaults to 4. Clamped to 2..=8.
+    pub max_window: Option<u32>,
+    /// Per-window GA budget (ms) used when FFD cannot repack a window into the
+    /// target; same semantics as `consolidate.window_ga_ms`. Optional, default 0.
+    pub window_ga_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
