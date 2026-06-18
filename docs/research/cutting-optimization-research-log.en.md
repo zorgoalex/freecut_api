@@ -25,6 +25,7 @@ v66-sat-feasibility
 v67-ladder-benchmark
 v59-v61-productionization-a-cut-quality
 v59-v61-productionization-b-async-postprocess
+v70-nested-approach-parity
 -->
 
 Language: English.
@@ -438,3 +439,42 @@ Conclusions:
 - True deep-mode cost on the prod profile: N50 `max_iters=4000` is about
   **13.1s** wall on 1.5cpu versus about 2-3s on the 3-cpu dev box; keep
   `MAX_CONCURRENT_OPTIMIZE` small in production.
+
+## V70: Nested Parity Of V28+ Approaches
+
+- Branch: `feat/nested-approach-parity`; draft:
+  `docs/research/drafts/2026-06-18-nested-approach-parity.md`.
+- Question: how equally do the approaches accumulated since V28 apply to
+  improving the nested (non-guillotine) layout, judged on both hard metrics
+  (sheets, waste%) and visual remnant quality. Scope: in-service only (V63/V64/
+  V65/V66 external engines classified by logic, not re-run).
+- Both modes are first-class in code (every construction/post-process branch
+  switches `build_nested_heuristic` / `build_guillotine_heuristic`), so nearly
+  every V28+ approach is logically applicable to nested. The only
+  guillotine-specific item is the V63 PackingSolver binding
+  (`rectangleguillotine`); MaxRects (V64) and CP-SAT NoOverlap2D (V65) are
+  actually nested-friendly.
+- Logic classes by transfer quality:
+  - orchestration / runtime / selection (profile pool, seed rescue, fast path,
+    cut_quality, async/queue, partition) — mode-agnostic, apply **equally**;
+  - geometric repacks (consolidate, lns, bin assignment) — apply, same
+    hard-metric win at small/mid N, but weaker at scale;
+  - visual / remnant scoring (V40–V53, group_shift) — least transferable; it was
+    calibrated on guillotine corridor waste and was never made mode-aware.
+- Empirical parity (current `main` binary), guillotine vs nested:
+  - N20/N35: identical sheets and identical lns improvement (-1 sheet, same
+    waste) on both modes — hard-metric parity holds.
+  - N50: nested lns reaches **44 sheets / 11.2%** vs guillotine **43 / 9.2%**
+    (one sheet worse) and finishes faster (6.2s vs 13.6s) — at scale the nested
+    repack converges to a worse local optimum, so parity breaks.
+  - Visual: nested is consistently more fragmented at the floor (frag 1.6–1.9 vs
+    1.3–1.5; largest-free 0.88–0.93 vs 0.94–0.99) and lns does not repair it; no
+    in-service approach has a nested-aware remnant objective.
+  - group_shift / partition produced no sheet change and negligible visual delta
+    on either mode for the tested mix.
+  - Nested construction is ~2–3x faster than guillotine, so latency is not the
+    nested blocker.
+- Conclusion: most V28+ approaches transfer to nested in principle and on hard
+  metrics at moderate scale. The concrete nested-improvement work is (a) a
+  stronger nested-aware repack/LNS for large N and (b) a mode-aware
+  visual/remnant objective — two next hypotheses for a dedicated branch.
