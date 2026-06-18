@@ -1262,6 +1262,12 @@ V59/V61 productionization B — async-safe + bounded post-process (2026-06-18):
 - Concurrency decision (a): the request already holds its `optimize_semaphore`
   permit for its full lifetime, so deep jobs stay bounded by
   `MAX_CONCURRENT_OPTIMIZE`; no separate deep cap needed.
+- Admission queue (soft follow-up): over-cap requests now WAIT for a permit up
+  to `OPTIMIZE_QUEUE_WAIT_MS` (new config, default 60s) instead of an instant
+  `429`; `0` restores the immediate-reject path. Live cap=1: two concurrent deep
+  N30 jobs both return 200 (second waits ~6s), no 429. Chosen over CPU scaling as
+  the cheap reversible step; add CPU later if sustained concurrent deep load
+  needs throughput.
 - Prod profile (1.5cpu/512m, `MAX_CONCURRENT_OPTIMIZE=2`), 2 concurrent deep
   N50 jobs while polling `/health/ready`:
   - inline (`main`):  health p95 **3964ms**, max timeout, **2 timeouts**; the

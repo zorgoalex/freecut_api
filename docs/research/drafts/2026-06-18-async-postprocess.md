@@ -22,11 +22,19 @@ post-process onto the blocking pool and confirm/limit deep-request concurrency.
   (the GA path already moves solutions across `spawn_blocking`).
 - The no-post-process path skips the spawn (avoids clone/dispatch cost).
 - Concurrency decision **(a)**: the request already holds an `optimize_semaphore`
-  permit (`main.rs:206`, size `MAX_CONCURRENT_OPTIMIZE`, default = cpu count) for
+  permit (`main.rs`, size `MAX_CONCURRENT_OPTIMIZE`, default = cpu count) for
   its whole lifetime — the async fn `await`s the join — so total concurrent deep
   jobs stay bounded by that semaphore. No separate deep-only cap added; the
   measurement below shows the blocking-pool move alone fixes responsiveness, so
   (b) is unnecessary.
+- **Admission queue (soft variant, follow-up):** the original behaviour rejected
+  any request over the permit cap immediately with `429` (`try_acquire_owned`).
+  Changed to *wait* for a permit up to `OPTIMIZE_QUEUE_WAIT_MS` (new config,
+  default 60000) via `tokio::time::timeout(.., sem.acquire_owned())`, so a short
+  burst of users is queued rather than failed; only an exhausted wait returns
+  `429 OVERLOADED` (now with `queue_wait_ms` in the error details). `0` disables
+  queueing and restores the instant-`429` path. Chosen over scaling CPU first as
+  the cheap, reversible step; CPU can be added later if throughput demands it.
 - Measured on the **prod profile**: dev container at `--cpus 1.5 -m 512m`,
   `MAX_CONCURRENT_OPTIMIZE=2` (NOT `erp_test-freecut-1`, which was left untouched).
 - Harness: `/tmp/loadtest.py` + `/tmp/measure_taskb.py`. Deep job =
@@ -65,6 +73,20 @@ Runtime responsiveness — 2 concurrent deep N50 jobs while polling
 
 No-load reference: health median 2.2ms, p95 2.7ms (both binaries).
 
+Admission queue (soft variant), live confirmation — `MAX_CONCURRENT_OPTIMIZE=1`,
+`OPTIMIZE_QUEUE_WAIT_MS=60000`, two concurrent deep N30 jobs:
+
+| request | http | wall   | sheets |
+|---------|------|-------:|-------:|
+| req0    | 200  | 6284ms | 26     |
+| req1    | 200  | 12173ms| 26     |
+
+req1 waited ~6s for req0 to release the single permit, then ran its own ~6s —
+both 200, no `429`. Pre-change this second request would have been rejected
+immediately. Integration tests: `optimize_queues_and_waits_instead_of_429`
+(queue=30s, cap=1 -> second request 200) and `optimize_returns_429_when_overloaded`
+(queue=0 -> instant 429 path preserved).
+
 Reading: inline lets the two deep jobs monopolize both async workers — health
 p95 blows up to ~4s with 2 hard timeouts, and the deep jobs serialize to ~26.5s.
 spawn_blocking keeps the async runtime free — health p95 stays 7.8ms, zero
@@ -91,4 +113,8 @@ timeouts -> 0) with identical results (43 sheets) and no behaviour change for
 by the existing `optimize_semaphore` (decision (a)); a separate deep cap is not
 needed at the 1.5-cpu prod profile. Note deep mode costs ~13s for N50 at that
 profile (vs ~2-3s on the 3-cpu dev box), so `MAX_CONCURRENT_OPTIMIZE` should be
-kept small in prod. Ready to merge independently of the `cut_quality` work.
+kept small in prod. As a soft follow-up, over-cap requests now wait in an
+admission queue (`OPTIMIZE_QUEUE_WAIT_MS`, default 60s) instead of an instant
+`429`, so a burst of users is serialized rather than rejected — CPU scaling
+stays as a later option if sustained concurrent deep load needs real throughput.
+Ready to merge independently of the `cut_quality` work.
