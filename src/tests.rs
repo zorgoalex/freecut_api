@@ -889,6 +889,7 @@ async fn optimize_defaults_time_limit_and_restarts() {
         default_time_limit_ms: 2000,
         default_restarts: 10,
         max_concurrent_optimize: 4,
+        optimize_queue_wait_ms: 60_000,
     };
     let app = app_with_config(config);
     let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
@@ -1721,6 +1722,8 @@ async fn optimize_returns_429_when_overloaded() {
         default_time_limit_ms: 2000,
         default_restarts: 10,
         max_concurrent_optimize: 1,
+        // queueing disabled: assert the immediate-429 admission path.
+        optimize_queue_wait_ms: 0,
     };
     let app = app_with_config(config);
 
@@ -1764,6 +1767,43 @@ async fn optimize_returns_429_when_overloaded() {
     );
 
     let _ = first.await.unwrap();
+}
+
+#[tokio::test]
+async fn optimize_queues_and_waits_instead_of_429() {
+    // With queueing enabled (optimize_queue_wait_ms > 0) and a single permit, a
+    // second concurrent request must WAIT for the in-flight one to release the
+    // permit and then succeed (200), rather than being rejected with 429.
+    let config = AppConfig {
+        port: 0,
+        max_body_bytes: 5_242_880,
+        max_instances: 5000,
+        default_time_limit_ms: 2000,
+        default_restarts: 10,
+        max_concurrent_optimize: 1,
+        optimize_queue_wait_ms: 30_000,
+    };
+    let app = app_with_config(config);
+
+    // First request holds the only permit for its (short) duration.
+    let first = tokio::spawn(post_json_owned(
+        app.clone(),
+        "/v1/optimize",
+        VALID_REQUEST.to_string(),
+    ));
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Second request arrives while the permit is busy. It must block in the
+    // queue and then complete OK — not 429.
+    let (status, json) = post_json(&app, "/v1/optimize", VALID_REQUEST).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "queued request must wait and succeed, got: {json}"
+    );
+
+    let (first_status, _) = first.await.unwrap();
+    assert_eq!(first_status, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -1828,6 +1868,7 @@ async fn max_instances_limit_enforced() {
         default_time_limit_ms: 1200,
         default_restarts: 7,
         max_concurrent_optimize: 4,
+        optimize_queue_wait_ms: 60_000,
     };
     let app = app_with_config(config);
     let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
@@ -2048,6 +2089,7 @@ async fn body_size_limit_enforced() {
         default_time_limit_ms: 1200,
         default_restarts: 7,
         max_concurrent_optimize: 4,
+        optimize_queue_wait_ms: 60_000,
     };
     let app = app_with_config(config);
     let mut json: Value = serde_json::from_str(VALID_REQUEST).unwrap();
