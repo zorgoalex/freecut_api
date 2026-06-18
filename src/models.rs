@@ -90,6 +90,9 @@ pub struct Params {
     /// - `fast`     — floor only (no consolidate, no lns); milliseconds.
     /// - `balanced` — `consolidate` (FFD-only); ~tens of ms, ~-1% sheets.
     /// - `max`      — `consolidate` + `lns` (`max_iters=4000`); ~2-3s, deepest.
+    ///   The LNS destroy window is mode-aware: `nested` uses a wider window (6)
+    ///   than `guillotine` (4), which it needs to reach the same sheet floor on
+    ///   large jobs (V70). An explicit `lns` object overrides this.
     ///
     /// Only meaningful with `engine=heuristic` (that is where the
     /// post-processors run); ignored for `engine=ga`. Optional — when absent the

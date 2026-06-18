@@ -2830,6 +2830,15 @@ struct LnsConfig {
 /// otherwise only `cut_quality=max` enables LNS (with `max_iters=4000`),
 /// `balanced`/`fast`/absent leave it off. Profile applies to
 /// `engine=heuristic` only.
+///
+/// V70: the `cut_quality=max` LNS window is mode-aware. The nested (free-rect)
+/// repack needs to pool a wider destroy window than guillotine to find the same
+/// sheet drop on large jobs: measured on N50, `max_window=4` left nested one
+/// sheet above guillotine (44 vs 43), while `max_window=6` reached parity (43,
+/// waste 9.2%). Guillotine already hits its floor at `max_window=4` and only
+/// gets slower at 6, so it keeps 4. Threshold is sharp — nested `max_window=5`
+/// still missed (44). Only affects the profile expansion; an explicit
+/// `params.lns.max_window` overrides this for either mode.
 fn resolve_lns_config(req: &OptimizeRequest) -> Option<LnsConfig> {
     if let Some(params) = req.params.lns.as_ref() {
         if !params.enabled.unwrap_or(true) {
@@ -2845,11 +2854,17 @@ fn resolve_lns_config(req: &OptimizeRequest) -> Option<LnsConfig> {
         return None;
     }
     match req.params.cut_quality {
-        Some(CutQuality::Max) => Some(LnsConfig {
-            max_iters: 4000,
-            max_window: 4,
-            window_ga_ms: 0,
-        }),
+        Some(CutQuality::Max) => {
+            let max_window = match req.params.layout_mode.unwrap_or(LayoutMode::Guillotine) {
+                LayoutMode::Nested => 6,
+                LayoutMode::Guillotine => 4,
+            };
+            Some(LnsConfig {
+                max_iters: 4000,
+                max_window,
+                window_ga_ms: 0,
+            })
+        }
         Some(CutQuality::Fast) | Some(CutQuality::Balanced) | None => None,
     }
 }
@@ -6884,6 +6899,7 @@ mod tests {
 
     #[test]
     fn cut_quality_max_resolves_to_consolidate_and_lns() {
+        // Default mode is guillotine -> lns window 4.
         let req = resolve_test_request(serde_json::json!({
             "engine": "heuristic",
             "cut_quality": "max"
@@ -6891,6 +6907,47 @@ mod tests {
         assert!(resolve_consolidate_config(&req).is_some());
         let lns = resolve_lns_config(&req).expect("max enables LNS");
         assert_eq!(lns.max_iters, 4000, "max profile uses max_iters=4000");
+        assert_eq!(lns.max_window, 4, "guillotine max uses lns window 4");
+    }
+
+    #[test]
+    fn cut_quality_max_lns_window_is_mode_aware() {
+        // V70: nested needs a wider destroy window (6) than guillotine (4) to
+        // hit the same sheet floor on large jobs.
+        let guillotine = resolve_test_request(serde_json::json!({
+            "engine": "heuristic",
+            "cut_quality": "max",
+            "layout_mode": "guillotine"
+        }));
+        assert_eq!(
+            resolve_lns_config(&guillotine).unwrap().max_window,
+            4,
+            "guillotine max -> lns window 4"
+        );
+
+        let nested = resolve_test_request(serde_json::json!({
+            "engine": "heuristic",
+            "cut_quality": "max",
+            "layout_mode": "nested"
+        }));
+        assert_eq!(
+            resolve_lns_config(&nested).unwrap().max_window,
+            6,
+            "nested max -> lns window 6"
+        );
+
+        // Explicit lns object still overrides the mode-aware profile window.
+        let nested_explicit = resolve_test_request(serde_json::json!({
+            "engine": "heuristic",
+            "cut_quality": "max",
+            "layout_mode": "nested",
+            "lns": { "enabled": true, "max_window": 3 }
+        }));
+        assert_eq!(
+            resolve_lns_config(&nested_explicit).unwrap().max_window,
+            3,
+            "explicit lns.max_window overrides the mode-aware profile"
+        );
     }
 
     #[test]

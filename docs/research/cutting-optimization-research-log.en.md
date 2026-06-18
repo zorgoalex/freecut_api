@@ -25,6 +25,7 @@ v66-sat-feasibility
 v67-ladder-benchmark
 v59-v61-productionization-a-cut-quality
 v59-v61-productionization-b-async-postprocess
+v71-nested-aware-lns
 -->
 
 Language: English.
@@ -438,3 +439,28 @@ Conclusions:
 - True deep-mode cost on the prod profile: N50 `max_iters=4000` is about
   **13.1s** wall on 1.5cpu versus about 2-3s on the 3-cpu dev box; keep
   `MAX_CONCURRENT_OPTIMIZE` small in production.
+
+## V71: Nested-Aware LNS Window For Large N
+
+- Branch: `feat/nested-aware-lns`; draft:
+  `docs/research/drafts/2026-06-18-nested-aware-lns.md`. Implements hypothesis 1
+  from V70 (close the nested N50 parity gap: 44/11.2% vs guillotine 43/9.2%).
+- Finding: the gap was a destroy-window-size problem, not an iteration-budget
+  problem. On nested N50, raising `max_iters` to 8k/16k stayed at 44; raising the
+  LNS destroy window to `max_window=6` reached **43 / 9.2%** (guillotine parity).
+  The threshold is sharp: `max_window=5` still missed (44), `max_window=8`
+  overshot back to 44, and `window_ga_ms` did not help. Minimal winning config:
+  `max_window=6, max_iters=4000` (~9.9s).
+- Why nested: the free-rectangle repack must pool a wider window (6 sheets) to
+  find the rearrangement that drops a sheet; guillotine finds it at 4. Guillotine
+  at `max_window=6` also stays 43 but only gets slower (21.6s vs 13.8s), so it
+  keeps 4.
+- Change: `resolve_lns_config` makes the `cut_quality=max` LNS window mode-aware
+  — `nested` => 6, `guillotine` => 4 (`max_iters=4000` unchanged). Only the
+  profile expansion is affected; an explicit `params.lns.max_window` overrides.
+- Result via profile: nested N50 now **43 / 9.2%** (was 44 / 11.2%), guillotine
+  unchanged at 43, no regression at N20/N35, nested deep still faster than
+  guillotine (9.8s vs 13.9s). Tests: `cut_quality_max_lns_window_is_mode_aware`
+  plus updated guillotine-default assertion; gates green (79 pass).
+- Still open: visual remnant parity (nested frag 1.7 vs guillotine 1.4) — that is
+  hypothesis 2 (mode-aware visual/remnant objective), not addressed here.

@@ -25,6 +25,7 @@ v66-sat-feasibility
 v67-ladder-benchmark
 v59-v61-productionization-a-cut-quality
 v59-v61-productionization-b-async-postprocess
+v71-nested-aware-lns
 -->
 
 Language: Russian.
@@ -1327,3 +1328,31 @@ V67 conclusions:
 - Реальная цена deep-mode в prod profile: N50 `max_iters=4000` около **13.1s**
   wall на 1.5cpu против ~2-3s на 3-cpu dev box; в prod держать
   `MAX_CONCURRENT_OPTIMIZE` малым.
+
+## V71: Nested-aware LNS window для больших N
+
+- Branch: `feat/nested-aware-lns`; draft:
+  `docs/research/drafts/2026-06-18-nested-aware-lns.md`. Реализация гипотезы 1 из
+  V70 (закрыть разрыв nested N50: 44/11.2% против guillotine 43/9.2%).
+- Находка: разрыв — проблема размера destroy-окна, а не бюджета итераций. На
+  nested N50 рост `max_iters` до 8k/16k оставался на 44; рост LNS destroy-окна до
+  `max_window=6` дал **43 / 9.2%** (паритет с guillotine). Порог резкий:
+  `max_window=5` всё ещё мимо (44), `max_window=8` перелетает обратно в 44, а
+  `window_ga_ms` не помог. Минимальная рабочая конфигурация:
+  `max_window=6, max_iters=4000` (~9.9s).
+- Почему nested: free-rectangle repack должен пулить более широкое окно (6
+  листов), чтобы найти перекладку, дающую минус лист; guillotine находит при 4.
+  Guillotine при `max_window=6` тоже остаётся 43, но только медленнее (21.6s vs
+  13.8s), поэтому держит 4.
+- Изменение: `resolve_lns_config` делает LNS-окно для `cut_quality=max`
+  mode-aware — `nested` => 6, `guillotine` => 4 (`max_iters=4000` без изменений).
+  Затрагивает только profile expansion; явный `params.lns.max_window`
+  переопределяет.
+- Результат через профиль: nested N50 теперь **43 / 9.2%** (было 44 / 11.2%),
+  guillotine без изменений 43, нет регресса на N20/N35, nested deep всё ещё
+  быстрее guillotine (9.8s vs 13.9s). Тесты:
+  `cut_quality_max_lns_window_is_mode_aware` + обновлённая проверка guillotine
+  default; гейты зелёные (79 pass).
+- Остаётся открытым: паритет визуального остатка (nested frag 1.7 против
+  guillotine 1.4) — это гипотеза 2 (mode-aware visual/remnant objective), здесь
+  не закрывается.
