@@ -62,6 +62,16 @@ def load_fixture(path: Path) -> dict[str, Any]:
         return json.load(f)
 
 
+def repeat_fixture(req: dict[str, Any], factor: int) -> dict[str, Any]:
+    if factor <= 1:
+        return req
+    repeated = json.loads(json.dumps(req))
+    for item in repeated["items"]:
+        item["qty"] = int(item["qty"]) * factor
+    repeated["params"]["seed"] = int(repeated["params"].get("seed") or 12345)
+    return repeated
+
+
 def as_int_scaled(value: float, scale: int) -> int:
     return int(round(float(value) * scale))
 
@@ -273,6 +283,8 @@ def run_packingsolver(
     time_limit_s: float,
     scale: int,
     req: dict[str, Any],
+    packing_mode: str,
+    lp_solver: str | None,
 ) -> dict[str, Any]:
     certificate_path = out_dir / "packingsolver_certificate.csv"
     stdout_path = out_dir / "packingsolver_stdout.txt"
@@ -300,19 +312,26 @@ def run_packingsolver(
         "1",
         "--certificate",
         str(certificate_path),
-        "--use-column-generation",
-        "false",
-        "--use-column-generation-2",
-        "false",
-        "--use-sequential-single-knapsack",
-        "false",
-        "--use-sequential-value-correction",
-        "false",
-        "--use-dichotomic-search",
-        "false",
-        "--use-tree-search",
-        "true",
     ]
+    if packing_mode == "tree":
+        cmd.extend(
+            [
+                "--use-column-generation",
+                "false",
+                "--use-column-generation-2",
+                "false",
+                "--use-sequential-single-knapsack",
+                "false",
+                "--use-sequential-value-correction",
+                "false",
+                "--use-dichotomic-search",
+                "false",
+                "--use-tree-search",
+                "true",
+            ]
+        )
+    if lp_solver:
+        cmd.extend(["--linear-programming-solver", lp_solver])
     start = time.perf_counter()
     proc = subprocess.run(
         cmd,
@@ -330,6 +349,8 @@ def run_packingsolver(
             "returncode": proc.returncode,
             "wall_ms": wall_ms,
             "cut_thickness_scaled": cut_thickness,
+            "packing_mode": packing_mode,
+            "lp_solver": lp_solver,
             "certificate_path": str(certificate_path),
         }
     )
@@ -452,6 +473,14 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8113)
     parser.add_argument("--scale", type=int, default=10)
     parser.add_argument("--time-limit-s", type=float, default=2.0)
+    parser.add_argument("--packing-mode", choices=["tree", "default"], default="tree")
+    parser.add_argument("--lp-solver", default=None)
+    parser.add_argument(
+        "--repeat-factor",
+        type=int,
+        default=1,
+        help="Multiply every item qty to synthesize larger ERP-like jobs.",
+    )
     parser.add_argument("--skip-freecut", action="store_true")
     args = parser.parse_args()
 
@@ -459,18 +488,33 @@ def main() -> int:
         raise FileNotFoundError(f"PackingSolver exe not found: {args.solver_exe}")
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    req = load_fixture(args.fixture)
+    req = repeat_fixture(load_fixture(args.fixture), args.repeat_factor)
+    if args.repeat_factor > 1:
+        (args.out_dir / f"generated_repeat_{args.repeat_factor}.json").write_text(
+            json.dumps(req, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
     input_meta = write_packingsolver_inputs(req, args.out_dir, args.scale)
 
     freecut_metrics = None
     if not args.skip_freecut:
         freecut_metrics = run_freecut_baselines(req, args.port, args.out_dir)
 
-    pack_metrics = run_packingsolver(args.solver_exe, args.out_dir, args.time_limit_s, args.scale, req)
+    pack_metrics = run_packingsolver(
+        args.solver_exe,
+        args.out_dir,
+        args.time_limit_s,
+        args.scale,
+        req,
+        args.packing_mode,
+        args.lp_solver,
+    )
     render_packingsolver_svg(req, args.out_dir, args.scale)
 
     summary = {
         "fixture": str(args.fixture),
+        "repeat_factor": args.repeat_factor,
+        "packing_mode": args.packing_mode,
         "input_meta": input_meta,
         "freecut_heuristic": freecut_metrics,
         "packingsolver_rectangleguillotine": pack_metrics,
