@@ -27,6 +27,8 @@ v59-v61-productionization-a-cut-quality
 v59-v61-productionization-b-async-postprocess
 v70-nested-approach-parity
 v71-nested-aware-lns
+v72-remnant-telemetry
+v73-nested-remnant-accept
 -->
 
 Language: English.
@@ -504,3 +506,52 @@ Conclusions:
   plus updated guillotine-default assertion; gates green (79 pass).
 - Still open: visual remnant parity (nested frag 1.7 vs guillotine 1.4) — that is
   hypothesis 2 (mode-aware visual/remnant objective), not addressed here.
+
+## V72: Honest Visual-Remnant Metric
+
+- Branch: `feat/remnant-telemetry`; draft:
+  `docs/research/drafts/2026-06-18-remnant-telemetry.md`.
+- Motivation: the V70 nested visual gap used a crude external raster proxy.
+  Built a trustworthy in-service metric and confirmed/refuted the gap.
+- The existing candidate metrics measure free *area*, not *connectivity*:
+  `bbox_void` said nested was at parity (7.08M vs 6.99M, +1.3%) and `corner_free`
+  even favoured nested — neither can tell one big offcut from many staircase
+  notches of equal area.
+- New `remnant_metrics` (`summary.remnant`): rasterize each used sheet on a 20mm
+  grid, flood-fill empty cells into connected regions. Reports `free_fragments`,
+  `largest_free_mm2`, `largest_free_frac`, `mean_sheet_largest_free_frac`.
+  Computed once at response build, gated on `include_svg`; O(cells), no hot-loop
+  cost. Unit-tested (L-shape => 1 fragment/frac 1.0; central bar => 2/0.5).
+- Finding — the gap IS real by connectivity. N35 `cut_quality=max`: guillotine
+  free_fragments 49 / mean_sheet_largest_free_frac **0.900**; nested 65 /
+  **0.795**. Visual confirmation (emptiest sheet rendered to `ai_docs/tmp`):
+  guillotine = clean aligned columns + one L-shaped remnant; nested packs *more*
+  parts (22 vs 12) with a large bottom remnant but small internal staircase
+  notches between mismatched parts. Eye and metric agree; `bbox_void` did not.
+- Conclusion: the connectivity metric corrects the misleading `bbox_void` parity
+  and gives a measurable target (`mean_sheet_largest_free_frac`). Nested's failure
+  mode is internal staircase notches, not a fragmented main offcut. Re-justifies a
+  remnant-aware nested step with a real objective. Metric is mode-agnostic infra,
+  useful independent of any nested fix.
+
+## V73: Nested Remnant-Aware LNS Acceptance — Rejected
+
+- Branch: `feat/nested-remnant-accept`; draft:
+  `docs/research/drafts/2026-06-18-nested-remnant-accept.md`.
+- Tried (Phase 1 Component 2): in `lns_refine`, let nested equal-sheet repacks
+  also be accepted when they increase the consolidated corner remnant
+  (`corner_free_area_units`) without reducing `max_sheet_free_area`, to pull free
+  space out of internal staircase notches.
+- Rigorous A/B (4-seed sweep, nested N35 `cut_quality=max`, `lns.max_window=6`):
+  remnant gain marginal and within noise (`mean_sheet_largest_free_frac` 0.916 vs
+  baseline 0.894, seed spread 0.82–0.94), **but the change regressed sheet count
+  on 2 of 4 seeds** (31 vs 30) — the corner-aware acceptance diverts the LNS off
+  a sheet-drop trajectory. Sheet count is the #1 priority, so this is disqualified.
+- The real finding: at `max_window=6` the **baseline** nested remnant is already
+  at parity with guillotine (mean ~0.894 vs ~0.90). The V72 gap (0.795) was a
+  `max_window=4` artifact — V71's wider window closed both the sheet-count gap and
+  the remnant gap. Component 2 chases an already-closed gap and risks a sheet.
+- Decision: rejected; the `lns_refine` change is reverted (no code shipped). The
+  V72 remnant metric stays. A safer future option (only if remnant is pushed
+  further) is a post-LNS same-sheet-count corner pass that cannot regress sheets;
+  not pursued now (headroom within noise at window=6).

@@ -27,6 +27,8 @@ v59-v61-productionization-a-cut-quality
 v59-v61-productionization-b-async-postprocess
 v70-nested-approach-parity
 v71-nested-aware-lns
+v72-remnant-telemetry
+v73-nested-remnant-accept
 -->
 
 Language: Russian.
@@ -1397,3 +1399,54 @@ V67 conclusions:
 - Остаётся открытым: паритет визуального остатка (nested frag 1.7 против
   guillotine 1.4) — это гипотеза 2 (mode-aware visual/remnant objective), здесь
   не закрывается.
+
+## V72: Честная visual-remnant метрика
+
+- Branch: `feat/remnant-telemetry`; draft:
+  `docs/research/drafts/2026-06-18-remnant-telemetry.md`.
+- Мотив: V70-разрыв по nested мерялся грубым внешним raster-прокси. Построена
+  доверенная in-service метрика, разрыв подтверждён/опровергнут.
+- Существующие метрики кандидата меряют *площадь* свободного, не *связность*:
+  `bbox_void` показывал паритет nested (7.08M vs 6.99M, +1.3%), `corner_free` даже
+  в пользу nested — ни одна не отличает один крупный остаток от множества
+  staircase-щелей той же суммарной площади.
+- Новая `remnant_metrics` (`summary.remnant`): растеризуем каждый лист по сетке
+  20мм, flood-fill пустых ячеек в связные регионы. Поля: `free_fragments`,
+  `largest_free_mm2`, `largest_free_frac`, `mean_sheet_largest_free_frac`.
+  Считается один раз при сборке ответа, gated на `include_svg`; O(cells), без
+  hot-loop стоимости. Unit-тесты (L-форма => 1 фрагмент/frac 1.0; центральная
+  полоса => 2/0.5).
+- Находка — разрыв РЕАЛЕН по связности. N35 `cut_quality=max`: guillotine
+  free_fragments 49 / mean_sheet_largest_free_frac **0.900**; nested 65 /
+  **0.795**. Визуальное подтверждение (самый пустой лист в `ai_docs/tmp`):
+  guillotine = ровные колонки + один L-остаток; nested упаковал *больше* деталей
+  (22 vs 12) с крупным нижним остатком, но с мелкими внутренними staircase-щелями
+  между несовпадающими деталями. Глаз и метрика совпали; `bbox_void` — нет.
+- Вывод: метрика связности исправляет ошибочный «паритет» по `bbox_void` и даёт
+  измеримую цель (`mean_sheet_largest_free_frac`). Failure mode nested —
+  внутренние staircase-щели, не разорванный основной остаток. Это переобосновывает
+  remnant-aware шаг для nested с реальной целью. Метрика mode-agnostic, полезна
+  сама по себе.
+
+## V73: Nested remnant-aware LNS acceptance — отклонён
+
+- Branch: `feat/nested-remnant-accept`; draft:
+  `docs/research/drafts/2026-06-18-nested-remnant-accept.md`.
+- Пробовали (Phase 1 Компонент 2): в `lns_refine` для nested принимать
+  equal-sheet repack, который увеличивает угловой остаток
+  (`corner_free_area_units`), не уменьшая `max_sheet_free_area`, чтобы вытянуть
+  свободное из внутренних staircase-щелей.
+- Строгий A/B (sweep по 4 seed'ам, nested N35 `cut_quality=max`,
+  `lns.max_window=6`): выигрыш по remnant маргинальный и внутри шума
+  (`mean_sheet_largest_free_frac` 0.916 против baseline 0.894, разброс 0.82–0.94),
+  **но регресс по листам на 2 из 4 seed'ов** (31 против 30) — corner-aware приёмка
+  уводит LNS с траектории сброса листа. Листы — приоритет №1, поэтому
+  дисквалификация.
+- Реальная находка: при `max_window=6` **baseline** nested уже на паритете с
+  guillotine (mean ~0.894 против ~0.90). Разрыв V72 (0.795) был артефактом
+  `max_window=4` — широкое окно V71 закрыло и разрыв по листам, и по остатку.
+  Component 2 гоняется за уже закрытым разрывом и рискует листом.
+- Решение: отклонён; правка `lns_refine` откачена (код не шипнут). Метрика V72
+  остаётся. Безопасный будущий вариант (если remnant понадобится двигать дальше) —
+  post-LNS проход только same-sheet-count угловыми ходами, который по построению
+  не регрессит листы; сейчас не делаем (headroom в пределах шума при window=6).

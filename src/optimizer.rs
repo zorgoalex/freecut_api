@@ -15,8 +15,8 @@ use crate::models::{
     ConsolidateTelemetry, CutQuality, Engine, ErrorResponse, GaOverrideParams, GaProfile,
     GroupShiftTelemetry, LayoutMode, Objective, OptimizeRequest, OptimizeResponse, Params,
     PartitionTelemetry, PatternDirection, Placement, PortfolioTelemetry, ProfilePoolPreset,
-    ProfilePoolTelemetry, RestartPolicyTelemetry, RetryStrategy, RetryTelemetry, SlaProfile,
-    Solution, Summary, Trim, UnplacedItem,
+    ProfilePoolTelemetry, RemnantTelemetry, RestartPolicyTelemetry, RetryStrategy, RetryTelemetry,
+    SlaProfile, Solution, Summary, Trim, UnplacedItem,
 };
 use crate::validation::item_fits_any_stock_public;
 
@@ -310,6 +310,7 @@ async fn optimize_request_internal(
                     corridor_opportunity_delta_mm2: 0.0,
                     max_shift_mm: 0.0,
                 }),
+                remnant: None,
             },
             solutions: vec![],
             unplaced_items: prepared.oversized_items,
@@ -463,6 +464,117 @@ async fn optimize_request_internal(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// V72: honest visual-remnant metric. Rasterizes each used sheet's usable area
+/// on a `grid_mm` grid, marks cells covered by any placement, and flood-fills
+/// the empty cells into connected regions (4-neighbour). Reports, across all
+/// used sheets: the total number of free regions, the single largest connected
+/// free region (mm2 and as a fraction of all free area), and the mean per-sheet
+/// largest-free fraction. Unlike `bbox_void` this measures *connectivity* — it
+/// distinguishes one big reusable offcut from many staircase notches of the same
+/// total area. O(cells); called once at response build, never in the hot loop.
+const REMNANT_GRID_MM: f64 = 20.0;
+
+fn remnant_metrics(solutions: &[Solution], grid_mm: f64) -> RemnantTelemetry {
+    let cell_area = grid_mm * grid_mm;
+    let mut free_fragments: u32 = 0;
+    let mut total_free_cells: u64 = 0;
+    let mut global_largest_cells: u64 = 0;
+    let mut sheet_frac_sum = 0.0_f64;
+    let mut sheets_counted: u32 = 0;
+
+    for sol in solutions {
+        if sol.placements.is_empty() {
+            continue;
+        }
+        let x0 = sol.trim_mm.left;
+        let y0 = sol.trim_mm.bottom;
+        let uw = sol.width_mm - sol.trim_mm.left - sol.trim_mm.right;
+        let uh = sol.height_mm - sol.trim_mm.top - sol.trim_mm.bottom;
+        if uw <= 0.0 || uh <= 0.0 {
+            continue;
+        }
+        let nx = ((uw / grid_mm) as usize).max(1);
+        let ny = ((uh / grid_mm) as usize).max(1);
+        let mut occ = vec![false; nx * ny];
+        for p in &sol.placements {
+            let px0 = ((p.x_mm - x0) / grid_mm).floor().max(0.0) as usize;
+            let py0 = ((p.y_mm - y0) / grid_mm).floor().max(0.0) as usize;
+            let px1 = (((p.x_mm + p.width_mm - x0) / grid_mm).ceil() as usize).min(nx);
+            let py1 = (((p.y_mm + p.height_mm - y0) / grid_mm).ceil() as usize).min(ny);
+            for gy in py0..py1 {
+                for gx in px0..px1 {
+                    occ[gy * nx + gx] = true;
+                }
+            }
+        }
+
+        // Flood-fill empty cells into connected regions.
+        let mut seen = vec![false; nx * ny];
+        let mut sheet_free_cells: u64 = 0;
+        let mut sheet_largest: u64 = 0;
+        let mut stack: Vec<usize> = Vec::new();
+        for start in 0..nx * ny {
+            if occ[start] || seen[start] {
+                continue;
+            }
+            free_fragments += 1;
+            seen[start] = true;
+            stack.push(start);
+            let mut size: u64 = 0;
+            while let Some(c) = stack.pop() {
+                size += 1;
+                let cy = c / nx;
+                let cx = c % nx;
+                let mut push = |idx: usize, seen: &mut [bool], stack: &mut Vec<usize>| {
+                    if !occ[idx] && !seen[idx] {
+                        seen[idx] = true;
+                        stack.push(idx);
+                    }
+                };
+                if cx + 1 < nx {
+                    push(c + 1, &mut seen, &mut stack);
+                }
+                if cx > 0 {
+                    push(c - 1, &mut seen, &mut stack);
+                }
+                if cy + 1 < ny {
+                    push(c + nx, &mut seen, &mut stack);
+                }
+                if cy > 0 {
+                    push(c - nx, &mut seen, &mut stack);
+                }
+            }
+            sheet_free_cells += size;
+            sheet_largest = sheet_largest.max(size);
+            global_largest_cells = global_largest_cells.max(size);
+        }
+
+        total_free_cells += sheet_free_cells;
+        if sheet_free_cells > 0 {
+            sheet_frac_sum += sheet_largest as f64 / sheet_free_cells as f64;
+            sheets_counted += 1;
+        }
+    }
+
+    let largest_free_frac = if total_free_cells > 0 {
+        global_largest_cells as f64 / total_free_cells as f64
+    } else {
+        0.0
+    };
+    let mean_sheet_largest_free_frac = if sheets_counted > 0 {
+        sheet_frac_sum / sheets_counted as f64
+    } else {
+        0.0
+    };
+    RemnantTelemetry {
+        grid_mm,
+        free_fragments,
+        largest_free_mm2: global_largest_cells as f64 * cell_area,
+        largest_free_frac,
+        mean_sheet_largest_free_frac,
+    }
+}
+
 fn build_response_from_outcome(
     req: &OptimizeRequest,
     prepared: &PreparedInput,
@@ -502,6 +614,11 @@ fn build_response_from_outcome(
     let (used_stock_count, total_stock_area, total_waste_area) =
         calculate_solution_stats(&solutions);
 
+    // V72: visual-remnant metric, computed on the final (post-group-shift)
+    // geometry. Gated on include_svg to avoid taxing the latency-sensitive
+    // include_svg=false path.
+    let remnant = include_svg.then(|| remnant_metrics(&solutions, REMNANT_GRID_MM));
+
     let summary = Summary {
         objective: req.params.objective,
         used_stock_count,
@@ -527,6 +644,7 @@ fn build_response_from_outcome(
         partition,
         group_shift,
         consolidate: run_outcome.consolidate,
+        remnant,
     };
 
     let svg = if include_svg {
@@ -6498,6 +6616,7 @@ mod tests {
                     partition: None,
                     group_shift: None,
                     consolidate: None,
+                    remnant: None,
                 },
                 solutions: Vec::new(),
                 unplaced_items: Vec::new(),
@@ -7007,5 +7126,70 @@ mod tests {
                 "cut_quality must not enable LNS for engine={engine:?}"
             );
         }
+    }
+
+    fn remnant_solution(width_mm: f64, height_mm: f64, parts: &[(f64, f64, f64, f64)]) -> Solution {
+        Solution {
+            stock_id: "s".to_string(),
+            index: 0,
+            width_mm,
+            height_mm,
+            trim_mm: Trim {
+                left: 0.0,
+                right: 0.0,
+                top: 0.0,
+                bottom: 0.0,
+            },
+            placements: parts
+                .iter()
+                .map(|&(x, y, w, h)| Placement {
+                    item_id: "p".to_string(),
+                    instance: 1,
+                    x_mm: x,
+                    y_mm: y,
+                    width_mm: w,
+                    height_mm: h,
+                    rotated: false,
+                    pattern_direction: PatternDirection::None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn remnant_metric_single_connected_offcut() {
+        // 100x100 sheet, one 60x60 part in the corner -> the free space is one
+        // connected L-shaped region: 1 fragment, largest-free fraction 1.0.
+        let sol = remnant_solution(100.0, 100.0, &[(0.0, 0.0, 60.0, 60.0)]);
+        let m = remnant_metrics(std::slice::from_ref(&sol), 20.0);
+        assert_eq!(m.free_fragments, 1, "L-shaped free space is one region");
+        assert!(
+            (m.largest_free_frac - 1.0).abs() < 1e-9,
+            "all free space is the single largest region"
+        );
+        assert!(m.largest_free_mm2 > 0.0);
+    }
+
+    #[test]
+    fn remnant_metric_splits_into_two_fragments() {
+        // 100x100 sheet, a full-height bar at x in [40,60] splits the free space
+        // into a left and a right region of equal size: 2 fragments, frac 0.5.
+        let sol = remnant_solution(100.0, 100.0, &[(40.0, 0.0, 20.0, 100.0)]);
+        let m = remnant_metrics(std::slice::from_ref(&sol), 20.0);
+        assert_eq!(
+            m.free_fragments, 2,
+            "a central bar splits free space in two"
+        );
+        assert!(
+            (m.largest_free_frac - 0.5).abs() < 1e-9,
+            "the two free regions are equal, so the largest is half"
+        );
+    }
+
+    #[test]
+    fn remnant_metric_empty_layout_is_safe() {
+        let m = remnant_metrics(&[], 20.0);
+        assert_eq!(m.free_fragments, 0);
+        assert_eq!(m.largest_free_frac, 0.0);
     }
 }
