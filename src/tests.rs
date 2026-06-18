@@ -1268,6 +1268,26 @@ async fn optimize_accepts_group_shift_and_reports_telemetry() {
         .get("corridor_opportunity_delta_mm2")
         .and_then(Value::as_f64)
         .is_some());
+    assert!(group_shift
+        .get("quality_guard_rejections")
+        .and_then(Value::as_u64)
+        .is_some());
+    assert!(group_shift
+        .get("quality_score_before")
+        .and_then(Value::as_f64)
+        .is_some());
+    assert!(group_shift
+        .get("quality_score_after")
+        .and_then(Value::as_f64)
+        .is_some());
+    assert!(group_shift
+        .get("topology_score_delta")
+        .and_then(Value::as_f64)
+        .is_some());
+    assert!(group_shift
+        .get("part_contact_delta_mm")
+        .and_then(Value::as_f64)
+        .is_some());
 }
 
 #[tokio::test]

@@ -754,10 +754,20 @@ When `params.group_shift.enabled=true`, response may include:
   "enabled": true,
   "time_ms": 0,
   "moves_applied": 4,
+  "quality_guard_rejections": 2,
   "parts_moved": 6,
   "passes_run": 4,
   "corridor_closed_area_mm2": 248360.0,
   "contact_gain_mm": 1293.5,
+  "quality_score_before": 1.0521,
+  "quality_score_after": 1.0545,
+  "quality_score_delta": 0.0024,
+  "topology_score_before": 0.9840,
+  "topology_score_after": 0.9840,
+  "topology_score_delta": 0.0,
+  "part_contact_before_mm": 12540.0,
+  "part_contact_after_mm": 13657.0,
+  "part_contact_delta_mm": 1117.0,
   "corridor_opportunity_before_mm2": 248360.0,
   "corridor_opportunity_after_mm2": 0.0,
   "corridor_opportunity_delta_mm2": 197960.0,
@@ -768,8 +778,12 @@ When `params.group_shift.enabled=true`, response may include:
 Important fields:
 
 - `moves_applied`: accepted group shifts.
+- `quality_guard_rejections`: geometrically valid candidate shifts rejected because they would not improve paired remnant/contact quality.
 - `parts_moved`: total moved parts.
 - `contact_gain_mm`: additional edge contact created toward anchor clusters.
+- `quality_score_delta`: paired visual-quality delta after the post-process. It combines remnant topology with total part-contact ratio.
+- `topology_score_delta`: free-space topology delta. Negative values mean the usable remnant became more fragmented/peripheral quality regressed.
+- `part_contact_delta_mm`: total additional adjacency length between all parts at `kerf_mm + spacing_mm` clearance.
 - `corridor_closed_area_mm2`: closed/shifted corridor area.
 - `corridor_opportunity_after_mm2`: remaining detected group-shift opportunity.
 

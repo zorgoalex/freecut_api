@@ -26,6 +26,7 @@ v67-ladder-benchmark
 v59-v61-productionization-a-cut-quality
 v59-v61-productionization-b-async-postprocess
 v70-group-shift-remnant-audit
+v71-guarded-group-shift-metrics
 -->
 
 Language: Russian.
@@ -1361,3 +1362,37 @@ chain-shift без paired acceptance guard небезопасен: passes 4/8 у
 Следующая ветка должна реализовать guarded `group_shift`: применять одиночный
 или групповой сдвиг только если paired `remnant_score` улучшается, с hard guard
 против потери `topology_score`.
+
+## V71: guarded group_shift metrics
+
+- Ветка: `feat/v71-guarded-group-shift-metrics`; черновик:
+  `docs/research/drafts/2026-06-18-v71-guarded-group-shift-metrics.md`.
+- Изменение кода: V70 paired quality metric перенесена внутрь actual
+  `group_shift` candidate guard.
+- Guard formula:
+  - `topology_score_after >= topology_score_before`;
+  - `part_contact_mm_after > part_contact_mm_before`;
+  - combined score улучшается, где score =
+    `topology_score + 0.25 * part_contact_ratio`.
+- В `summary.group_shift` добавлена telemetry:
+  `quality_guard_rejections`, `quality_score_*`, `topology_score_*`,
+  `part_contact_*_mm`.
+- Tests: `cargo test group_shift -- --test-threads=1` passed (11 tests);
+  `cargo test optimize_accepts_group_shift_and_reports_telemetry -- --test-threads=1`
+  passed.
+
+Сравнение на том же 12-seed fixture:
+
+| run | moved | improved | worsened | moves | parts | rejected | delta score | delta topology | delta contact |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| V70 pass4 | 11 | 9 | 2 | 28 | 38 | n/a | -0.0083389 | -0.0235249 | +7231mm |
+| V70 pass8 | 11 | 9 | 2 | 29 | 39 | n/a | -0.0074568 | -0.0235249 | +7651mm |
+| V71 pass4 | 11 | 11 | 0 | 25 | 35 | 9 | +0.0185736 | 0 | +8844mm |
+| V71 pass8 | 11 | 11 | 0 | 25 | 35 | 9 | +0.0185736 | 0 | +8844mm |
+
+Вывод: V71 подтверждает направление group_shift и закрывает главный риск V70.
+Guard убрал наблюдавшиеся topology regressions, сохранив и даже увеличив
+суммарный прирост контакта деталей. Практическая настройка остаётся
+`max_passes=4`; pass8 после reject unsafe candidates дал тот же итог. Следующий
+шаг — расширять candidate generation вокруг периметра anchor-группы, но V71
+guard должен оставаться обязательным.
