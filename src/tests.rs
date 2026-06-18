@@ -705,6 +705,65 @@ async fn optimize_consolidate_never_regresses_and_preserves_parts() {
 }
 
 #[tokio::test]
+async fn optimize_lns_never_regresses_and_preserves_parts() {
+    // V61: the anytime-LNS polish is monotone in sheet count (a window repack
+    // never produces more sheets than it consumed) and must not drop any parts.
+    async fn run_heuristic(lns: bool) -> Value {
+        let app = app_for_test();
+        let mut json: Value = serde_json::from_str(MULTISHEET_OVERSIZED_REQUEST).unwrap();
+        if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+            params.insert("include_svg".to_string(), Value::Bool(false));
+            params.insert("engine".to_string(), Value::from("heuristic"));
+            params.insert("time_limit_ms".to_string(), Value::from(3000));
+            params.remove("portfolio");
+            params.remove("beam");
+            params.remove("alns");
+            if lns {
+                params.insert(
+                    "lns".to_string(),
+                    serde_json::json!({ "enabled": true, "max_window": 4, "max_iters": 300 }),
+                );
+            }
+        }
+        let body = serde_json::to_string(&json).unwrap();
+        let (status, resp) = post_json(&app, "/v1/optimize", &body).await;
+        assert_eq!(status, StatusCode::OK, "body: {resp}");
+        resp
+    }
+
+    let base = run_heuristic(false).await;
+    let polished = run_heuristic(true).await;
+
+    let base_sheets = base
+        .pointer("/summary/used_stock_count")
+        .and_then(Value::as_u64)
+        .unwrap();
+    let lns_sheets = polished
+        .pointer("/summary/used_stock_count")
+        .and_then(Value::as_u64)
+        .unwrap();
+    assert!(
+        lns_sheets <= base_sheets,
+        "LNS must never use more sheets ({lns_sheets} > {base_sheets})"
+    );
+
+    let base_unplaced = base
+        .pointer("/unplaced_items")
+        .and_then(Value::as_array)
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let lns_unplaced = polished
+        .pointer("/unplaced_items")
+        .and_then(Value::as_array)
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert_eq!(
+        base_unplaced, lns_unplaced,
+        "LNS must not change the number of unplaced items"
+    );
+}
+
+#[tokio::test]
 async fn optimize_standard_includes_restart_policy_telemetry() {
     let app = app_for_test();
     let mut json: Value = serde_json::from_str(MULTISHEET_OVERSIZED_REQUEST).unwrap();

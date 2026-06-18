@@ -2799,6 +2799,131 @@ fn consolidate_underfull_sheets(
     (candidate, tel)
 }
 
+#[derive(Clone, Copy)]
+struct LnsConfig {
+    max_iters: u32,
+    max_window: usize,
+    window_ga_ms: u64,
+}
+
+fn resolve_lns_config(req: &OptimizeRequest) -> Option<LnsConfig> {
+    let params = req.params.lns.as_ref()?;
+    if !params.enabled.unwrap_or(true) {
+        return None;
+    }
+    Some(LnsConfig {
+        max_iters: params.max_iters.unwrap_or(2000).clamp(1, 200_000),
+        max_window: params.max_window.unwrap_or(4).clamp(2, 8) as usize,
+        window_ga_ms: params.window_ga_ms.unwrap_or(0),
+    })
+}
+
+/// Largest single-sheet free area in a layout (capacity - placed area on the
+/// emptiest sheet). The LNS lateral-move objective: concentrating free area
+/// onto one sheet makes that sheet the next one a window can drain entirely.
+fn max_sheet_free_area(solution: &cut_optimizer_2d::Solution) -> u128 {
+    solution
+        .stock_pieces
+        .iter()
+        .map(|s| {
+            let cap = s.width as u128 * s.length as u128;
+            cap.saturating_sub(sheet_used_area(s))
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Tiny deterministic xorshift64 PRNG (avoids pulling `rand` into this crate).
+/// Seed must be non-zero.
+fn xorshift64(state: &mut u64) -> u64 {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    *state = x;
+    x
+}
+
+/// V61: anytime Large-Neighborhood-Search polish. Each iteration destroys a
+/// stochastic window of sheets (always including the emptiest) and repacks it.
+/// A repack that uses strictly fewer sheets is always taken; a same-sheet repack
+/// is taken when it increases the largest single-sheet free area (a lateral move
+/// that concentrates slack so a later window can drop a whole sheet). Because a
+/// window repack never produces more sheets than it consumed, sheet count is
+/// monotonically non-increasing — the polish can never regress. Deadline-bounded.
+fn lns_refine(
+    mut candidate: Candidate,
+    prepared: &PreparedInput,
+    layout_mode: LayoutMode,
+    cfg: LnsConfig,
+    base_seed: u64,
+    kerf_gap_units: usize,
+    deadline_ms: u64,
+) -> Candidate {
+    let started = Instant::now();
+    let mut rng = base_seed | 1; // xorshift needs a non-zero seed
+    let mut cur_free = max_sheet_free_area(&candidate.solution);
+
+    for _ in 0..cfg.max_iters {
+        if started.elapsed().as_millis() as u64 >= deadline_ms {
+            break;
+        }
+        let n = candidate.solution.stock_pieces.len();
+        if n < 2 {
+            break;
+        }
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by_key(|&i| sheet_used_area(&candidate.solution.stock_pieces[i]));
+
+        // Window = the emptiest sheet + (k-1) sheets sampled from the M least-full
+        // others. Randomized so successive iterations explore different
+        // neighborhoods instead of repeating the one greedy window.
+        let max_k = cfg.max_window.min(n);
+        let k = 2 + (xorshift64(&mut rng) as usize % (max_k - 1).max(1));
+        let m = n.min(12);
+        let mut window = vec![order[0]];
+        let mut pool: Vec<usize> = order[1..m].to_vec();
+        while window.len() < k && !pool.is_empty() {
+            let idx = (xorshift64(&mut rng) as usize) % pool.len();
+            window.push(pool.swap_remove(idx));
+        }
+        if window.len() < 2 {
+            continue;
+        }
+        let kk = window.len();
+        let seed = base_seed.wrapping_add(xorshift64(&mut rng));
+        // Repack into at most kk sheets: try_repack_window returns the
+        // fewest-sheet packing, so this yields either an improvement (< kk) or a
+        // same-count redistribution (== kk).
+        let Some(new_sheets) = try_repack_window(
+            &candidate.solution.stock_pieces,
+            &window,
+            kk,
+            prepared,
+            layout_mode,
+            seed,
+            cfg.window_ga_ms,
+        ) else {
+            continue;
+        };
+        let mut spliced = splice_window(&candidate.solution, &window, new_sheets);
+        compact_solution(&mut spliced, kerf_gap_units);
+        let cand2 = build_candidate(spliced);
+        if cand2.used_stock_count < candidate.used_stock_count {
+            candidate = cand2;
+            cur_free = max_sheet_free_area(&candidate.solution);
+        } else if cand2.used_stock_count == candidate.used_stock_count {
+            let free2 = max_sheet_free_area(&cand2.solution);
+            if free2 > cur_free {
+                candidate = cand2;
+                cur_free = free2;
+            }
+        }
+    }
+
+    candidate
+}
+
 async fn run_restarts_with_budget(
     req: &OptimizeRequest,
     prepared: &PreparedInput,
@@ -2895,6 +3020,21 @@ async fn run_restarts_with_budget(
                     (cand, Some(tel))
                 }
                 None => (best, None),
+            };
+            // V61: optional anytime-LNS polish on top of consolidation. Spends
+            // any remaining budget on randomized destroy/repair with lateral
+            // moves to escape the greedy consolidation local optimum.
+            let best = match resolve_lns_config(req) {
+                Some(lcfg) => lns_refine(
+                    best,
+                    prepared,
+                    layout_mode,
+                    lcfg,
+                    base_seed,
+                    kerf_gap_units,
+                    total_budget_ms,
+                ),
+                None => best,
             };
             let candidate_selection = Some(build_candidate_selection_telemetry(
                 &selection_counters,
