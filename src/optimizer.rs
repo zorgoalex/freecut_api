@@ -12,11 +12,11 @@ use cut_optimizer_2d::{
 use crate::config::AppConfig;
 use crate::models::{
     AlnsOperatorTelemetry, AlnsTelemetry, Artifacts, BeamTelemetry, CandidateSelectionTelemetry,
-    ConsolidateTelemetry, Engine, ErrorResponse, GaOverrideParams, GaProfile, GroupShiftTelemetry,
-    LayoutMode, Objective, OptimizeRequest, OptimizeResponse, Params, PartitionTelemetry,
-    PatternDirection, Placement, PortfolioTelemetry, ProfilePoolPreset, ProfilePoolTelemetry,
-    RestartPolicyTelemetry, RetryStrategy, RetryTelemetry, SlaProfile, Solution, Summary, Trim,
-    UnplacedItem,
+    ConsolidateTelemetry, CutQuality, Engine, ErrorResponse, GaOverrideParams, GaProfile,
+    GroupShiftTelemetry, LayoutMode, Objective, OptimizeRequest, OptimizeResponse, Params,
+    PartitionTelemetry, PatternDirection, Placement, PortfolioTelemetry, ProfilePoolPreset,
+    ProfilePoolTelemetry, RestartPolicyTelemetry, RetryStrategy, RetryTelemetry, SlaProfile,
+    Solution, Summary, Trim, UnplacedItem,
 };
 use crate::validation::item_fits_any_stock_public;
 
@@ -2539,16 +2539,35 @@ struct ConsolidateConfig {
     window_ga_ms: u64,
 }
 
+/// V59/V62: resolve the effective consolidation config. Precedence:
+///   1. An explicit `params.consolidate` object always wins (caller hand-tune,
+///      including `enabled:false` to force consolidation off under any profile).
+///   2. Otherwise the `cut_quality` profile expands: `balanced`/`max` enable a
+///      default consolidation, `fast` (and absent) leave it off.
+/// The profile only applies to `engine=heuristic`, where the post-processors
+/// run; for `engine=ga` it is ignored so the GA path is never silently altered.
 fn resolve_consolidate_config(req: &OptimizeRequest) -> Option<ConsolidateConfig> {
-    let params = req.params.consolidate.as_ref()?;
-    if !params.enabled.unwrap_or(true) {
+    if let Some(params) = req.params.consolidate.as_ref() {
+        if !params.enabled.unwrap_or(true) {
+            return None;
+        }
+        return Some(ConsolidateConfig {
+            max_window: params.max_window.unwrap_or(3).clamp(2, 6) as usize,
+            max_passes: params.max_passes.unwrap_or(8).max(1),
+            window_ga_ms: params.window_ga_ms.unwrap_or(0),
+        });
+    }
+    if !matches!(req.params.engine, Some(Engine::Heuristic)) {
         return None;
     }
-    Some(ConsolidateConfig {
-        max_window: params.max_window.unwrap_or(3).clamp(2, 6) as usize,
-        max_passes: params.max_passes.unwrap_or(8).max(1),
-        window_ga_ms: params.window_ga_ms.unwrap_or(0),
-    })
+    match req.params.cut_quality {
+        Some(CutQuality::Balanced) | Some(CutQuality::Max) => Some(ConsolidateConfig {
+            max_window: 3,
+            max_passes: 8,
+            window_ga_ms: 0,
+        }),
+        Some(CutQuality::Fast) | None => None,
+    }
 }
 
 /// Raw placed-piece area on a result sheet (no kerf), used to rank sheets by
@@ -2806,16 +2825,33 @@ struct LnsConfig {
     window_ga_ms: u64,
 }
 
+/// V61/V62: resolve the effective LNS config. Precedence mirrors
+/// `resolve_consolidate_config`: an explicit `params.lns` object always wins;
+/// otherwise only `cut_quality=max` enables LNS (with `max_iters=4000`),
+/// `balanced`/`fast`/absent leave it off. Profile applies to
+/// `engine=heuristic` only.
 fn resolve_lns_config(req: &OptimizeRequest) -> Option<LnsConfig> {
-    let params = req.params.lns.as_ref()?;
-    if !params.enabled.unwrap_or(true) {
+    if let Some(params) = req.params.lns.as_ref() {
+        if !params.enabled.unwrap_or(true) {
+            return None;
+        }
+        return Some(LnsConfig {
+            max_iters: params.max_iters.unwrap_or(2000).clamp(1, 200_000),
+            max_window: params.max_window.unwrap_or(4).clamp(2, 8) as usize,
+            window_ga_ms: params.window_ga_ms.unwrap_or(0),
+        });
+    }
+    if !matches!(req.params.engine, Some(Engine::Heuristic)) {
         return None;
     }
-    Some(LnsConfig {
-        max_iters: params.max_iters.unwrap_or(2000).clamp(1, 200_000),
-        max_window: params.max_window.unwrap_or(4).clamp(2, 8) as usize,
-        window_ga_ms: params.window_ga_ms.unwrap_or(0),
-    })
+    match req.params.cut_quality {
+        Some(CutQuality::Max) => Some(LnsConfig {
+            max_iters: 4000,
+            max_window: 4,
+            window_ga_ms: 0,
+        }),
+        Some(CutQuality::Fast) | Some(CutQuality::Balanced) | None => None,
+    }
 }
 
 /// Largest single-sheet free area in a layout (capacity - placed area on the
@@ -6765,5 +6801,127 @@ mod tests {
         let mut rng = 42_u64;
         let idx = choose_operator(&ops, &mut rng);
         assert!(idx < ops.len());
+    }
+
+    /// Build a minimal `OptimizeRequest` whose `params` are merged with
+    /// `params_extra`. Only the fields `resolve_consolidate_config` /
+    /// `resolve_lns_config` read (engine, cut_quality, consolidate, lns) matter
+    /// here; stock/items are empty because resolution never inspects them.
+    fn resolve_test_request(params_extra: serde_json::Value) -> OptimizeRequest {
+        let mut base = serde_json::json!({
+            "units": "mm",
+            "params": {
+                "kerf_mm": 3.0,
+                "spacing_mm": 0.0,
+                "trim_mm": { "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0 },
+                "objective": "min_waste"
+            },
+            "stock": [],
+            "items": []
+        });
+        let params = base
+            .get_mut("params")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap();
+        for (k, v) in params_extra.as_object().unwrap() {
+            params.insert(k.clone(), v.clone());
+        }
+        serde_json::from_value(base).expect("valid optimize request")
+    }
+
+    #[test]
+    fn cut_quality_fast_resolves_to_no_postprocess() {
+        let req = resolve_test_request(serde_json::json!({
+            "engine": "heuristic",
+            "cut_quality": "fast"
+        }));
+        assert!(resolve_consolidate_config(&req).is_none());
+        assert!(resolve_lns_config(&req).is_none());
+    }
+
+    #[test]
+    fn cut_quality_balanced_resolves_to_consolidate_only() {
+        let req = resolve_test_request(serde_json::json!({
+            "engine": "heuristic",
+            "cut_quality": "balanced"
+        }));
+        assert!(
+            resolve_consolidate_config(&req).is_some(),
+            "balanced enables consolidation"
+        );
+        assert!(
+            resolve_lns_config(&req).is_none(),
+            "balanced does not enable LNS"
+        );
+    }
+
+    #[test]
+    fn cut_quality_max_resolves_to_consolidate_and_lns() {
+        let req = resolve_test_request(serde_json::json!({
+            "engine": "heuristic",
+            "cut_quality": "max"
+        }));
+        assert!(resolve_consolidate_config(&req).is_some());
+        let lns = resolve_lns_config(&req).expect("max enables LNS");
+        assert_eq!(lns.max_iters, 4000, "max profile uses max_iters=4000");
+    }
+
+    #[test]
+    fn cut_quality_absent_resolves_to_no_postprocess() {
+        let req = resolve_test_request(serde_json::json!({ "engine": "heuristic" }));
+        assert!(
+            resolve_consolidate_config(&req).is_none(),
+            "no profile => no implicit consolidation"
+        );
+        assert!(resolve_lns_config(&req).is_none());
+    }
+
+    #[test]
+    fn explicit_objects_override_cut_quality_profile() {
+        // fast would disable both, but explicit objects must still win.
+        let req = resolve_test_request(serde_json::json!({
+            "engine": "heuristic",
+            "cut_quality": "fast",
+            "consolidate": { "enabled": true, "max_window": 5 },
+            "lns": { "enabled": true, "max_iters": 123 }
+        }));
+        let cons = resolve_consolidate_config(&req).expect("explicit consolidate wins over fast");
+        assert_eq!(cons.max_window, 5);
+        let lns = resolve_lns_config(&req).expect("explicit lns wins over fast");
+        assert_eq!(lns.max_iters, 123);
+
+        // The inverse: explicit enabled:false disables even under max.
+        let req = resolve_test_request(serde_json::json!({
+            "engine": "heuristic",
+            "cut_quality": "max",
+            "consolidate": { "enabled": false },
+            "lns": { "enabled": false }
+        }));
+        assert!(resolve_consolidate_config(&req).is_none());
+        assert!(resolve_lns_config(&req).is_none());
+    }
+
+    #[test]
+    fn cut_quality_ignored_for_ga_engine() {
+        // engine defaults to ga (absent). cut_quality=max must NOT enable any
+        // post-processor on the GA path.
+        for engine in [serde_json::Value::Null, serde_json::Value::from("ga")] {
+            let mut extra = serde_json::json!({ "cut_quality": "max" });
+            if !engine.is_null() {
+                extra
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("engine".to_string(), engine.clone());
+            }
+            let req = resolve_test_request(extra);
+            assert!(
+                resolve_consolidate_config(&req).is_none(),
+                "cut_quality must not enable consolidation for engine={engine:?}"
+            );
+            assert!(
+                resolve_lns_config(&req).is_none(),
+                "cut_quality must not enable LNS for engine={engine:?}"
+            );
+        }
     }
 }

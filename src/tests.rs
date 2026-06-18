@@ -764,6 +764,92 @@ async fn optimize_lns_never_regresses_and_preserves_parts() {
 }
 
 #[tokio::test]
+async fn cut_quality_profile_expands_and_never_regresses() {
+    // V62: the high-level cut_quality profile drives the same post-processors
+    // through the full request path. Assert: balanced/max attach consolidation
+    // telemetry (so the profile actually expanded), max never uses more sheets
+    // than balanced, the part/unplaced set is preserved, and engine=ga ignores
+    // the profile entirely.
+    async fn run(profile: Option<&str>, engine: &str) -> Value {
+        let app = app_for_test();
+        let mut json: Value = serde_json::from_str(MULTISHEET_OVERSIZED_REQUEST).unwrap();
+        if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+            params.insert("include_svg".to_string(), Value::Bool(false));
+            params.insert("engine".to_string(), Value::from(engine));
+            params.insert("time_limit_ms".to_string(), Value::from(5000));
+            params.remove("portfolio");
+            params.remove("beam");
+            params.remove("alns");
+            if let Some(p) = profile {
+                params.insert("cut_quality".to_string(), Value::from(p));
+            }
+        }
+        let body = serde_json::to_string(&json).unwrap();
+        let (status, resp) = post_json(&app, "/v1/optimize", &body).await;
+        assert_eq!(status, StatusCode::OK, "body: {resp}");
+        resp
+    }
+
+    let sheets = |v: &Value| {
+        v.pointer("/summary/used_stock_count")
+            .and_then(Value::as_u64)
+            .unwrap()
+    };
+    let unplaced = |v: &Value| {
+        v.pointer("/unplaced_items")
+            .and_then(Value::as_array)
+            .map(|a| a.len())
+            .unwrap_or(0)
+    };
+
+    let fast = run(Some("fast"), "heuristic").await;
+    let balanced = run(Some("balanced"), "heuristic").await;
+    let max = run(Some("max"), "heuristic").await;
+
+    // fast == floor only: no consolidation telemetry.
+    assert!(
+        fast.pointer("/summary/consolidate").is_none(),
+        "fast profile must not run consolidation"
+    );
+    // balanced/max expand into consolidation => telemetry present.
+    assert!(
+        balanced.pointer("/summary/consolidate").is_some(),
+        "balanced profile must run consolidation"
+    );
+    assert!(
+        max.pointer("/summary/consolidate").is_some(),
+        "max profile must run consolidation"
+    );
+
+    // Monotone quality ladder + never-regress: each deeper tier uses no more
+    // sheets than the shallower one, and never more than the fast floor.
+    assert!(balanced.is_object() && fast.is_object());
+    assert!(
+        sheets(&balanced) <= sheets(&fast),
+        "balanced ({}) must not exceed fast floor ({})",
+        sheets(&balanced),
+        sheets(&fast)
+    );
+    assert!(
+        sheets(&max) <= sheets(&balanced),
+        "max ({}) must not exceed balanced ({})",
+        sheets(&max),
+        sheets(&balanced)
+    );
+
+    // Post-process never drops parts (unplaced set identical across tiers).
+    assert_eq!(unplaced(&fast), unplaced(&balanced));
+    assert_eq!(unplaced(&fast), unplaced(&max));
+
+    // engine=ga ignores cut_quality: no consolidation telemetry is attached.
+    let ga_max = run(Some("max"), "ga").await;
+    assert!(
+        ga_max.pointer("/summary/consolidate").is_none(),
+        "cut_quality must not enable post-processors on the GA path"
+    );
+}
+
+#[tokio::test]
 async fn optimize_standard_includes_restart_policy_telemetry() {
     let app = app_for_test();
     let mut json: Value = serde_json::from_str(MULTISHEET_OVERSIZED_REQUEST).unwrap();
