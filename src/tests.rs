@@ -621,6 +621,149 @@ async fn optimize_engine_heuristic_skips_ga_and_returns_layout() {
 }
 
 #[tokio::test]
+async fn optimize_consolidate_never_regresses_and_preserves_parts() {
+    // V59: sheet consolidation is a pure post-process. With it enabled the sheet
+    // count must never exceed the un-consolidated baseline, the placed-part set
+    // must be identical (consolidation only re-arranges, never drops parts), and
+    // the telemetry must be self-consistent (saved == before - after).
+    async fn run_heuristic(consolidate: bool) -> Value {
+        let app = app_for_test();
+        let mut json: Value = serde_json::from_str(MULTISHEET_OVERSIZED_REQUEST).unwrap();
+        if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+            params.insert("include_svg".to_string(), Value::Bool(false));
+            params.insert("engine".to_string(), Value::from("heuristic"));
+            params.insert("time_limit_ms".to_string(), Value::from(5000));
+            params.remove("portfolio");
+            params.remove("beam");
+            params.remove("alns");
+            if consolidate {
+                params.insert(
+                    "consolidate".to_string(),
+                    serde_json::json!({ "enabled": true, "max_window": 4 }),
+                );
+            }
+        }
+        let body = serde_json::to_string(&json).unwrap();
+        let (status, resp) = post_json(&app, "/v1/optimize", &body).await;
+        assert_eq!(status, StatusCode::OK, "body: {resp}");
+        resp
+    }
+
+    let base = run_heuristic(false).await;
+    let cons = run_heuristic(true).await;
+
+    let base_sheets = base
+        .pointer("/summary/used_stock_count")
+        .and_then(Value::as_u64)
+        .unwrap();
+    let cons_sheets = cons
+        .pointer("/summary/used_stock_count")
+        .and_then(Value::as_u64)
+        .unwrap();
+    assert!(
+        cons_sheets <= base_sheets,
+        "consolidation must never use more sheets ({cons_sheets} > {base_sheets})"
+    );
+
+    let base_unplaced = base
+        .pointer("/unplaced_items")
+        .and_then(Value::as_array)
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let cons_unplaced = cons
+        .pointer("/unplaced_items")
+        .and_then(Value::as_array)
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert_eq!(
+        base_unplaced, cons_unplaced,
+        "consolidation must not change the number of unplaced items"
+    );
+
+    // Telemetry must be present and self-consistent.
+    let tel = cons
+        .pointer("/summary/consolidate")
+        .expect("consolidate telemetry should be present when enabled");
+    let before = tel
+        .pointer("/sheets_before")
+        .and_then(Value::as_u64)
+        .unwrap();
+    let after = tel
+        .pointer("/sheets_after")
+        .and_then(Value::as_u64)
+        .unwrap();
+    let saved = tel
+        .pointer("/sheets_saved")
+        .and_then(Value::as_u64)
+        .unwrap();
+    assert_eq!(
+        before.saturating_sub(after),
+        saved,
+        "saved == before - after"
+    );
+    assert_eq!(after, cons_sheets, "telemetry sheets_after matches summary");
+}
+
+#[tokio::test]
+async fn optimize_lns_never_regresses_and_preserves_parts() {
+    // V61: the anytime-LNS polish is monotone in sheet count (a window repack
+    // never produces more sheets than it consumed) and must not drop any parts.
+    async fn run_heuristic(lns: bool) -> Value {
+        let app = app_for_test();
+        let mut json: Value = serde_json::from_str(MULTISHEET_OVERSIZED_REQUEST).unwrap();
+        if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+            params.insert("include_svg".to_string(), Value::Bool(false));
+            params.insert("engine".to_string(), Value::from("heuristic"));
+            params.insert("time_limit_ms".to_string(), Value::from(3000));
+            params.remove("portfolio");
+            params.remove("beam");
+            params.remove("alns");
+            if lns {
+                params.insert(
+                    "lns".to_string(),
+                    serde_json::json!({ "enabled": true, "max_window": 4, "max_iters": 300 }),
+                );
+            }
+        }
+        let body = serde_json::to_string(&json).unwrap();
+        let (status, resp) = post_json(&app, "/v1/optimize", &body).await;
+        assert_eq!(status, StatusCode::OK, "body: {resp}");
+        resp
+    }
+
+    let base = run_heuristic(false).await;
+    let polished = run_heuristic(true).await;
+
+    let base_sheets = base
+        .pointer("/summary/used_stock_count")
+        .and_then(Value::as_u64)
+        .unwrap();
+    let lns_sheets = polished
+        .pointer("/summary/used_stock_count")
+        .and_then(Value::as_u64)
+        .unwrap();
+    assert!(
+        lns_sheets <= base_sheets,
+        "LNS must never use more sheets ({lns_sheets} > {base_sheets})"
+    );
+
+    let base_unplaced = base
+        .pointer("/unplaced_items")
+        .and_then(Value::as_array)
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let lns_unplaced = polished
+        .pointer("/unplaced_items")
+        .and_then(Value::as_array)
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert_eq!(
+        base_unplaced, lns_unplaced,
+        "LNS must not change the number of unplaced items"
+    );
+}
+
+#[tokio::test]
 async fn optimize_standard_includes_restart_policy_telemetry() {
     let app = app_for_test();
     let mut json: Value = serde_json::from_str(MULTISHEET_OVERSIZED_REQUEST).unwrap();

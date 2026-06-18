@@ -160,6 +160,12 @@ impl Bin for GuillotineBin {
         util.powf(2.0) * zone_factor * fill_factor
     }
 
+    fn used_area(&self) -> u64 {
+        self.cut_pieces.iter().fold(0u64, |acc, p| {
+            acc + p.rect.width as u64 * p.rect.length as u64
+        })
+    }
+
     fn price(&self) -> usize {
         self.price
     }
