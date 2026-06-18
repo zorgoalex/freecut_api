@@ -1251,3 +1251,26 @@ V67 conclusions:
 - This confirms the portfolio direction, but 50-sheet production quality needs
   more than short PackingSolver runs: high-quality mode + constructive seeds +
   compact/group-shift scoring + possibly longer/offline budgets.
+
+V59/V61 productionization B — async-safe + bounded post-process (2026-06-18):
+
+- Branch `feat/freecut-async-postprocess`; draft
+  `docs/research/drafts/2026-06-18-async-postprocess.md`.
+- Moves the synchronous consolidate+lns post-process off the async runtime
+  thread into `tokio::task::spawn_blocking` (mirroring the GA restarts). Deep
+  (`lns`) requests previously blocked a tokio worker for the whole deadline.
+- Concurrency decision (a): the request already holds its `optimize_semaphore`
+  permit for its full lifetime, so deep jobs stay bounded by
+  `MAX_CONCURRENT_OPTIMIZE`; no separate deep cap needed.
+- Prod profile (1.5cpu/512m, `MAX_CONCURRENT_OPTIMIZE=2`), 2 concurrent deep
+  N50 jobs while polling `/health/ready`:
+  - inline (`main`):  health p95 **3964ms**, max timeout, **2 timeouts**; the
+    two deep jobs occupy both async workers and serialize (~26.5s wall).
+  - spawn_blocking:   health p95 **7.8ms**, max 124.9ms, **0 timeouts** (~12.5s).
+  - identical results both ways (N50 = **43 sheets**, deterministic); the move
+    is execution-context only.
+- Deep-mode true cost on prod profile: N50 `max_iters=4000` ≈ **13.1s** wall
+  (1.5cpu) vs the ~2-3s quoted on the 3-cpu dev box — keep
+  `MAX_CONCURRENT_OPTIMIZE` small in prod.
+- Companion productionization A (`cut_quality` profile) is tracked on branch
+  `feat/freecut-quality-profile` with its own canonical-log entry.
