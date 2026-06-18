@@ -67,6 +67,29 @@ pub struct Params {
     /// Optional post-process compaction that shifts peripheral side groups
     /// toward the denser anchor cluster after optimization.
     pub group_shift: Option<GroupShiftParams>,
+    /// V59: optional post-process that consolidates under-full sheets. It pools
+    /// the parts of the K least-full sheets and tries to repack them into K-1
+    /// sheets; on success the sheet count drops by one. Iterates until no window
+    /// improves or the pass budget is exhausted. Aimed at large `engine=heuristic`
+    /// jobs that ride the construction floor, where the GA never converges.
+    pub consolidate: Option<ConsolidateParams>,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
+pub struct ConsolidateParams {
+    /// Enable sheet consolidation. Optional, defaults to true when the
+    /// `consolidate` object is provided.
+    pub enabled: Option<bool>,
+    /// Largest window of least-full sheets to pool and try to repack into one
+    /// fewer sheet. Optional, defaults to 3 (try 2->1 and 3->2). Clamped to 2..=6.
+    pub max_window: Option<u32>,
+    /// Maximum number of full consolidation passes over the layout. Optional,
+    /// defaults to 8. Each pass that saves a sheet restarts the scan.
+    pub max_passes: Option<u32>,
+    /// Per-window GA budget (ms) used to repack a pooled window when the
+    /// instant multi-heuristic FFD cannot hit the target sheet count. Optional,
+    /// defaults to 0 (FFD only — no per-window GA).
+    pub window_ga_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
@@ -354,6 +377,28 @@ pub struct Summary {
     /// `params.group_shift` is enabled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group_shift: Option<GroupShiftTelemetry>,
+    /// V59 sheet-consolidation telemetry. Populated when `params.consolidate`
+    /// is enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consolidate: Option<ConsolidateTelemetry>,
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone, Default)]
+pub struct ConsolidateTelemetry {
+    /// Sheets used before consolidation.
+    pub sheets_before: u32,
+    /// Sheets used after consolidation.
+    pub sheets_after: u32,
+    /// Net sheets removed (`sheets_before - sheets_after`).
+    pub sheets_saved: u32,
+    /// Number of candidate windows evaluated.
+    pub windows_tried: u32,
+    /// Number of windows that successfully consolidated.
+    pub windows_accepted: u32,
+    /// Number of full passes executed.
+    pub passes: u32,
+    /// Wall time spent in consolidation (ms).
+    pub time_ms: u64,
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
