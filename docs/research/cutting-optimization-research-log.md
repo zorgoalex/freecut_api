@@ -1251,3 +1251,21 @@ V67 conclusions:
 - This confirms the portfolio direction, but 50-sheet production quality needs
   more than short PackingSolver runs: high-quality mode + constructive seeds +
   compact/group-shift scoring + possibly longer/offline budgets.
+
+V59/V61 productionization A — `cut_quality` profile (2026-06-18):
+
+- Branch `feat/freecut-quality-profile`; draft
+  `docs/research/drafts/2026-06-18-cut-quality-profile.md`.
+- Collapses the low-level `consolidate`/`lns` post-process knobs into one
+  request param `cut_quality: fast | balanced | max` for `engine=heuristic`.
+  `fast`=floor only, `balanced`=consolidate (FFD), `max`=consolidate+lns
+  (`max_iters=4000`). Explicit `consolidate`/`lns` objects override the profile;
+  `engine=ga` ignores it; absent => unchanged behaviour.
+- Pure resolution-layer wrapper over existing V59/V61 — no optimizer-quality
+  change, never-regress contract carries over.
+- Prod profile (1.5cpu/512m) single N50 (524 parts): fast 285ms/45 sheets,
+  balanced 301ms/45 sheets, max 12.9s/43 sheets (-2, waste 13.2%->9.2%).
+  `balanced` matched `fast` on this single instance (no improving consolidation
+  window); the headline consolidation `-11` is grid-aggregate, not per-instance.
+- Companion productionization B (async-safe post-process) is tracked on branch
+  `feat/freecut-async-postprocess` and gets its own canonical-log entry on merge.
