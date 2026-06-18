@@ -7,6 +7,7 @@ use axum::{
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Semaphore;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use utoipa::OpenApi;
@@ -43,6 +44,7 @@ async fn main() {
         default_time_limit_ms = config.default_time_limit_ms,
         default_restarts = config.default_restarts,
         max_concurrent_optimize = config.max_concurrent_optimize,
+        optimize_queue_wait_ms = config.optimize_queue_wait_ms,
         "defaults loaded"
     );
     let app = build_app(config.clone());
@@ -203,17 +205,37 @@ async fn optimize_common(
         return err.into_response();
     }
 
-    let _permit = match state.optimize_semaphore.clone().try_acquire_owned() {
-        Ok(permit) => permit,
-        Err(_) => {
+    // Admission control: acquire one of `max_concurrent_optimize` permits. When
+    // all permits are busy (e.g. several deep `cut_quality=max` jobs saturating
+    // the CPU) the request waits in the queue up to `optimize_queue_wait_ms`
+    // for one to free, instead of being rejected outright — a short burst is
+    // queued rather than failed. Only if the wait is exhausted (or queueing is
+    // disabled with `optimize_queue_wait_ms = 0`) do we return `429 OVERLOADED`.
+    let sem = state.optimize_semaphore.clone();
+    let queue_wait_ms = state.config.optimize_queue_wait_ms;
+    let permit = if queue_wait_ms == 0 {
+        sem.try_acquire_owned().ok()
+    } else {
+        // `acquire_owned` only errors if the semaphore is closed, which never
+        // happens here; a timeout means the queue wait was exhausted.
+        match tokio::time::timeout(Duration::from_millis(queue_wait_ms), sem.acquire_owned()).await
+        {
+            Ok(Ok(permit)) => Some(permit),
+            Ok(Err(_)) | Err(_) => None,
+        }
+    };
+    let _permit = match permit {
+        Some(permit) => permit,
+        None => {
             return (
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(ErrorResponse {
                     status: "error",
                     error_code: "OVERLOADED",
-                    message: "too many concurrent optimize requests".to_string(),
+                    message: "optimize queue is full; try again later".to_string(),
                     details: Some(serde_json::json!({
-                        "max_concurrent_optimize": state.config.max_concurrent_optimize
+                        "max_concurrent_optimize": state.config.max_concurrent_optimize,
+                        "queue_wait_ms": queue_wait_ms
                     })),
                 }),
             )

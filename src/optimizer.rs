@@ -3035,42 +3035,69 @@ async fn run_restarts_with_budget(
     // jobs) cannot converge and would fall back to this same layout anyway.
     if matches!(req.params.engine, Some(Engine::Heuristic)) {
         if let Some(best) = best {
-            // V59: optionally consolidate under-full sheets before returning.
-            // Large heuristic-floor jobs are exactly where freed slack hides on
-            // a few sparse tail sheets that can be repacked into fewer sheets.
-            let (best, consolidate) = match resolve_consolidate_config(req) {
-                Some(cfg) => {
-                    // engine=heuristic short-circuits the GA, leaving the whole
-                    // time budget free for consolidation to spend piercing the
-                    // floor (FFD-only is near-instant; the opt-in per-window GA
-                    // is bounded by this deadline).
-                    let (cand, tel) = consolidate_underfull_sheets(
-                        best,
-                        prepared,
-                        layout_mode,
-                        cfg,
-                        base_seed,
-                        kerf_gap_units,
-                        total_budget_ms,
-                    );
-                    (cand, Some(tel))
+            // V59/V61 post-process: optionally consolidate under-full sheets and
+            // then run the anytime-LNS polish before returning. Large
+            // heuristic-floor jobs are exactly where freed slack hides on a few
+            // sparse tail sheets that can be repacked into fewer sheets, and the
+            // LNS spends any remaining budget on randomized destroy/repair with
+            // lateral moves to escape the greedy consolidation local optimum.
+            let consolidate_cfg = resolve_consolidate_config(req);
+            let lns_cfg = resolve_lns_config(req);
+            // Both post-processors are synchronous and CPU-bound; `lns` (and the
+            // opt-in per-window GA) can run for seconds. Running them inline on
+            // the async worker would block a tokio runtime thread for the whole
+            // deadline, stalling concurrent requests and the health endpoints.
+            // Move the work onto the blocking pool (mirroring the GA restarts,
+            // which already use `spawn_blocking`). The request still holds its
+            // `optimize_semaphore` permit, so total concurrent deep jobs stay
+            // bounded by `MAX_CONCURRENT_OPTIMIZE` (default = cpu count; tuned
+            // small for the 1.5-cpu prod profile). When neither post-processor is
+            // configured we skip the spawn entirely to avoid the clone/dispatch
+            // cost on the common no-post-process path.
+            let (best, consolidate) = if consolidate_cfg.is_some() || lns_cfg.is_some() {
+                // `PreparedInput` is Clone; move owned copies + configs + seeds
+                // into the blocking closure. `Candidate`/`Solution` are `Send`
+                // (the GA path already moves solutions across `spawn_blocking`).
+                let prepared_owned = prepared.clone();
+                let mode = layout_mode;
+                let seed = base_seed;
+                let kerf = kerf_gap_units;
+                let budget = total_budget_ms;
+                let join = tokio::task::spawn_blocking(move || {
+                    let (cand, tel) = match consolidate_cfg {
+                        Some(cfg) => {
+                            let (cand, tel) = consolidate_underfull_sheets(
+                                best,
+                                &prepared_owned,
+                                mode,
+                                cfg,
+                                seed,
+                                kerf,
+                                budget,
+                            );
+                            (cand, Some(tel))
+                        }
+                        None => (best, None),
+                    };
+                    let cand = match lns_cfg {
+                        Some(lcfg) => {
+                            lns_refine(cand, &prepared_owned, mode, lcfg, seed, kerf, budget)
+                        }
+                        None => cand,
+                    };
+                    (cand, tel)
+                })
+                .await;
+                match join {
+                    Ok(pair) => pair,
+                    Err(err) => {
+                        return Err(OptimizeError::Internal(format!(
+                            "heuristic post-process task failed: {err}"
+                        )));
+                    }
                 }
-                None => (best, None),
-            };
-            // V61: optional anytime-LNS polish on top of consolidation. Spends
-            // any remaining budget on randomized destroy/repair with lateral
-            // moves to escape the greedy consolidation local optimum.
-            let best = match resolve_lns_config(req) {
-                Some(lcfg) => lns_refine(
-                    best,
-                    prepared,
-                    layout_mode,
-                    lcfg,
-                    base_seed,
-                    kerf_gap_units,
-                    total_budget_ms,
-                ),
-                None => best,
+            } else {
+                (best, None)
             };
             let candidate_selection = Some(build_candidate_selection_telemetry(
                 &selection_counters,

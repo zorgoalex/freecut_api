@@ -8,6 +8,14 @@ pub struct AppConfig {
     pub default_time_limit_ms: u64,
     pub default_restarts: u32,
     pub max_concurrent_optimize: usize,
+    /// How long an optimize request waits in the admission queue for a
+    /// concurrency permit before giving up with `429 OVERLOADED`. When all
+    /// `max_concurrent_optimize` permits are busy (e.g. several deep
+    /// `cut_quality=max` jobs), the request blocks up to this long instead of
+    /// being rejected immediately, so a short burst is queued rather than
+    /// failed. `0` disables queueing — the request tries once and returns `429`
+    /// at once (the pre-queue behaviour). Default 60000 (60s).
+    pub optimize_queue_wait_ms: u64,
 }
 
 impl AppConfig {
@@ -24,6 +32,7 @@ impl AppConfig {
             default_time_limit_ms: read_env("DEFAULT_TIME_LIMIT_MS", 2_000),
             default_restarts: read_env("DEFAULT_RESTARTS", 10),
             max_concurrent_optimize: read_env("MAX_CONCURRENT_OPTIMIZE", cpu_default),
+            optimize_queue_wait_ms: read_env("OPTIMIZE_QUEUE_WAIT_MS", 60_000),
         }
     }
 }

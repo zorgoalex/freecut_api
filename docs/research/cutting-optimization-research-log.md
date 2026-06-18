@@ -1267,5 +1267,31 @@ V59/V61 productionization A — `cut_quality` profile (2026-06-18):
   balanced 301ms/45 sheets, max 12.9s/43 sheets (-2, waste 13.2%->9.2%).
   `balanced` matched `fast` on this single instance (no improving consolidation
   window); the headline consolidation `-11` is grid-aggregate, not per-instance.
-- Companion productionization B (async-safe post-process) is tracked on branch
-  `feat/freecut-async-postprocess` and gets its own canonical-log entry on merge.
+
+V59/V61 productionization B — async-safe + bounded post-process (2026-06-18):
+
+- Branch `feat/freecut-async-postprocess`; draft
+  `docs/research/drafts/2026-06-18-async-postprocess.md`.
+- Moves the synchronous consolidate+lns post-process off the async runtime
+  thread into `tokio::task::spawn_blocking` (mirroring the GA restarts). Deep
+  (`lns`) requests previously blocked a tokio worker for the whole deadline.
+- Concurrency decision (a): the request already holds its `optimize_semaphore`
+  permit for its full lifetime, so deep jobs stay bounded by
+  `MAX_CONCURRENT_OPTIMIZE`; no separate deep cap needed.
+- Admission queue (soft follow-up): over-cap requests now WAIT for a permit up
+  to `OPTIMIZE_QUEUE_WAIT_MS` (new config, default 60s) instead of an instant
+  `429`; `0` restores the immediate-reject path. Live cap=1: two concurrent deep
+  N30 jobs both return 200 (second waits ~6s), no 429. Chosen over CPU scaling as
+  the cheap reversible step; add CPU later if sustained concurrent deep load
+  needs throughput.
+- Prod profile (1.5cpu/512m, `MAX_CONCURRENT_OPTIMIZE=2`), 2 concurrent deep
+  N50 jobs while polling `/health/ready`:
+  - inline (pre-spawn_blocking):  health p95 **3964ms**, max timeout, **2
+    timeouts**; the two deep jobs occupy both async workers and serialize
+    (~26.5s wall).
+  - spawn_blocking:   health p95 **7.8ms**, max 124.9ms, **0 timeouts** (~12.5s).
+  - identical results both ways (N50 = **43 sheets**, deterministic); the move
+    is execution-context only.
+- Deep-mode true cost on prod profile: N50 `max_iters=4000` ≈ **13.1s** wall
+  (1.5cpu) vs the ~2-3s quoted on the 3-cpu dev box — keep
+  `MAX_CONCURRENT_OPTIMIZE` small in prod.
