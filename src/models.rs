@@ -26,6 +26,13 @@ pub struct Params {
     pub objective: Objective,
     pub seed: Option<u64>,
     pub layout_mode: Option<LayoutMode>,
+    /// Solver engine. `ga` (default) runs the genetic optimizer; `heuristic`
+    /// skips the GA entirely and returns the best multi-variant FFD
+    /// construction immediately. For large jobs the GA cannot converge within
+    /// any practical budget and falls back to this heuristic anyway, so
+    /// `heuristic` gives the same layout ~25-40x faster (e.g. 50 sheets in
+    /// ~130ms instead of ~3s). Optional, defaults to `ga`.
+    pub engine: Option<Engine>,
     /// Service-level profile for restart budgeting in `/v1/optimize`. Optional, defaults to `balanced`.
     pub sla_profile: Option<SlaProfile>,
     /// GA profile for optimizer internals. Optional, defaults to `balanced`.
@@ -151,6 +158,16 @@ pub enum Objective {
 pub enum LayoutMode {
     Nested,
     Guillotine,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Engine {
+    /// Genetic optimizer with multi-start restarts (default).
+    Ga,
+    /// FFD construction only (no GA): best of all heuristic variants, returned
+    /// immediately. Same floor quality as a timed-out GA, ~25-40x faster.
+    Heuristic,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]

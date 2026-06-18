@@ -530,7 +530,12 @@ async fn optimize_alns_supports_multisheet_oversized() {
 }
 
 #[tokio::test]
-async fn optimize_multisheet_restarts_4_uses_timeout_rescue() {
+async fn optimize_multisheet_restarts_4_returns_best_partial_on_timeout() {
+    // V55/H1: when every GA restart slice times out, the synchronous FFD
+    // heuristic seed guarantees a valid partial layout is returned (200 +
+    // timeout_reason) instead of a 408. Previously this exercised the
+    // timeout-rescue path; the heuristic seed now supersedes it, so the result
+    // can come back with zero completed GA restarts but still a usable layout.
     let app = app_for_test();
     let mut json: Value = serde_json::from_str(MULTISHEET_OVERSIZED_REQUEST).unwrap();
     if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
@@ -544,20 +549,19 @@ async fn optimize_multisheet_restarts_4_uses_timeout_rescue() {
     }
     let body = serde_json::to_string(&json).unwrap();
     let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    // H1 contract: always a 200 with a usable layout, regardless of whether the
+    // GA converged or every slice timed out. Whether timeout_reason is set is
+    // machine-speed dependent (this fixture is small enough that the GA may
+    // finish on fast hardware), so we do NOT assert a specific timeout marker.
     assert_eq!(status, StatusCode::OK, "body: {json}");
-    assert_eq!(
-        json.pointer("/summary/timeout_reason")
-            .and_then(Value::as_str),
-        Some("slice_timeout"),
-        "expected timeout rescue path marker, body: {json}"
-    );
-    let restarts_used = json
-        .pointer("/summary/restarts_used")
-        .and_then(Value::as_u64)
+    let solutions = json
+        .pointer("/solutions")
+        .and_then(Value::as_array)
+        .map(|s| s.len())
         .unwrap_or(0);
     assert!(
-        restarts_used >= 1,
-        "expected at least one successful restart after rescue, body: {json}"
+        solutions >= 1,
+        "expected a usable layout (heuristic seed guarantees one), body: {json}"
     );
 }
 
@@ -577,6 +581,43 @@ async fn optimize_multisheet_restarts_4_no_longer_returns_408() {
     let body = serde_json::to_string(&json).unwrap();
     let (status, json) = post_json(&app, "/v1/optimize", &body).await;
     assert_eq!(status, StatusCode::OK, "body: {json}");
+}
+
+#[tokio::test]
+async fn optimize_engine_heuristic_skips_ga_and_returns_layout() {
+    // V58/H5: engine=heuristic must return a valid layout with ZERO GA restarts
+    // (the multi-variant FFD seed is the answer) and no timeout_reason.
+    let app = app_for_test();
+    let mut json: Value = serde_json::from_str(MULTISHEET_OVERSIZED_REQUEST).unwrap();
+    if let Some(params) = json.get_mut("params").and_then(Value::as_object_mut) {
+        params.insert("include_svg".to_string(), Value::Bool(false));
+        params.insert("engine".to_string(), Value::from("heuristic"));
+        params.insert("time_limit_ms".to_string(), Value::from(5000));
+        params.insert("restarts".to_string(), Value::from(8));
+        params.remove("portfolio");
+        params.remove("beam");
+        params.remove("alns");
+    }
+    let body = serde_json::to_string(&json).unwrap();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    assert_eq!(
+        json.pointer("/summary/restarts_used")
+            .and_then(Value::as_u64),
+        Some(0),
+        "engine=heuristic must not run any GA restart, body: {json}"
+    );
+    assert!(
+        json.pointer("/summary/timeout_reason").is_none()
+            || json.pointer("/summary/timeout_reason") == Some(&Value::Null),
+        "engine=heuristic should not report a timeout, body: {json}"
+    );
+    let solutions = json
+        .pointer("/solutions")
+        .and_then(Value::as_array)
+        .map(|s| s.len())
+        .unwrap_or(0);
+    assert!(solutions >= 1, "expected a layout, body: {json}");
 }
 
 #[tokio::test]
