@@ -25,6 +25,7 @@ v66-sat-feasibility
 v67-ladder-benchmark
 v59-v61-productionization-a-cut-quality
 v59-v61-productionization-b-async-postprocess
+v70-nested-approach-parity
 -->
 
 Language: Russian.
@@ -1327,3 +1328,43 @@ V67 conclusions:
 - Реальная цена deep-mode в prod profile: N50 `max_iters=4000` около **13.1s**
   wall на 1.5cpu против ~2-3s на 3-cpu dev box; в prod держать
   `MAX_CONCURRENT_OPTIMIZE` малым.
+
+## V70: Паритет подходов V28+ для Nested
+
+- Branch: `feat/nested-approach-parity`; draft:
+  `docs/research/drafts/2026-06-18-nested-approach-parity.md`.
+- Вопрос: насколько равноценно подходы, накопленные с V28, применимы к
+  улучшению nested (non-guillotine) раскроя — по hard-метрикам (листы, waste%) и
+  по визуальному качеству остатка одновременно. Объём: только in-service
+  (внешние движки V63/V64/V65/V66 классифицированы по логике, не перезапускались).
+- Оба режима — first-class в коде (каждая ветка construction/post-process
+  переключает `build_nested_heuristic` / `build_guillotine_heuristic`), поэтому
+  почти все подходы V28+ логически применимы к nested. Единственное
+  guillotine-specific — биндинг PackingSolver V63 (`rectangleguillotine`);
+  MaxRects (V64) и CP-SAT NoOverlap2D (V65), наоборот, nested-friendly.
+- Классы по качеству переноса:
+  - orchestration / runtime / selection (profile pool, seed rescue, fast path,
+    cut_quality, async/queue, partition) — mode-agnostic, применяются
+    **равноценно**;
+  - геометрические repack (consolidate, lns, bin assignment) — применяются, тот
+    же выигрыш по hard-метрикам на малых/средних N, но слабее на масштабе;
+  - visual / remnant scoring (V40–V53, group_shift) — хуже всего переносится:
+    калибровался на guillotine-коридорах отхода и никогда не делался
+    mode-aware.
+- Эмпирический паритет (текущий бинарь `main`), guillotine vs nested:
+  - N20/N35: одинаковое число листов и одинаковое улучшение от lns (-1 лист, тот
+    же waste) на обоих режимах — паритет по hard-метрикам держится.
+  - N50: nested lns даёт **44 листа / 11.2%** против guillotine **43 / 9.2%** (на
+    лист хуже) и заканчивает быстрее (6.2s vs 13.6s) — на масштабе nested-repack
+    сходится в худший локальный оптимум, паритет ломается.
+  - Visual: nested стабильно более фрагментирован на floor (frag 1.6–1.9 против
+    1.3–1.5; largest-free 0.88–0.93 против 0.94–0.99), и lns это не чинит; ни
+    один in-service подход не имеет nested-aware метрики остатка.
+  - group_shift / partition не дали изменения листов и почти нулевую визуальную
+    дельту на обоих режимах для тестового набора.
+  - Nested-construction в ~2–3x быстрее guillotine, так что латентность — не
+    блокер для nested.
+- Вывод: большинство подходов V28+ переносятся на nested в принципе и по
+  hard-метрикам на умеренном масштабе. Конкретная работа по улучшению nested —
+  это (a) более сильный nested-aware repack/LNS для больших N и (b) mode-aware
+  метрика визуального остатка — две следующие гипотезы под отдельную ветку.
