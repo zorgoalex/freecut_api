@@ -34,6 +34,8 @@ v71-guarded-group-shift-metrics
 v72-anchor-perimeter-group-shift
 v73-profile-pool-group-shift-quality
 v74-profile-pool-candidate-quality-audit
+v75-backfill-headroom-spike
+v76-backfill-prototype
 -->
 
 Language: Russian.
@@ -1566,3 +1568,48 @@ candidates обычно различаются раньше, чем новый q
 candidate set нет лучших same-sheet/same-zone layouts, которые quality scoring
 мог бы выбрать. Дальше нужно генерировать структурно другие candidates или
 targeted repair candidates, и только потом снова дорабатывать scoring formula.
+
+## V75: Backfill headroom spike (measurement-only)
+
+- Branch: `feat/backfill-spike`; draft:
+  `docs/research/drafts/2026-06-18-v75-backfill-headroom-spike.md`.
+- Вопрос перед постройкой backfill / sheet-count пост-оптимизации: оставляет ли
+  текущий LNS реальный headroom по числу листов на большом N? Без кода; машинерия
+  `cut_quality=max` прогнана по LNS-окну {6,8} и итерациям {4000,8000} на миксах,
+  у которых area lower bound ~40 и ~50 листов.
+- Результаты (лучшие листы vs area lower bound):
+  - LB~40 (N50, 524 детали): лучшее **43** (guillotine w6/w8; nested w6) → **+3**;
+  - LB~50 (N64, 670 деталей): лучшее **54** (guillotine w8) → **+4**.
+- Находки: разрыв **структурный, не бюджетный** — расширение окна до 8 и удвоение
+  итераций почти не двигают (LB40 остаётся 43; LB50 55→54). И он **доказуемо
+  бьётся**: V67 намерил PackingSolver 10s на 51 для LB50 (vs наши 54), ~−3 листа.
+  nested на паритете при LB40 (43), но ~2 хуже при LB50 (56 vs 54), а `w8` для
+  nested перелетает (согласуется с V71).
+- Вывод: backfill целит в реальный структурный разрыв ~3–4 листа над area lower
+  bound, который тюнинг LNS не закрывает. Обосновывает прототип
+  backfill / freeze-and-nibble (отдельная ветка), мерить против этого baseline
+  (43 @ LB40, 54 @ LB50) и area lower bound. Это рычаг по числу листов, не по
+  остатку (остаток закрыт V71).
+
+## V76: Backfill «freeze-and-nibble» прототип — отклонён
+
+- Branch: `feat/backfill-prototype` (поверх V75); draft:
+  `docs/research/drafts/2026-06-18-v76-backfill-prototype.md`.
+- Построено (потом откачено): `params.backfill` — проход после `lns`, берёт самый
+  пустой лист и перекладывает все его детали в существующее свободное место других
+  листов (maximal-empty-rectangles вставка, без перепаковки, без поворота);
+  принимает только строгий минус-лист, поэтому не регрессит. 4 unit-теста зелёные
+  (корректность free-rect, слив 2→1, отсутствие регресса).
+- Измерение (LB40/LB50, `cut_quality=max` ± backfill): **ноль** дополнительных
+  сбросов — guillotine 43/55 и nested 43/56 без изменений с backfill (wall +~50ms,
+  отработал и ничего не нашёл).
+- Почему — структурно: после `lns` принимающие листы ~95%+ заполнены; их свободное
+  место — мелкие staircase-щели без ёмкости. Слить ~22-детальный самый пустой лист
+  требует, чтобы все его детали влезли в эти щели — не влезают. Naive
+  insert-без-перепаковки ≤ `lns`/`consolidate`: где место есть — window repack уже
+  им пользуется, где нет — backfill его не создаёт. (Unit-тест подтверждает: работает,
+  когда ёмкость есть; на реальных floor-раскладках её нет.)
+- Решение: отклонён, код откачен. Разрыв V75 реален, но требует **глобальной
+  перепаковки**, не локальной вставки — согласуется с V67 (PackingSolver достаёт
+  51 на LB50 vs наши 55). Следующий рычаг по числу листов — на уровне движка
+  (интеграция PackingSolver / V64 constructive portfolio), не post-process.
