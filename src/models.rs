@@ -83,6 +83,21 @@ pub struct Params {
     /// moves and explores randomized windows, so it can escape the greedy
     /// consolidation local optimum.
     pub lns: Option<LnsParams>,
+    /// V62: high-level cut-quality profile that expands into the low-level
+    /// `consolidate`/`lns` flag sets, so a caller sends one clear word instead
+    /// of tuning both post-processors by hand:
+    ///
+    /// - `fast`     — floor only (no consolidate, no lns); milliseconds.
+    /// - `balanced` — `consolidate` (FFD-only); ~tens of ms, ~-1% sheets.
+    /// - `max`      — `consolidate` + `lns` (`max_iters=4000`); ~2-3s, deepest.
+    ///
+    /// Only meaningful with `engine=heuristic` (that is where the
+    /// post-processors run); ignored for `engine=ga`. Optional — when absent the
+    /// behaviour is exactly as before (no implicit consolidate/lns). An explicit
+    /// `consolidate`/`lns` object always OVERRIDES the profile, so a caller can
+    /// still hand-tune any tier. Distinct from `sla_profile`/`ga_profile`, which
+    /// control GA restart budgeting and are unaffected by this field.
+    pub cut_quality: Option<CutQuality>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
@@ -233,6 +248,20 @@ pub enum GaProfile {
     Fast,
     Balanced,
     Quality,
+}
+
+/// V62: high-level cut-quality tier for `engine=heuristic`. Expands into the
+/// low-level `consolidate`/`lns` post-process flag sets (see
+/// `Params::cut_quality`). Independent of `sla_profile`/`ga_profile`.
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CutQuality {
+    /// Floor only: no consolidation, no LNS.
+    Fast,
+    /// Sheet consolidation (FFD-only).
+    Balanced,
+    /// Consolidation + anytime LNS (`max_iters=4000`).
+    Max,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
