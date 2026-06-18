@@ -734,6 +734,15 @@ When `params.profile_pool.enabled=true`, response may include:
   "winner_group_shift_opportunity_after_mm2": 0.0,
   "winner_group_shift_opportunity_delta_mm2": 197960.0,
   "winner_group_shift_contact_gain_mm": 1293.5,
+  "winner_group_shift_quality_score_after": 1.0545,
+  "winner_group_shift_quality_score_delta": 0.0024,
+  "winner_group_shift_topology_score_delta": 0.0,
+  "winner_group_shift_part_contact_delta_mm": 1117.0,
+  "quality_scoring_changed_winner": false,
+  "legacy_winner_seed": 26,
+  "legacy_winner_zone_penalty": 0.5,
+  "legacy_winner_group_shift_quality_score_after": 1.0545,
+  "legacy_winner_group_shift_quality_score_delta": 0.0024,
   "max_lead_drop_pp": 0.8
 }
 ```
@@ -743,6 +752,10 @@ Important fields:
 - `winner_visual_waste_regions`: waste regions without part inflation; closer to visual review.
 - `winner_waste_regions`: waste regions with kerf+spacing inflation.
 - `winner_group_shift_contact_gain_mm`: contact-gain signal from group shift, useful for compactness evaluation.
+- `winner_group_shift_quality_score_after`: guarded group-shift quality score of the selected profile_pool winner after post-processing.
+- `winner_group_shift_quality_score_delta`: quality-score improvement from group shift on the selected profile_pool winner.
+- `quality_scoring_changed_winner`: whether the quality-aware ordering selected a different winner than the legacy ordering.
+- `legacy_winner_*`: diagnostic fields for the winner that would have been selected without quality-aware profile_pool scoring.
 - `rescue_triggered`: whether seed/profile rescue was used.
 
 ## group_shift telemetry

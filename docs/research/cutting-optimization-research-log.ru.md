@@ -27,6 +27,8 @@ v59-v61-productionization-a-cut-quality
 v59-v61-productionization-b-async-postprocess
 v70-group-shift-remnant-audit
 v71-guarded-group-shift-metrics
+v72-anchor-perimeter-group-shift
+v73-profile-pool-group-shift-quality
 -->
 
 Language: Russian.
@@ -1396,3 +1398,52 @@ Guard убрал наблюдавшиеся topology regressions, сохрани
 `max_passes=4`; pass8 после reject unsafe candidates дал тот же итог. Следующий
 шаг — расширять candidate generation вокруг периметра anchor-группы, но V71
 guard должен оставаться обязательным.
+
+## V72: anchor perimeter group_shift
+
+- Ветка: `feat/v72-anchor-perimeter-group-shift`; черновик:
+  `docs/research/drafts/2026-06-18-v72-anchor-perimeter-group-shift.md`.
+- Изменение кода: поверх V71 quality guard добавлена генерация
+  anchor-perimeter/refined side-group candidates.
+- Результат на том же 12-seed fixture:
+
+| run | moved | improved | worsened | moves | parts | rejected | perimeter candidates | delta score | delta topology | delta contact |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| V71 pass4 | 11 | 11 | 0 | 25 | 35 | 9 | n/a | +0.0185736 | 0 | +8844mm |
+| V72 pass4 | 11 | 11 | 0 | 25 | 35 | 9 | 650 | +0.0185736 | 0 | +8844mm |
+| V72 pass8 | 11 | 11 | 0 | 25 | 35 | 9 | 723 | +0.0185736 | 0 | +8844mm |
+
+Вывод: V72 — полезный отрицательный результат. Новый источник сгенерировал
+много дополнительных candidates, но итоговое качество полностью совпало с V71.
+Продвигать этот candidate source в текущем виде не стоит.
+
+## V73: profile_pool group_shift quality
+
+- Ветка: `feat/v73-profile-pool-group-shift-quality`; черновик:
+  `docs/research/drafts/2026-06-18-v73-profile-pool-group-shift-quality.md`.
+- Изменение кода: `profile_pool` candidate ordering теперь показывает и
+  использует guarded group-shift quality после sheet/zones и перед старыми
+  residual/contact tie-breakers.
+- Добавлена telemetry:
+  `winner_group_shift_quality_score_after`,
+  `winner_group_shift_quality_score_delta`,
+  `winner_group_shift_topology_score_delta`,
+  `winner_group_shift_part_contact_delta_mm`,
+  `quality_scoring_changed_winner` и legacy-winner comparison fields.
+- Unit validation: `cargo test profile_pool -- --test-threads=1` passed
+  (18 tests).
+
+Benchmarks:
+
+| run | rows | quality changed winner | note |
+|---|---:|---:|---|
+| seed 11/13 with seed-offset rescue | 4 | 0 | V73 полностью совпал с V71: те же sheets/zones/zp/contact. |
+| seeds 1..12, no rescue, no SVG | 24 | 0 | Current и legacy profile_pool winner совпали во всех rows. |
+
+Вывод: V73 диагностически полезен, но на проверенных fixtures не является
+production-улучшением качества. V71 quality score теперь виден и unit-tested в
+selection, но текущий profile_pool candidate set почти не доходит до этого
+tie-breaker: более ранний порядок sheet/visual-zone/cut-gap уже выбирает того
+же winner. Следующий практический шаг — увеличивать разнообразие candidates или
+проверять новый composite quality gate, а не только переупорядочивать уже
+существующие candidates.

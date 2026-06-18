@@ -1435,6 +1435,42 @@ async fn optimize_profile_pool_returns_telemetry() {
         .get("winner_group_shift_contact_gain_mm")
         .and_then(Value::as_f64)
         .is_some());
+    assert!(pool
+        .get("winner_group_shift_quality_score_after")
+        .and_then(Value::as_f64)
+        .is_some());
+    assert!(pool
+        .get("winner_group_shift_quality_score_delta")
+        .and_then(Value::as_f64)
+        .is_some());
+    assert!(pool
+        .get("winner_group_shift_topology_score_delta")
+        .and_then(Value::as_f64)
+        .is_some());
+    assert!(pool
+        .get("winner_group_shift_part_contact_delta_mm")
+        .and_then(Value::as_f64)
+        .is_some());
+    assert!(pool
+        .get("quality_scoring_changed_winner")
+        .and_then(Value::as_bool)
+        .is_some());
+    assert!(pool
+        .get("legacy_winner_seed")
+        .and_then(Value::as_u64)
+        .is_some());
+    assert!(pool
+        .get("legacy_winner_zone_penalty")
+        .and_then(Value::as_f64)
+        .is_some());
+    assert!(pool
+        .get("legacy_winner_group_shift_quality_score_after")
+        .and_then(Value::as_f64)
+        .is_some());
+    assert!(pool
+        .get("legacy_winner_group_shift_quality_score_delta")
+        .and_then(Value::as_f64)
+        .is_some());
     assert!(json.pointer("/summary/group_shift").is_some());
 }
 
