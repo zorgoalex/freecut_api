@@ -36,6 +36,7 @@ v73-profile-pool-group-shift-quality
 v74-profile-pool-candidate-quality-audit
 v75-backfill-headroom-spike
 v76-backfill-prototype
+v77-vacuum-compact-left-profile
 -->
 
 Language: English.
@@ -718,3 +719,38 @@ targeted repair candidates before investing more in scoring formula changes.
   repacking**, not local insertion — consistent with V67 (PackingSolver reaches
   51 at LB50 vs our 55). Next sheet-count lever is engine-level (PackingSolver
   integration / V64 constructive portfolio), not a post-process.
+
+## V77: Vacuum Compact-Left Profile Validation
+
+- Branch: `cdx/vacuum-layout-profile`.
+- Context: reviewing `E:\Project\2D_CAD\poc-dxf\poc-dxf_v1` showed that
+  `vacuum_layout.py` is a separate single-sheet vacuum engine with
+  `length/width/optimal` selection, homogeneous row enumeration, and a general
+  shelf fallback. Its key placement rule, however, is `distributed_positions`:
+  remaining slack is spread across the table. That matches the old "cover the
+  vacuum table" idea, but conflicts with the latest user requirement: parts
+  should **cluster** near the left/top edge, and slack should move outward rather
+  than becoming internal corridors.
+- Implementation: keep the vacuum path as a separate `layout_mode = "vacuum_table"`,
+  but replace distributed placement with compact left/top placement; after
+  placed/coverage, scoring now prefers a smaller occupied bbox and lower edge
+  offset instead of maximum span.
+- Practical HTTP run: sheet 2800 x 1050, 11 parts 600 x 300, `kerf_mm=80`,
+  `spacing_mm=0`, `stock.qty=1`.
+
+| direction | chosen | placed | unplaced | min clearance | used bbox |
+|---|---|---:|---:|---:|---|
+| width | width | 11/11 | 0 | 80 mm | 2640 x 980 @ (0,0) |
+| height | height | 8/11 | 3 | 80 mm | 2640 x 680 @ (0,0) |
+| optimal | width | 11/11 | 0 | 80 mm | 2640 x 980 @ (0,0) |
+
+- Visual artifacts: JSON/SVG/PNG for `width`, `height`, and `optimal` were saved
+  locally under `ai_docs/tmp/sketchcut_vacuum_20260623_222255`.
+- Tests: `cargo test` — 85 passed / 0 failed / 6 ignored; after renaming the
+  test, `cargo test optimize_vacuum_table` — 3 passed.
+- Conclusion: for vacuum layouts, the right direction is not to copy `poc-dxf`
+  exactly. Use it to justify a separate profile and its direction sweep, but keep
+  this service's profile focused on compact left/top clustering with strict kerf.
+  Next mixed-size tests should check whether vacuum mode also needs local
+  group/anchor compaction to pull edge shelf groups toward the main mass without
+  losing placed count.

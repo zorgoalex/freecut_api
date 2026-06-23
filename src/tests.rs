@@ -967,7 +967,7 @@ async fn optimize_layout_mode_default_guillotine() {
 }
 
 #[tokio::test]
-async fn optimize_vacuum_table_profile_spreads_homogeneous_parts() {
+async fn optimize_vacuum_table_profile_clusters_homogeneous_parts() {
     let app = app_for_test();
     let body = serde_json::json!({
         "units": "mm",
@@ -1062,8 +1062,24 @@ async fn optimize_vacuum_table_profile_spreads_homogeneous_parts() {
         .fold(f64::NEG_INFINITY, f64::max);
     assert!((min_x - 0.0).abs() < 0.001, "min_x={min_x}");
     assert!((min_y - 0.0).abs() < 0.001, "min_y={min_y}");
-    assert!((max_x - 2800.0).abs() < 0.001, "max_x={max_x}");
-    assert!((max_y - 1050.0).abs() < 0.001, "max_y={max_y}");
+    assert!(
+        max_x <= 2640.001,
+        "expected left-clustered bbox, max_x={max_x}"
+    );
+    assert!(
+        max_y <= 980.001,
+        "expected top-clustered bbox, max_y={max_y}"
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/used_bbox/x_mm")
+            .and_then(Value::as_f64),
+        Some(0.0)
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/used_bbox/y_mm")
+            .and_then(Value::as_f64),
+        Some(0.0)
+    );
     assert!(json
         .pointer("/artifacts/svg")
         .and_then(Value::as_str)
@@ -1119,6 +1135,41 @@ async fn optimize_vacuum_table_does_not_retry_into_nested() {
         json.pointer("/summary/vacuum/chosen_direction")
             .and_then(Value::as_str),
         Some("height")
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/placed_count")
+            .and_then(Value::as_u64),
+        Some(8)
+    );
+    let placements = json
+        .pointer("/solutions/0/placements")
+        .and_then(Value::as_array)
+        .expect("expected compact height placements");
+    let min_x = placements
+        .iter()
+        .filter_map(|p| p.get("x_mm").and_then(Value::as_f64))
+        .fold(f64::INFINITY, f64::min);
+    let min_y = placements
+        .iter()
+        .filter_map(|p| p.get("y_mm").and_then(Value::as_f64))
+        .fold(f64::INFINITY, f64::min);
+    let max_x = placements
+        .iter()
+        .filter_map(|p| Some(p.get("x_mm")?.as_f64()? + p.get("width_mm")?.as_f64()?))
+        .fold(f64::NEG_INFINITY, f64::max);
+    let max_y = placements
+        .iter()
+        .filter_map(|p| Some(p.get("y_mm")?.as_f64()? + p.get("height_mm")?.as_f64()?))
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!((min_x - 0.0).abs() < 0.001, "min_x={min_x}");
+    assert!((min_y - 0.0).abs() < 0.001, "min_y={min_y}");
+    assert!(
+        max_x <= 2640.001,
+        "height mode should cluster left, max_x={max_x}"
+    );
+    assert!(
+        max_y <= 680.001,
+        "height mode should avoid distributed bottom waste, max_y={max_y}"
     );
 }
 

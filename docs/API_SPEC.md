@@ -294,7 +294,7 @@ Values:
 
 - `"guillotine"`: guillotine-style cuts.
 - `"nested"`: nested rectangular placement mode.
-- `"vacuum_table"`: single-stock vacuum-table profile. It spreads rows/columns across the usable table area to preserve vacuum hold-down coverage. It bypasses GA/restarts/profile-pool scoring and is intended for vacuum press/table jobs, not for reusable-remnant optimization.
+- `"vacuum_table"`: single-stock vacuum-table profile. It builds a compact left/top-anchored cluster while preserving the effective kerf gap. It bypasses GA/restarts/profile-pool scoring and is intended for SketchCut-style vacuum press/table jobs.
 
 ## vacuum
 
@@ -310,7 +310,7 @@ Used only when `params.layout_mode = "vacuum_table"`.
 |---|---:|---:|---|---|
 | `direction` | string | `"optimal"` | `"optimal"`, `"width"`, `"height"` | Row direction for the vacuum table. `optimal` evaluates both width-wise rows and height-wise columns. |
 
-Vacuum-table mode requires exactly one `stock` entry. `stock.qty` limits how many table loads may be emitted; omitted or `0` means unlimited table loads. `kerf_mm + spacing_mm` is treated as the minimum clearance between neighboring parts, but remaining slack is distributed as wider internal gaps to cover the vacuum table evenly.
+Vacuum-table mode requires exactly one `stock` entry. `stock.qty` limits how many table loads may be emitted; omitted or `0` means unlimited table loads. `kerf_mm + spacing_mm` is treated as the minimum clearance between neighboring parts. Remaining slack is pushed to the right/bottom side instead of being distributed as internal corridors.
 
 Example vacuum-table request:
 
@@ -841,7 +841,7 @@ Important fields:
 - `chosen_direction`: actual row direction selected after scoring.
 - `strategy`: `homogeneous`, `general_shelf`, `mixed`, or `none`.
 - `min_clearance_mm`: measured minimum part-to-part clearance in the final layout.
-- `used_bbox`: first-sheet occupied bounding box. In a well-spread vacuum layout it usually spans the usable table area.
+- `used_bbox`: first-sheet occupied bounding box. In a compact vacuum layout it should start near `x_mm=0`, `y_mm=0`; the main slack should remain outside the occupied cluster.
 
 ## ErrorResponse
 

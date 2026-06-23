@@ -29,7 +29,7 @@ The goal is to make practical cutting optimization accessible to small workshops
 
 ## Features
 - 2D rectangle nesting with kerf/spacing/trim support
-- Separate vacuum-table profile for evenly spread vacuum press/table layouts
+- Separate vacuum-table profile for compact left-anchored vacuum press/table layouts
 - Rotation constraints and pattern direction flags
 - Multi-start optimization with deterministic seeds
 - **Multi-sheet support** with automatic sheet allocation
@@ -141,7 +141,7 @@ Example file: `examples/optimize_request.json`
     service generates a seed per request (Unix epoch in ms) and returns it as `used_seed`.
   - `layout_mode`: Layout mode: `"guillotine"` (default, guillotine-only cuts), `"nested"`, or `"vacuum_table"`. Optional in the request.
   - `vacuum`: Optional settings used only with `layout_mode: "vacuum_table"`.
-    - `direction`: `"optimal"` (default), `"width"`, or `"height"`. The service tries to spread rows/columns across the vacuum table instead of compacting parts into one corner.
+    - `direction`: `"optimal"` (default), `"width"`, or `"height"`. The service clusters parts toward the left/top edge while keeping the effective kerf gap.
   - `include_svg`: Optional flag (`true` by default). Set to `false` to skip SVG generation and omit `artifacts.svg` in response.
   - `portfolio`: Optional anytime orchestration settings.
     - `enabled`: Optional (`true` by default when object is present).

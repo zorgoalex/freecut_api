@@ -589,7 +589,7 @@ POST /v1/optimize/alns
 
 ## Vacuum Table Profile
 
-Use `layout_mode: "vacuum_table"` for vacuum press/table jobs where the goal is stable hold-down coverage and evenly distributed parts, not a compact reusable remnant.
+Use `layout_mode: "vacuum_table"` for vacuum press/table jobs where the goal is a compact left-anchored group of parts with the required kerf clearance.
 
 Recommended payload shape:
 
@@ -611,7 +611,7 @@ Practical notes:
 - use exactly one stock entry for the table size;
 - keep `direction: "optimal"` unless the operator explicitly needs rows along width or height;
 - do not expose GA, profile-pool, or group-shift controls for this profile, because the vacuum path bypasses those search modes;
-- interpret `kerf_mm + spacing_mm` as the minimum clearance between neighboring parts; extra slack is intentionally distributed as wider gaps.
+- interpret `kerf_mm + spacing_mm` as the minimum clearance between neighboring parts; extra slack should move outside the main part cluster, primarily to the right/bottom.
 
 ## What To Show In A UI
 

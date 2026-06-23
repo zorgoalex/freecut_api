@@ -36,6 +36,7 @@ v73-profile-pool-group-shift-quality
 v74-profile-pool-candidate-quality-audit
 v75-backfill-headroom-spike
 v76-backfill-prototype
+v77-vacuum-compact-left-profile
 -->
 
 Language: Russian.
@@ -1613,3 +1614,38 @@ targeted repair candidates, и только потом снова дорабат
   перепаковки**, не локальной вставки — согласуется с V67 (PackingSolver достаёт
   51 на LB50 vs наши 55). Следующий рычаг по числу листов — на уровне движка
   (интеграция PackingSolver / V64 constructive portfolio), не post-process.
+
+## V77: Vacuum compact-left profile validation
+
+- Branch: `cdx/vacuum-layout-profile`.
+- Контекст: изучение `E:\Project\2D_CAD\poc-dxf\poc-dxf_v1` показало, что
+  `vacuum_layout.py` реализует отдельный single-sheet vacuum engine с выбором
+  `length/width/optimal`, homogeneous row enumeration и general shelf fallback.
+  Но его ключевой приём — `distributed_positions`, то есть равномерное растягивание
+  slack по столу. Это совпадает со старой идеей покрытия вакуумного стола, но
+  противоречит свежему требованию пользователя: детали должны **кучковаться** у
+  левого/верхнего края, а свободный остаток должен уходить наружу, не превращаясь
+  во внутренние коридоры.
+- Реализация: vacuum profile оставлен отдельным `layout_mode = "vacuum_table"`,
+  но позиционирование заменено на compact-left/top; scoring после placed/coverage
+  предпочитает меньший occupied bbox и меньший edge offset вместо максимального
+  span.
+- Практический HTTP-прогон: sheet 2800 x 1050, 11 деталей 600 x 300,
+  `kerf_mm=80`, `spacing_mm=0`, `stock.qty=1`.
+
+| direction | chosen | placed | unplaced | min clearance | used bbox |
+|---|---|---:|---:|---:|---|
+| width | width | 11/11 | 0 | 80 mm | 2640 x 980 @ (0,0) |
+| height | height | 8/11 | 3 | 80 mm | 2640 x 680 @ (0,0) |
+| optimal | width | 11/11 | 0 | 80 mm | 2640 x 980 @ (0,0) |
+
+- Визуальные артефакты: локально в `ai_docs/tmp/sketchcut_vacuum_20260623_222255`
+  сохранены JSON/SVG/PNG для `width`, `height`, `optimal`.
+- Тесты: `cargo test` — 85 passed / 0 failed / 6 ignored; после переименования
+  теста `cargo test optimize_vacuum_table` — 3 passed.
+- Вывод: для vacuum-раскроя текущий лучший путь — не копировать `poc-dxf` один-в-один,
+  а использовать его как подтверждение отдельного профиля и направления перебора.
+  Основной objective для этого профиля должен быть compact-left/top clustering при
+  строгом соблюдении kerf. Дальше проверять mixed-size cases: нужен ли локальный
+  group/anchor compaction внутри vacuum profile, чтобы сдвигать крайние shelf-группы
+  к основной массе без потери placed count.

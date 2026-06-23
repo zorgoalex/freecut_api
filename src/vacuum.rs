@@ -51,8 +51,9 @@ struct VacuumScore {
     placed_count: usize,
     unplaced_count: usize,
     coverage_ratio: f64,
-    span_score: f64,
-    margin_imbalance: f64,
+    bbox_width_ratio: f64,
+    bbox_area_ratio: f64,
+    edge_offset: f64,
     homogeneous: bool,
 }
 
@@ -394,7 +395,7 @@ fn best_homogeneous_row_counts(
     gap_mm: f64,
 ) -> Option<Vec<usize>> {
     let mut best_counts: Option<Vec<usize>> = None;
-    let mut best_key: Option<(usize, u64, usize, usize)> = None;
+    let mut best_key: Option<(usize, usize, usize, usize)> = None;
 
     let mut visit = |counts: Vec<usize>| {
         let rows_total: usize = counts.iter().sum();
@@ -423,13 +424,13 @@ fn best_homogeneous_row_counts(
         if cross_used > cross_span + EPS {
             return;
         }
-        let cross_key = ((cross_used / cross_span.max(EPS)) * 1_000_000.0).round() as u64;
+        let cross_key = ((cross_used / cross_span.max(EPS)) * 1_000_000.0).round() as usize;
         let over_capacity = capacity_total.saturating_sub(requested_count);
         let key = (
             placed,
-            cross_key,
             usize::MAX - over_capacity,
             usize::MAX - rows_total,
+            usize::MAX - cross_key,
         );
         if best_key.map(|current| key > current).unwrap_or(true) {
             best_key = Some(key);
@@ -637,21 +638,13 @@ fn candidate_from_rows(
     } else {
         0.0
     };
-    let span_score = if usable_width > 0.0 && usable_height > 0.0 {
-        0.5 * bbox.width_mm / usable_width + 0.5 * bbox.height_mm / usable_height
+    let bbox_area_ratio = if sheet_area > 0.0 {
+        (bbox.width_mm * bbox.height_mm) / sheet_area
     } else {
         0.0
     };
-    let left_margin = bbox.x_mm;
-    let right_margin = usable_width - bbox.x_mm - bbox.width_mm;
-    let top_margin = bbox.y_mm;
-    let bottom_margin = usable_height - bbox.y_mm - bbox.height_mm;
-    let margin_imbalance = if usable_width > 0.0 && usable_height > 0.0 {
-        (left_margin - right_margin).abs() / usable_width
-            + (top_margin - bottom_margin).abs() / usable_height
-    } else {
-        0.0
-    };
+    let bbox_width_ratio = bbox.width_mm / usable_width.max(EPS);
+    let edge_offset = bbox.x_mm / usable_width.max(EPS) + bbox.y_mm / usable_height.max(EPS);
 
     Some(VacuumCandidate {
         axis,
@@ -661,8 +654,9 @@ fn candidate_from_rows(
             placed_count,
             unplaced_count: requested_count.saturating_sub(placed_count),
             coverage_ratio,
-            span_score,
-            margin_imbalance,
+            bbox_width_ratio,
+            bbox_area_ratio,
+            edge_offset,
             homogeneous,
         },
     })
@@ -678,11 +672,14 @@ fn score_better(candidate: VacuumScore, current: VacuumScore) -> bool {
     if (candidate.coverage_ratio - current.coverage_ratio).abs() > EPS {
         return candidate.coverage_ratio > current.coverage_ratio;
     }
-    if (candidate.span_score - current.span_score).abs() > EPS {
-        return candidate.span_score > current.span_score;
+    if (candidate.bbox_width_ratio - current.bbox_width_ratio).abs() > EPS {
+        return candidate.bbox_width_ratio < current.bbox_width_ratio;
     }
-    if (candidate.margin_imbalance - current.margin_imbalance).abs() > EPS {
-        return candidate.margin_imbalance < current.margin_imbalance;
+    if (candidate.bbox_area_ratio - current.bbox_area_ratio).abs() > EPS {
+        return candidate.bbox_area_ratio < current.bbox_area_ratio;
+    }
+    if (candidate.edge_offset - current.edge_offset).abs() > EPS {
+        return candidate.edge_offset < current.edge_offset;
     }
     candidate.homogeneous && !current.homogeneous
 }
@@ -690,13 +687,12 @@ fn score_better(candidate: VacuumScore, current: VacuumScore) -> bool {
 fn rows_to_placements(
     rows: &[VacuumRow],
     axis: VacuumDirection,
-    usable_width: f64,
-    usable_height: f64,
+    _usable_width: f64,
+    _usable_height: f64,
     gap_mm: f64,
 ) -> Vec<Placement> {
-    let (primary_span, cross_span) = axis_spans(axis, usable_width, usable_height);
     let row_sizes = rows.iter().map(|row| row.cross_size_mm).collect::<Vec<_>>();
-    let row_positions = distributed_positions(cross_span, &row_sizes, gap_mm);
+    let row_positions = compact_positions(&row_sizes, gap_mm);
     let mut placements = Vec::new();
 
     for (row, &cross_pos) in rows.iter().zip(row_positions.iter()) {
@@ -705,7 +701,7 @@ fn rows_to_placements(
             .iter()
             .map(|part| primary_size(axis, part.width_mm, part.height_mm))
             .collect::<Vec<_>>();
-        let part_positions = distributed_positions(primary_span, &part_sizes, gap_mm);
+        let part_positions = compact_positions(&part_sizes, gap_mm);
         for (part, &primary_pos) in row.parts.iter().zip(part_positions.iter()) {
             let (x_mm, y_mm) = match axis {
                 VacuumDirection::Width => (primary_pos, cross_pos),
@@ -728,19 +724,16 @@ fn rows_to_placements(
     placements
 }
 
-fn distributed_positions(span: f64, sizes: &[f64], min_gap: f64) -> Vec<f64> {
+fn compact_positions(sizes: &[f64], min_gap: f64) -> Vec<f64> {
     match sizes {
         [] => Vec::new(),
         [_] => vec![0.0],
         _ => {
-            let total_size: f64 = sizes.iter().sum();
-            let gaps = sizes.len() - 1;
-            let gap = ((span - total_size) / gaps as f64).max(min_gap);
             let mut positions = Vec::with_capacity(sizes.len());
             let mut cursor = 0.0;
             for size in sizes {
                 positions.push(cursor);
-                cursor += *size + gap;
+                cursor += *size + min_gap;
             }
             positions
         }
