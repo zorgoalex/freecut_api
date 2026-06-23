@@ -26,6 +26,9 @@ pub struct Params {
     pub objective: Objective,
     pub seed: Option<u64>,
     pub layout_mode: Option<LayoutMode>,
+    /// Optional vacuum-table layout settings. Used only when
+    /// `layout_mode = vacuum_table`; ignored by nested/guillotine modes.
+    pub vacuum: Option<VacuumParams>,
     /// Solver engine. `ga` (default) runs the genetic optimizer; `heuristic`
     /// skips the GA entirely and returns the best multi-variant FFD
     /// construction immediately. For large jobs the GA cannot converge within
@@ -225,6 +228,23 @@ pub enum Objective {
 pub enum LayoutMode {
     Nested,
     Guillotine,
+    VacuumTable,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
+pub struct VacuumParams {
+    /// Main direction for shelf rows on the vacuum table. `optimal` tries both
+    /// width-wise rows and height-wise columns and picks the better fill.
+    /// Optional, defaults to `optimal`.
+    pub direction: Option<VacuumDirection>,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VacuumDirection {
+    Optimal,
+    Width,
+    Height,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]
@@ -443,6 +463,29 @@ pub struct Summary {
     /// only when `include_svg` is true.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remnant: Option<RemnantTelemetry>,
+    /// Vacuum-table layout telemetry. Populated only when
+    /// `layout_mode = vacuum_table`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vacuum: Option<VacuumTelemetry>,
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone)]
+pub struct VacuumTelemetry {
+    pub chosen_direction: VacuumDirection,
+    pub strategy: String,
+    pub placed_count: u32,
+    pub unplaced_count: u32,
+    pub coverage_ratio: f64,
+    pub min_clearance_mm: f64,
+    pub used_bbox: VacuumUsedBbox,
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone)]
+pub struct VacuumUsedBbox {
+    pub x_mm: f64,
+    pub y_mm: f64,
+    pub width_mm: f64,
+    pub height_mm: f64,
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone, Default)]

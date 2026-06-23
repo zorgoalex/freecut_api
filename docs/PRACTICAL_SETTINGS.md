@@ -587,13 +587,39 @@ POST /v1/optimize/alns
 
 `partition` can be useful for dense-first layout experiments, but it should not be a default until there is a stable case-selection policy.
 
+## Vacuum Table Profile
+
+Use `layout_mode: "vacuum_table"` for vacuum press/table jobs where the goal is stable hold-down coverage and evenly distributed parts, not a compact reusable remnant.
+
+Recommended payload shape:
+
+```json
+{
+  "params": {
+    "layout_mode": "vacuum_table",
+    "vacuum": { "direction": "optimal" },
+    "kerf_mm": 80.0,
+    "spacing_mm": 0.0,
+    "include_svg": true
+  }
+}
+```
+
+Practical notes:
+
+- expose this as a separate "Vacuum table" workflow/profile in UI;
+- use exactly one stock entry for the table size;
+- keep `direction: "optimal"` unless the operator explicitly needs rows along width or height;
+- do not expose GA, profile-pool, or group-shift controls for this profile, because the vacuum path bypasses those search modes;
+- interpret `kerf_mm + spacing_mm` as the minimum clearance between neighboring parts; extra slack is intentionally distributed as wider gaps.
+
 ## What To Show In A UI
 
 Do not expose every internal parameter in a normal user interface.
 
 Show:
 
-- `layout_mode`: guillotine / nested;
+- `layout_mode`: guillotine / nested / vacuum table;
 - `objective`: minimum waste / minimum sheets;
 - quality level: fast / balanced / quality;
 - checkbox: compact peripheral part groups;

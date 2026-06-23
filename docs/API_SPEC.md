@@ -69,7 +69,7 @@ Main optimization endpoint.
 
 It supports:
 
-- `layout_mode: "guillotine"` or `"nested"`;
+- `layout_mode: "guillotine"`, `"nested"`, or `"vacuum_table"`;
 - multi-start GA optimization;
 - optional `profile_pool`;
 - optional `partition`;
@@ -175,7 +175,8 @@ effective_gap_mm = kerf_mm + spacing_mm
 | `time_limit_ms` | integer | `DEFAULT_TIME_LIMIT_MS`, default env value `2000` | `>= 100` | Total optimization budget. |
 | `restarts` | integer | `DEFAULT_RESTARTS`, default env value `10` | `>= 1` | Requested multi-start restarts. The service may reduce effective restarts based on budget. |
 | `seed` | integer | generated from current time | `u64` | Deterministic seed for reproducible layouts. |
-| `layout_mode` | string | `"guillotine"` | `"guillotine"`, `"nested"` | Layout/cutting mode. |
+| `layout_mode` | string | `"guillotine"` | `"guillotine"`, `"nested"`, `"vacuum_table"` | Layout/cutting mode. |
+| `vacuum` | object | omitted | see below | Vacuum-table profile settings; used only with `layout_mode: "vacuum_table"`. |
 | `sla_profile` | string | `"balanced"` | `"fast"`, `"balanced"`, `"quality"` | Restart-budget profile for `/v1/optimize`. |
 | `ga_profile` | string | `"balanced"` | `"fast"`, `"balanced"`, `"quality"` | GA internal profile. |
 | `include_svg` | boolean | `true` | `true`, `false` | Include `artifacts.svg` in the response. |
@@ -293,6 +294,46 @@ Values:
 
 - `"guillotine"`: guillotine-style cuts.
 - `"nested"`: nested rectangular placement mode.
+- `"vacuum_table"`: single-stock vacuum-table profile. It spreads rows/columns across the usable table area to preserve vacuum hold-down coverage. It bypasses GA/restarts/profile-pool scoring and is intended for vacuum press/table jobs, not for reusable-remnant optimization.
+
+## vacuum
+
+Used only when `params.layout_mode = "vacuum_table"`.
+
+```json
+{
+  "direction": "optimal"
+}
+```
+
+| Field | Type | Default | Valid values | Description |
+|---|---:|---:|---|---|
+| `direction` | string | `"optimal"` | `"optimal"`, `"width"`, `"height"` | Row direction for the vacuum table. `optimal` evaluates both width-wise rows and height-wise columns. |
+
+Vacuum-table mode requires exactly one `stock` entry. `stock.qty` limits how many table loads may be emitted; omitted or `0` means unlimited table loads. `kerf_mm + spacing_mm` is treated as the minimum clearance between neighboring parts, but remaining slack is distributed as wider internal gaps to cover the vacuum table evenly.
+
+Example vacuum-table request:
+
+```json
+{
+  "units": "mm",
+  "stock": [
+    { "id": "vacuum_2800x1050", "width_mm": 2800.0, "height_mm": 1050.0, "qty": 1 }
+  ],
+  "items": [
+    { "id": "mdf", "width_mm": 600.0, "height_mm": 300.0, "qty": 11, "rotation": "allow_90", "pattern_direction": "none" }
+  ],
+  "params": {
+    "kerf_mm": 80.0,
+    "spacing_mm": 0.0,
+    "trim_mm": { "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0 },
+    "objective": "min_waste",
+    "layout_mode": "vacuum_table",
+    "vacuum": { "direction": "optimal" },
+    "include_svg": true
+  }
+}
+```
 
 ### rotation
 
@@ -611,6 +652,7 @@ Successful response:
 | `retry` | object/null | Present when smart retry performed recovery attempts. |
 | `partition` | object/null | Present when partition mode is enabled. |
 | `group_shift` | object/null | Present when group shift is enabled. |
+| `vacuum` | object/null | Present when `layout_mode` is `"vacuum_table"`. Includes chosen direction, strategy, coverage, clearance, and first-sheet used bbox. |
 
 ### solutions[]
 
@@ -772,6 +814,34 @@ Important fields:
 - `contact_gain_mm`: additional edge contact created toward anchor clusters.
 - `corridor_closed_area_mm2`: closed/shifted corridor area.
 - `corridor_opportunity_after_mm2`: remaining detected group-shift opportunity.
+
+## vacuum telemetry
+
+When `params.layout_mode = "vacuum_table"`, `summary.vacuum` is present:
+
+```json
+{
+  "chosen_direction": "width",
+  "strategy": "homogeneous",
+  "placed_count": 11,
+  "unplaced_count": 0,
+  "coverage_ratio": 0.673469,
+  "min_clearance_mm": 116.666667,
+  "used_bbox": {
+    "x_mm": 0.0,
+    "y_mm": 0.0,
+    "width_mm": 2800.0,
+    "height_mm": 1050.0
+  }
+}
+```
+
+Important fields:
+
+- `chosen_direction`: actual row direction selected after scoring.
+- `strategy`: `homogeneous`, `general_shelf`, `mixed`, or `none`.
+- `min_clearance_mm`: measured minimum part-to-part clearance in the final layout.
+- `used_bbox`: first-sheet occupied bounding box. In a well-spread vacuum layout it usually spans the usable table area.
 
 ## ErrorResponse
 
