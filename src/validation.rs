@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 
-use crate::models::{ErrorResponse, Item, OptimizeRequest, Rotation, StockItem, Trim};
+use crate::models::{ErrorResponse, Item, LayoutMode, OptimizeRequest, Rotation, StockItem, Trim};
 
 #[derive(Debug, Clone)]
 pub struct ValidationLimits {
@@ -63,6 +63,11 @@ pub fn validate_request(
     if req.stock.len() > limits.max_stock_types {
         return Err(ValidationError::new("stock exceeds max allowed types")
             .with_details(serde_json::json!({"max_stock_types": limits.max_stock_types})));
+    }
+    if matches!(req.params.layout_mode, Some(LayoutMode::VacuumTable)) && req.stock.len() != 1 {
+        return Err(ValidationError::new(
+            "layout_mode=vacuum_table requires exactly one stock entry",
+        ));
     }
     let mut seen_stock_ids: HashSet<String> = HashSet::new();
     let mut duplicate_stock_ids: Vec<String> = Vec::new();

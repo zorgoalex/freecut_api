@@ -967,6 +967,251 @@ async fn optimize_layout_mode_default_guillotine() {
 }
 
 #[tokio::test]
+async fn optimize_vacuum_table_profile_clusters_homogeneous_parts() {
+    let app = app_for_test();
+    let body = serde_json::json!({
+        "units": "mm",
+        "stock": [
+            { "id": "vacuum_2800x1050", "width_mm": 2800.0, "height_mm": 1050.0, "qty": 1 }
+        ],
+        "items": [
+            {
+                "id": "mdf",
+                "width_mm": 600.0,
+                "height_mm": 300.0,
+                "qty": 11,
+                "rotation": "allow_90",
+                "pattern_direction": "none"
+            }
+        ],
+        "params": {
+            "kerf_mm": 80.0,
+            "spacing_mm": 0.0,
+            "trim_mm": { "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0 },
+            "objective": "min_waste",
+            "layout_mode": "vacuum_table",
+            "vacuum": { "direction": "optimal" },
+            "include_svg": true,
+            "time_limit_ms": 2000,
+            "restarts": 10
+        }
+    })
+    .to_string();
+
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    assert_eq!(
+        json.pointer("/summary/layout_mode").and_then(Value::as_str),
+        Some("vacuum_table")
+    );
+    assert_eq!(
+        json.pointer("/summary/restarts_used")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
+    assert!(json.pointer("/summary/restart_policy").is_none());
+    assert_eq!(
+        json.pointer("/summary/vacuum/chosen_direction")
+            .and_then(Value::as_str),
+        Some("width")
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/strategy")
+            .and_then(Value::as_str),
+        Some("homogeneous")
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/placed_count")
+            .and_then(Value::as_u64),
+        Some(11)
+    );
+    assert!(
+        json.pointer("/summary/vacuum/min_clearance_mm")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+            >= 80.0
+    );
+
+    let placements = json
+        .pointer("/solutions/0/placements")
+        .and_then(Value::as_array)
+        .expect("expected placements");
+    assert_eq!(placements.len(), 11);
+    assert!(placements
+        .iter()
+        .any(|placement| placement.get("rotated").and_then(Value::as_bool) == Some(true)));
+    assert!(placements
+        .iter()
+        .any(|placement| placement.get("rotated").and_then(Value::as_bool) == Some(false)));
+
+    let min_x = placements
+        .iter()
+        .filter_map(|p| p.get("x_mm").and_then(Value::as_f64))
+        .fold(f64::INFINITY, f64::min);
+    let min_y = placements
+        .iter()
+        .filter_map(|p| p.get("y_mm").and_then(Value::as_f64))
+        .fold(f64::INFINITY, f64::min);
+    let max_x = placements
+        .iter()
+        .filter_map(|p| Some(p.get("x_mm")?.as_f64()? + p.get("width_mm")?.as_f64()?))
+        .fold(f64::NEG_INFINITY, f64::max);
+    let max_y = placements
+        .iter()
+        .filter_map(|p| Some(p.get("y_mm")?.as_f64()? + p.get("height_mm")?.as_f64()?))
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!((min_x - 0.0).abs() < 0.001, "min_x={min_x}");
+    assert!((min_y - 0.0).abs() < 0.001, "min_y={min_y}");
+    assert!(
+        max_x <= 2640.001,
+        "expected left-clustered bbox, max_x={max_x}"
+    );
+    assert!(
+        max_y <= 980.001,
+        "expected top-clustered bbox, max_y={max_y}"
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/used_bbox/x_mm")
+            .and_then(Value::as_f64),
+        Some(0.0)
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/used_bbox/y_mm")
+            .and_then(Value::as_f64),
+        Some(0.0)
+    );
+    assert!(json
+        .pointer("/artifacts/svg")
+        .and_then(Value::as_str)
+        .is_some_and(|svg| svg.contains("<svg")));
+}
+
+#[tokio::test]
+async fn optimize_vacuum_table_does_not_retry_into_nested() {
+    let app = app_for_test();
+    let body = serde_json::json!({
+        "units": "mm",
+        "stock": [
+            { "id": "vacuum_2800x1050", "width_mm": 2800.0, "height_mm": 1050.0, "qty": 1 }
+        ],
+        "items": [
+            {
+                "id": "mdf",
+                "width_mm": 600.0,
+                "height_mm": 300.0,
+                "qty": 11,
+                "rotation": "allow_90",
+                "pattern_direction": "none"
+            }
+        ],
+        "params": {
+            "kerf_mm": 80.0,
+            "spacing_mm": 0.0,
+            "trim_mm": { "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0 },
+            "objective": "min_waste",
+            "layout_mode": "vacuum_table",
+            "vacuum": { "direction": "height" },
+            "include_svg": false,
+            "retry_strategy": "smart",
+            "time_limit_ms": 2000,
+            "restarts": 10
+        }
+    })
+    .to_string();
+
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    assert_eq!(
+        json.pointer("/summary/layout_mode").and_then(Value::as_str),
+        Some("vacuum_table")
+    );
+    assert!(json.pointer("/summary/retry").is_none());
+    assert_eq!(
+        json.pointer("/summary/restarts_used")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/chosen_direction")
+            .and_then(Value::as_str),
+        Some("height")
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/placed_count")
+            .and_then(Value::as_u64),
+        Some(8)
+    );
+    let placements = json
+        .pointer("/solutions/0/placements")
+        .and_then(Value::as_array)
+        .expect("expected compact height placements");
+    let min_x = placements
+        .iter()
+        .filter_map(|p| p.get("x_mm").and_then(Value::as_f64))
+        .fold(f64::INFINITY, f64::min);
+    let min_y = placements
+        .iter()
+        .filter_map(|p| p.get("y_mm").and_then(Value::as_f64))
+        .fold(f64::INFINITY, f64::min);
+    let max_x = placements
+        .iter()
+        .filter_map(|p| Some(p.get("x_mm")?.as_f64()? + p.get("width_mm")?.as_f64()?))
+        .fold(f64::NEG_INFINITY, f64::max);
+    let max_y = placements
+        .iter()
+        .filter_map(|p| Some(p.get("y_mm")?.as_f64()? + p.get("height_mm")?.as_f64()?))
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!((min_x - 0.0).abs() < 0.001, "min_x={min_x}");
+    assert!((min_y - 0.0).abs() < 0.001, "min_y={min_y}");
+    assert!(
+        max_x <= 2640.001,
+        "height mode should cluster left, max_x={max_x}"
+    );
+    assert!(
+        max_y <= 680.001,
+        "height mode should avoid distributed bottom waste, max_y={max_y}"
+    );
+}
+
+#[tokio::test]
+async fn optimize_vacuum_table_requires_single_stock_profile() {
+    let app = app_for_test();
+    let body = serde_json::json!({
+        "units": "mm",
+        "stock": [
+            { "id": "a", "width_mm": 2800.0, "height_mm": 1050.0, "qty": 1 },
+            { "id": "b", "width_mm": 2400.0, "height_mm": 1200.0, "qty": 1 }
+        ],
+        "items": [
+            {
+                "id": "mdf",
+                "width_mm": 600.0,
+                "height_mm": 300.0,
+                "qty": 1,
+                "rotation": "allow_90",
+                "pattern_direction": "none"
+            }
+        ],
+        "params": {
+            "kerf_mm": 80.0,
+            "spacing_mm": 0.0,
+            "trim_mm": { "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0 },
+            "objective": "min_waste",
+            "layout_mode": "vacuum_table",
+            "include_svg": false
+        }
+    })
+    .to_string();
+
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {json}");
+    assert_eq!(
+        json.get("error_code").and_then(Value::as_str),
+        Some("VALIDATION_ERROR")
+    );
+}
+
+#[tokio::test]
 async fn optimize_defaults_time_limit_and_restarts() {
     let config = AppConfig {
         port: 0,

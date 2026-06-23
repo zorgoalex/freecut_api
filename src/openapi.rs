@@ -6,7 +6,8 @@ use crate::models::{
     CandidateSelectionTelemetry, ErrorResponse, GaOverrideParams, GaProfile, GroupShiftParams,
     GroupShiftTelemetry, Item, LayoutMode, Objective, OptimizeRequest, OptimizeResponse, Params,
     PatternDirection, Placement, PortfolioParams, PortfolioTelemetry, RestartPolicyTelemetry,
-    Rotation, SlaProfile, Solution, StockItem, Summary, Trim, Units,
+    Rotation, SlaProfile, Solution, StockItem, Summary, Trim, Units, VacuumDirection, VacuumParams,
+    VacuumTelemetry, VacuumUsedBbox,
 };
 
 #[derive(OpenApi)]
@@ -24,6 +25,8 @@ use crate::models::{
             OptimizeRequest,
             Units,
             Params,
+            VacuumParams,
+            VacuumDirection,
             PortfolioParams,
             BeamParams,
             AlnsParams,
@@ -47,6 +50,8 @@ use crate::models::{
             AlnsOperatorTelemetry,
             CandidateSelectionTelemetry,
             GroupShiftTelemetry,
+            VacuumTelemetry,
+            VacuumUsedBbox,
             Solution,
             Placement,
             Artifacts,

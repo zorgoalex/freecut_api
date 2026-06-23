@@ -18,6 +18,7 @@ use crate::models::{
     ProfilePoolTelemetry, RemnantTelemetry, RestartPolicyTelemetry, RetryStrategy, RetryTelemetry,
     SlaProfile, Solution, Summary, Trim, UnplacedItem,
 };
+use crate::vacuum::run_vacuum_layout;
 use crate::validation::item_fits_any_stock_public;
 
 const SCALE: f64 = 1000.0;
@@ -198,6 +199,9 @@ pub async fn optimize_request(
     req: OptimizeRequest,
     config: &AppConfig,
 ) -> Result<OptimizeResponse, OptimizeError> {
+    if req.params.layout_mode.unwrap_or(LayoutMode::Guillotine) == LayoutMode::VacuumTable {
+        return optimize_request_internal(req, config, SolveMode::Default).await;
+    }
     let strategy = req.params.retry_strategy.unwrap_or(RetryStrategy::Smart);
     let max_attempts = req.params.max_retry_attempts.unwrap_or(3).max(1) as usize;
     if matches!(strategy, RetryStrategy::Disabled) || max_attempts <= 1 {
@@ -235,6 +239,9 @@ async fn optimize_request_internal(
     let layout_mode = req.params.layout_mode.unwrap_or(LayoutMode::Guillotine);
     let include_svg = req.params.include_svg.unwrap_or(true);
     let used_seed = req.params.seed.unwrap_or_else(generate_seed);
+    if layout_mode == LayoutMode::VacuumTable {
+        return optimize_vacuum_request(&req, include_svg, used_seed);
+    }
     if matches!(mode, SolveMode::Default)
         && req
             .params
@@ -311,6 +318,7 @@ async fn optimize_request_internal(
                     max_shift_mm: 0.0,
                 }),
                 remnant: None,
+                vacuum: None,
             },
             solutions: vec![],
             unplaced_items: prepared.oversized_items,
@@ -461,6 +469,72 @@ async fn optimize_request_internal(
         include_svg,
         partition_telemetry,
     ))
+}
+
+fn optimize_vacuum_request(
+    req: &OptimizeRequest,
+    include_svg: bool,
+    used_seed: u64,
+) -> Result<OptimizeResponse, OptimizeError> {
+    let start = Instant::now();
+    let layout = run_vacuum_layout(req).map_err(|message| OptimizeError::Constraint {
+        message,
+        details: None,
+    })?;
+    let time_ms = start.elapsed().as_millis() as u64;
+    let gap_mm = req.params.kerf_mm + req.params.spacing_mm;
+    let (used_stock_count, total_stock_area, total_waste_area) =
+        calculate_solution_stats(&layout.solutions);
+    let remnant = include_svg.then(|| remnant_metrics(&layout.solutions, REMNANT_GRID_MM));
+    let svg = if include_svg {
+        Some(build_svg(
+            &layout.solutions,
+            &layout.unplaced_items,
+            &req.params.trim_mm,
+            gap_mm,
+        ))
+    } else {
+        None
+    };
+
+    Ok(OptimizeResponse {
+        status: "ok",
+        summary: Summary {
+            objective: req.params.objective,
+            used_stock_count,
+            total_waste_area_mm2: total_waste_area,
+            waste_percent: if total_stock_area > 0.0 {
+                100.0 * total_waste_area / total_stock_area
+            } else {
+                0.0
+            },
+            time_ms,
+            restarts_used: 0,
+            restarts_requested: 0,
+            used_seed,
+            layout_mode: LayoutMode::VacuumTable,
+            timeout_reason: None,
+            restart_policy: None,
+            portfolio: None,
+            beam: None,
+            alns: None,
+            candidate_selection: None,
+            profile_pool: None,
+            retry: None,
+            partition: None,
+            group_shift: None,
+            consolidate: None,
+            remnant,
+            vacuum: Some(layout.telemetry),
+        },
+        solutions: layout.solutions,
+        unplaced_items: layout.unplaced_items,
+        artifacts: Artifacts {
+            svg,
+            group_shift_before_svg: None,
+            group_shift_diff_svg: None,
+        },
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -645,6 +719,7 @@ fn build_response_from_outcome(
         group_shift,
         consolidate: run_outcome.consolidate,
         remnant,
+        vacuum: None,
     };
 
     let svg = if include_svg {
@@ -2797,6 +2872,7 @@ fn try_repack_window(
     let solutions = match layout_mode {
         LayoutMode::Nested => ffd.build_nested_heuristic(),
         LayoutMode::Guillotine => ffd.build_guillotine_heuristic(),
+        LayoutMode::VacuumTable => ffd.build_nested_heuristic(),
     };
     let mut best: Option<cut_optimizer_2d::Solution> = None;
     for sol in solutions {
@@ -2833,6 +2909,7 @@ fn try_repack_window(
         let ga_res = match layout_mode {
             LayoutMode::Nested => ga.optimize_nested_top_k(4, |_| {}),
             LayoutMode::Guillotine => ga.optimize_guillotine_top_k(4, |_| {}),
+            LayoutMode::VacuumTable => ga.optimize_nested_top_k(4, |_| {}),
         };
         if let Ok(set) = ga_res {
             for sol in set.solutions {
@@ -2976,6 +3053,7 @@ fn resolve_lns_config(req: &OptimizeRequest) -> Option<LnsConfig> {
             let max_window = match req.params.layout_mode.unwrap_or(LayoutMode::Guillotine) {
                 LayoutMode::Nested => 6,
                 LayoutMode::Guillotine => 4,
+                LayoutMode::VacuumTable => 4,
             };
             Some(LnsConfig {
                 max_iters: 4000,
@@ -3146,6 +3224,7 @@ async fn run_restarts_with_budget(
         let heuristic_solutions = match layout_mode {
             LayoutMode::Nested => seed_opt.build_nested_heuristic(),
             LayoutMode::Guillotine => seed_opt.build_guillotine_heuristic(),
+            LayoutMode::VacuumTable => seed_opt.build_nested_heuristic(),
         };
         if !heuristic_solutions.is_empty() {
             let set = cut_optimizer_2d::SolutionSet {
@@ -3293,6 +3372,9 @@ async fn run_restarts_with_budget(
                 LayoutMode::Guillotine => {
                     optimizer.optimize_guillotine_top_k(ga_runtime.top_k, |_| {})
                 }
+                LayoutMode::VacuumTable => {
+                    optimizer.optimize_nested_top_k(ga_runtime.top_k, |_| {})
+                }
             };
             let ga_set = if let Some(config) = ga_fitness_config {
                 cut_optimizer_2d::with_ga_fitness_config(config, run_optimizer)
@@ -3309,6 +3391,7 @@ async fn run_restarts_with_budget(
                 let mut heuristic_solutions = match mode {
                     LayoutMode::Nested => optimizer.build_nested_heuristic(),
                     LayoutMode::Guillotine => optimizer.build_guillotine_heuristic(),
+                    LayoutMode::VacuumTable => optimizer.build_nested_heuristic(),
                 };
                 combined.solutions.append(&mut heuristic_solutions);
                 combined.solutions.extend(set.solutions);
@@ -3465,6 +3548,9 @@ async fn run_restarts_with_budget(
                     LayoutMode::Nested => optimizer.optimize_nested_top_k(ga_runtime.top_k, |_| {}),
                     LayoutMode::Guillotine => {
                         optimizer.optimize_guillotine_top_k(ga_runtime.top_k, |_| {})
+                    }
+                    LayoutMode::VacuumTable => {
+                        optimizer.optimize_nested_top_k(ga_runtime.top_k, |_| {})
                     }
                 };
                 if let Some(config) = ga_fitness_config {
@@ -6617,6 +6703,7 @@ mod tests {
                     group_shift: None,
                     consolidate: None,
                     remnant: None,
+                    vacuum: None,
                 },
                 solutions: Vec::new(),
                 unplaced_items: Vec::new(),

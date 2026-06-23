@@ -17,6 +17,7 @@ mod config;
 mod models;
 mod openapi;
 mod optimizer;
+mod vacuum;
 mod validation;
 
 use config::AppConfig;

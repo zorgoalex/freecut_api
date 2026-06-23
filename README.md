@@ -15,7 +15,7 @@ The project focuses on outcomes that matter in real manufacturing:
 - cleaner, more reusable offcuts;
 - deterministic runs through explicit seeds and telemetry;
 - visual auditability through SVG output and saved benchmark artifacts;
-- support for both nested and guillotine-style cutting workflows.
+- support for nested, guillotine-style, and vacuum-table cutting workflows.
 
 These improvements have business and environmental value at the same time.
 Better layouts reduce discarded material, replacement purchases, transport, and energy use across the production chain.
@@ -29,6 +29,7 @@ The goal is to make practical cutting optimization accessible to small workshops
 
 ## Features
 - 2D rectangle nesting with kerf/spacing/trim support
+- Separate vacuum-table profile for compact left-anchored vacuum press/table layouts
 - Rotation constraints and pattern direction flags
 - Multi-start optimization with deterministic seeds
 - **Multi-sheet support** with automatic sheet allocation
@@ -138,7 +139,9 @@ Example file: `examples/optimize_request.json`
     differences matter when multiple stock sizes are provided.
   - `seed`: Optional deterministic seed for reproducible results. If omitted, the
     service generates a seed per request (Unix epoch in ms) and returns it as `used_seed`.
-  - `layout_mode`: Layout mode: `"guillotine"` (default, guillotine-only cuts) or `"nested"`. Optional in the request.
+  - `layout_mode`: Layout mode: `"guillotine"` (default, guillotine-only cuts), `"nested"`, or `"vacuum_table"`. Optional in the request.
+  - `vacuum`: Optional settings used only with `layout_mode: "vacuum_table"`.
+    - `direction`: `"optimal"` (default), `"width"`, or `"height"`. The service clusters parts toward the left/top edge while keeping the effective kerf gap.
   - `include_svg`: Optional flag (`true` by default). Set to `false` to skip SVG generation and omit `artifacts.svg` in response.
   - `portfolio`: Optional anytime orchestration settings.
     - `enabled`: Optional (`true` by default when object is present).
