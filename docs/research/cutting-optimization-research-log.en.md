@@ -37,6 +37,7 @@ v74-profile-pool-candidate-quality-audit
 v75-backfill-headroom-spike
 v76-backfill-prototype
 v77-vacuum-compact-left-profile
+v78-ordinary-modes-compact-vacuum-sweep
 -->
 
 Language: English.
@@ -754,3 +755,39 @@ targeted repair candidates before investing more in scoring formula changes.
   Next mixed-size tests should check whether vacuum mode also needs local
   group/anchor compaction to pull edge shelf groups toward the main mass without
   losing placed count.
+
+## V78: Ordinary Modes Vs Compact Vacuum Sweep
+
+- Branch: `cdx/ordinary-compact-vacuum-sweep`.
+- Question: can regular `guillotine` / `nested` settings reproduce the same
+  characteristics as compact-left/top `vacuum_table`.
+- Method: HTTP `/v1/optimize` runs on a 2800 x 1050 sheet, `kerf_mm=80`,
+  `spacing_mm=0`, `stock.qty=1`. Compared `guillotine` and `nested` in GA,
+  GA+group_shift, aggressive group_shift, `engine=heuristic + cut_quality=max`,
+  and profile_pool modes. Seeds: 1,2,3,4,5,8,13,21 for the homogeneous fixture;
+  1,2,3,5,8 for mixed fixtures.
+- Homogeneous fixture: 11 parts of 600 x 300. Result was stronger than expected:
+  every tested regular mode and seed reached the same compact target:
+  **11/11**, bbox **2640 x 980 @ (0,0)**, min gap **80 mm**. Fastest regular
+  variant was `nested + engine=heuristic + cut_quality=max + group_shift` at
+  about **1.4 ms avg**; `nested.ga` was about **40 ms avg**. profile_pool is
+  unnecessary for this simple case.
+- Mixed fixtures:
+  - `mixed_shelves`: vacuum placed 12 / left 1, while regular best placed 13 and
+    stayed anchored at (0,0);
+  - `mixed_dense`: vacuum placed 10 / left 2, while `nested.ga` best placed 12
+    with bbox 2690 x 1010 @ (0,0);
+  - `mixed_tall`: vacuum placed 9 / left 5, while regular GA variants placed up
+    to 14, but used a wider/taller table footprint than the vacuum shelf target.
+- Conclusion: if "same result" means the **specific simple SketchCut case with
+  identical parts**, then yes — regular `nested`/`guillotine` can already
+  reproduce compact vacuum without the special profile. Practical fast payload:
+  `layout_mode="nested"`, `engine="heuristic"`, `cut_quality="max"`,
+  `group_shift={}`, with fixed `kerf/spacing/trim`.
+- This is not a full replacement for `vacuum_table`: on mixed-size jobs the
+  regular modes optimize placed count and area rather than the operator-facing
+  shelf-direction logic (`width/height/optimal`). They can be better by placed
+  count, but that is a different strategy. Keep `vacuum_table` as a separate
+  profile for reproducible SketchCut-style behavior; use regular modes as a
+  **compact/high-fill alternative** when maximum placed count matters more than
+  strict vacuum-direction layout.
