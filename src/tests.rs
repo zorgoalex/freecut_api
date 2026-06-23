@@ -1071,6 +1071,58 @@ async fn optimize_vacuum_table_profile_spreads_homogeneous_parts() {
 }
 
 #[tokio::test]
+async fn optimize_vacuum_table_does_not_retry_into_nested() {
+    let app = app_for_test();
+    let body = serde_json::json!({
+        "units": "mm",
+        "stock": [
+            { "id": "vacuum_2800x1050", "width_mm": 2800.0, "height_mm": 1050.0, "qty": 1 }
+        ],
+        "items": [
+            {
+                "id": "mdf",
+                "width_mm": 600.0,
+                "height_mm": 300.0,
+                "qty": 11,
+                "rotation": "allow_90",
+                "pattern_direction": "none"
+            }
+        ],
+        "params": {
+            "kerf_mm": 80.0,
+            "spacing_mm": 0.0,
+            "trim_mm": { "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0 },
+            "objective": "min_waste",
+            "layout_mode": "vacuum_table",
+            "vacuum": { "direction": "height" },
+            "include_svg": false,
+            "retry_strategy": "smart",
+            "time_limit_ms": 2000,
+            "restarts": 10
+        }
+    })
+    .to_string();
+
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    assert_eq!(
+        json.pointer("/summary/layout_mode").and_then(Value::as_str),
+        Some("vacuum_table")
+    );
+    assert!(json.pointer("/summary/retry").is_none());
+    assert_eq!(
+        json.pointer("/summary/restarts_used")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/chosen_direction")
+            .and_then(Value::as_str),
+        Some("height")
+    );
+}
+
+#[tokio::test]
 async fn optimize_vacuum_table_requires_single_stock_profile() {
     let app = app_for_test();
     let body = serde_json::json!({

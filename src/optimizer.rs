@@ -199,6 +199,9 @@ pub async fn optimize_request(
     req: OptimizeRequest,
     config: &AppConfig,
 ) -> Result<OptimizeResponse, OptimizeError> {
+    if req.params.layout_mode.unwrap_or(LayoutMode::Guillotine) == LayoutMode::VacuumTable {
+        return optimize_request_internal(req, config, SolveMode::Default).await;
+    }
     let strategy = req.params.retry_strategy.unwrap_or(RetryStrategy::Smart);
     let max_attempts = req.params.max_retry_attempts.unwrap_or(3).max(1) as usize;
     if matches!(strategy, RetryStrategy::Disabled) || max_attempts <= 1 {
