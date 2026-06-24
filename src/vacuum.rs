@@ -51,6 +51,7 @@ struct VacuumScore {
     placed_count: usize,
     unplaced_count: usize,
     coverage_ratio: f64,
+    direction_penalty: u8,
     bbox_width_ratio: f64,
     bbox_area_ratio: f64,
     edge_offset: f64,
@@ -252,11 +253,14 @@ fn choose_candidate(
         VacuumDirection::Width => &[VacuumDirection::Width],
         VacuumDirection::Height => &[VacuumDirection::Height],
     };
+    let preferred_axis = preferred_optimal_axis(parts, requested_direction);
 
     let mut best: Option<VacuumCandidate> = None;
     for &axis in axes {
-        if let Some(candidate) = pack_homogeneous(parts, axis, usable_width, usable_height, gap_mm)
+        if let Some(mut candidate) =
+            pack_homogeneous(parts, axis, usable_width, usable_height, gap_mm)
         {
+            apply_axis_preference(&mut candidate, preferred_axis);
             replace_if_better(&mut best, candidate);
         }
         for sorter in [
@@ -264,14 +268,36 @@ fn choose_candidate(
             VacuumSorter::LongSide,
             VacuumSorter::ShortSide,
         ] {
-            if let Some(candidate) =
+            if let Some(mut candidate) =
                 pack_general(parts, axis, usable_width, usable_height, gap_mm, sorter)
             {
+                apply_axis_preference(&mut candidate, preferred_axis);
                 replace_if_better(&mut best, candidate);
             }
         }
     }
     best
+}
+
+fn preferred_optimal_axis(
+    parts: &[VacuumPart],
+    requested_direction: VacuumDirection,
+) -> Option<VacuumDirection> {
+    if requested_direction != VacuumDirection::Optimal {
+        return None;
+    }
+    if parts.iter().all(|part| part.can_rotate) {
+        Some(VacuumDirection::Height)
+    } else {
+        Some(VacuumDirection::Width)
+    }
+}
+
+fn apply_axis_preference(candidate: &mut VacuumCandidate, preferred_axis: Option<VacuumDirection>) {
+    candidate.score.direction_penalty = match preferred_axis {
+        Some(axis) if axis != candidate.axis => 1,
+        _ => 0,
+    };
 }
 
 fn replace_if_better(best: &mut Option<VacuumCandidate>, candidate: VacuumCandidate) {
@@ -654,6 +680,7 @@ fn candidate_from_rows(
             placed_count,
             unplaced_count: requested_count.saturating_sub(placed_count),
             coverage_ratio,
+            direction_penalty: 0,
             bbox_width_ratio,
             bbox_area_ratio,
             edge_offset,
@@ -671,6 +698,9 @@ fn score_better(candidate: VacuumScore, current: VacuumScore) -> bool {
     }
     if (candidate.coverage_ratio - current.coverage_ratio).abs() > EPS {
         return candidate.coverage_ratio > current.coverage_ratio;
+    }
+    if candidate.direction_penalty != current.direction_penalty {
+        return candidate.direction_penalty < current.direction_penalty;
     }
     if (candidate.bbox_width_ratio - current.bbox_width_ratio).abs() > EPS {
         return candidate.bbox_width_ratio < current.bbox_width_ratio;

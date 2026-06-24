@@ -37,6 +37,7 @@ v74-profile-pool-candidate-quality-audit
 v75-backfill-headroom-spike
 v76-backfill-prototype
 v77-vacuum-compact-left-profile
+v80-vacuum-film-direction-policy
 -->
 
 Language: Russian.
@@ -1649,3 +1650,31 @@ targeted repair candidates, и только потом снова дорабат
   строгом соблюдении kerf. Дальше проверять mixed-size cases: нужен ли локальный
   group/anchor compaction внутри vacuum profile, чтобы сдвигать крайние shelf-группы
   к основной массе без потери placed count.
+
+## V80: Vacuum film-direction policy
+
+- Branch: `cdx/vacuum-film-direction-policy`.
+- Технологическое уточнение пользователя: vacuum-раскрой нужен для закатки плёнки
+  вакуумным столом, поэтому важна минимизация отходов плёнки. Если текстура
+  позволяет разворот детали, варианты `height` предпочтительнее. Если текстуру
+  нужно соблюдать и разворот запрещён, предпочтительнее `width`.
+- Проверочный кейс: sheet 2800 x 1050, 8 деталей 600 x 295, `kerf_mm=80`,
+  `spacing_mm=0`.
+- До изменения: `direction=optimal` выбирал `height` и при `allow_90`, и при
+  `rotation=forbid`. Это корректно по placed/clearance, но неверно по
+  технологической политике для текстуры.
+- Изменение: для `vacuum.direction = "optimal"` добавлен tie-break после
+  placed/unplaced/coverage и до bbox scoring:
+  - если все детали могут вращаться (`rotation=allow_90`, `pattern_direction=none`)
+    — предпочитать `height`;
+  - если хотя бы одна деталь не может вращаться или имеет pattern direction —
+    предпочитать `width`.
+- Контрольный результат:
+
+| rotation | requested | chosen | placed | bbox | clearance |
+|---|---|---|---:|---|---:|
+| allow_90 | optimal | height | 8/8 | 2030 x 1045 | 80 |
+| forbid | optimal | width | 8/8 | 2640 x 670 | 80 |
+
+- Тесты: добавлен `optimize_vacuum_table_optimal_respects_film_direction_policy`;
+  `cargo test optimize_vacuum_table` — 4 passed.

@@ -610,6 +610,7 @@ Practical notes:
 - expose this as a separate "Vacuum table" workflow/profile in UI;
 - use exactly one stock entry for the table size;
 - keep `direction: "optimal"` unless the operator explicitly needs rows along width or height;
+- for vacuum film rolling, `optimal` treats film direction as a real quality signal: if all parts can rotate it prefers `height` on ties to reduce film waste; if any part cannot rotate or has a pattern direction it prefers `width`;
 - do not expose GA, profile-pool, or group-shift controls for this profile, because the vacuum path bypasses those search modes;
 - interpret `kerf_mm + spacing_mm` as the minimum clearance between neighboring parts; extra slack should move outside the main part cluster, primarily to the right/bottom.
 

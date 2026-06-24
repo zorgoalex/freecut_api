@@ -234,7 +234,9 @@ pub enum LayoutMode {
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
 pub struct VacuumParams {
     /// Main direction for shelf rows on the vacuum table. `optimal` tries both
-    /// width-wise rows and height-wise columns and picks the better fill.
+    /// width-wise rows and height-wise columns and picks the better fill. On
+    /// ties, it prefers `height` when all parts can rotate (film-waste policy)
+    /// and `width` when rotation or pattern constraints must be preserved.
     /// Optional, defaults to `optimal`.
     pub direction: Option<VacuumDirection>,
 }

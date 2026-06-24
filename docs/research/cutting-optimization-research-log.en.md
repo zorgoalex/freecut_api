@@ -37,6 +37,7 @@ v74-profile-pool-candidate-quality-audit
 v75-backfill-headroom-spike
 v76-backfill-prototype
 v77-vacuum-compact-left-profile
+v80-vacuum-film-direction-policy
 -->
 
 Language: English.
@@ -754,3 +755,30 @@ targeted repair candidates before investing more in scoring formula changes.
   Next mixed-size tests should check whether vacuum mode also needs local
   group/anchor compaction to pull edge shelf groups toward the main mass without
   losing placed count.
+
+## V80: Vacuum Film-Direction Policy
+
+- Branch: `cdx/vacuum-film-direction-policy`.
+- User requirement: the vacuum profile is for rolling film on a vacuum table, so
+  film waste is a real production objective. If texture allows part rotation,
+  `height` variants are preferred. If texture must be preserved and rotation is
+  forbidden, `width` is preferred.
+- Check case: sheet 2800 x 1050, 8 parts 600 x 295, `kerf_mm=80`,
+  `spacing_mm=0`.
+- Before the change: `direction=optimal` selected `height` for both `allow_90`
+  and `rotation=forbid`. That was valid by placed/clearance, but wrong for the
+  texture-preserving production policy.
+- Change: for `vacuum.direction = "optimal"`, add a tie-break after
+  placed/unplaced/coverage and before bbox scoring:
+  - if all parts can rotate (`rotation=allow_90`, `pattern_direction=none`),
+    prefer `height`;
+  - if any part cannot rotate or has a pattern direction, prefer `width`.
+- Control result:
+
+| rotation | requested | chosen | placed | bbox | clearance |
+|---|---|---|---:|---|---:|
+| allow_90 | optimal | height | 8/8 | 2030 x 1045 | 80 |
+| forbid | optimal | width | 8/8 | 2640 x 670 | 80 |
+
+- Tests: added `optimize_vacuum_table_optimal_respects_film_direction_policy`;
+  `cargo test optimize_vacuum_table` — 4 passed.

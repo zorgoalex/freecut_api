@@ -141,7 +141,7 @@ Example file: `examples/optimize_request.json`
     service generates a seed per request (Unix epoch in ms) and returns it as `used_seed`.
   - `layout_mode`: Layout mode: `"guillotine"` (default, guillotine-only cuts), `"nested"`, or `"vacuum_table"`. Optional in the request.
   - `vacuum`: Optional settings used only with `layout_mode: "vacuum_table"`.
-    - `direction`: `"optimal"` (default), `"width"`, or `"height"`. The service clusters parts toward the left/top edge while keeping the effective kerf gap.
+    - `direction`: `"optimal"` (default), `"width"`, or `"height"`. The service clusters parts toward the left/top edge while keeping the effective kerf gap. For vacuum film rolling, `optimal` prefers `height` on ties when all parts can rotate, and `width` when rotation or pattern constraints must be preserved.
   - `include_svg`: Optional flag (`true` by default). Set to `false` to skip SVG generation and omit `artifacts.svg` in response.
   - `portfolio`: Optional anytime orchestration settings.
     - `enabled`: Optional (`true` by default when object is present).

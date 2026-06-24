@@ -308,7 +308,7 @@ Used only when `params.layout_mode = "vacuum_table"`.
 
 | Field | Type | Default | Valid values | Description |
 |---|---:|---:|---|---|
-| `direction` | string | `"optimal"` | `"optimal"`, `"width"`, `"height"` | Row direction for the vacuum table. `optimal` evaluates both width-wise rows and height-wise columns. |
+| `direction` | string | `"optimal"` | `"optimal"`, `"width"`, `"height"` | Row direction for the vacuum table. `optimal` evaluates both width-wise rows and height-wise columns. When placement quality is tied, it prefers `height` if all parts can rotate, because this minimizes film waste for vacuum film rolling; it prefers `width` when any part cannot rotate or has a pattern direction. |
 
 Vacuum-table mode requires exactly one `stock` entry. `stock.qty` limits how many table loads may be emitted; omitted or `0` means unlimited table loads. `kerf_mm + spacing_mm` is treated as the minimum clearance between neighboring parts. Remaining slack is pushed to the right/bottom side instead of being distributed as internal corridors.
 
