@@ -38,6 +38,7 @@ v75-backfill-headroom-spike
 v76-backfill-prototype
 v77-vacuum-compact-left-profile
 v78-ordinary-modes-compact-vacuum-sweep
+v79-reduced-qty-ordinary-vacuum-clearance
 -->
 
 Language: English.
@@ -791,3 +792,43 @@ targeted repair candidates before investing more in scoring formula changes.
   profile for reproducible SketchCut-style behavior; use regular modes as a
   **compact/high-fill alternative** when maximum placed count matters more than
   strict vacuum-direction layout.
+
+## V79: Reduced-Qty Ordinary Vs Vacuum Clearance Check
+
+- Branch: `cdx/ordinary-compact-vacuum-sweep`.
+- Question: does the V78 conclusion still hold when the same part sets are run
+  with about 25% fewer parts.
+- Fixtures:
+  - `homo_600x300`: 11 -> 8;
+  - `mixed_shelves`: 13 -> 10;
+  - `mixed_tall`: 14 -> 10;
+  - `mixed_dense`: 12 -> 9.
+- Method: HTTP `/v1/optimize`, sheet 2800 x 1050, `kerf_mm=80`, `spacing_mm=0`,
+  fixed seed=1. Compared `vacuum_table optimal`, `nested heuristic max +
+  group_shift`, `nested GA`, and `guillotine GA`. Local artifacts were saved
+  under `ai_docs/tmp/ordinary_vs_vacuum_reduced25_20260624_161926`.
+
+Result:
+
+| case | mode | placed | bbox | min gap | clearance |
+|---|---|---:|---|---:|---|
+| homo_600x300_8 | vacuum | 8/8 | 2640 x 680 | 80 | OK |
+| homo_600x300_8 | nested heuristic | 8/8 | 2640 x 680 | 80 | OK |
+| homo_600x300_8 | nested GA | 8/8 | 2640 x 680 | 80 | OK |
+| homo_600x300_8 | guillotine GA | 8/8 | 2340 x 980 | 0 | FAIL |
+| mixed_shelves_10 | vacuum | 10/10 | 2250 x 1030 | 80 | OK |
+| mixed_shelves_10 | nested heuristic/GA | 10/10 | 2040 x 1010 | 0 | FAIL |
+| mixed_shelves_10 | guillotine GA | 10/10 | 2250 x 1030 | 80 | OK |
+| mixed_tall_10 | vacuum | 10/10 | 2330 x 880 | 80 | OK |
+| mixed_tall_10 | nested heuristic/GA | 10/10 | 1920 x 1030 | 80 | OK |
+| mixed_tall_10 | guillotine GA | 10/10 | 2560 x 970 | 50.99 | FAIL |
+| mixed_dense_9 | vacuum | 9/9 | 2530 x 1030 | 80 | OK |
+| mixed_dense_9 | nested heuristic/GA | 9/9 | 2040 x 1010 | 0 | FAIL |
+| mixed_dense_9 | guillotine GA | 9/9 | 2420 x 1010 | 0 | FAIL |
+
+- Conclusion: with lower sheet fill, regular modes often still look compact-left
+  by bbox, but **that does not guarantee equivalence to the vacuum profile**:
+  some ordinary layouts have placement-level minimum clearance below `kerf_mm=80`
+  (down to 0). For production vacuum use, `vacuum_table` remains the safer
+  profile. Ordinary modes should be used only with a clearance audit, or after
+  adding strict kerf-aware compact scoring/repair.
