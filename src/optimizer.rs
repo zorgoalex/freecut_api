@@ -2675,7 +2675,7 @@ fn pick_best_candidate(
         // the other tie-breakers compare candidates in their final (anchored)
         // geometry.  Previously only the winner was compacted, which made the
         // corner_free tie-break see pre-compaction noise.
-        compact_solution(&mut solution, kerf_gap_units);
+        compact_solution_guarded(&mut solution, kerf_gap_units);
         let candidate = build_candidate(solution);
         counters.candidates_valid = counters.candidates_valid.saturating_add(1);
         best = match best {
@@ -2993,7 +2993,7 @@ fn consolidate_underfull_sheets(
                 continue;
             };
             let mut spliced = splice_window(&candidate.solution, &window, new_sheets);
-            compact_solution(&mut spliced, kerf_gap_units);
+            compact_solution_guarded(&mut spliced, kerf_gap_units);
             let new_candidate = build_candidate(spliced);
             if new_candidate.used_stock_count < candidate.used_stock_count {
                 tel.windows_accepted += 1;
@@ -3154,7 +3154,7 @@ fn lns_refine(
             continue;
         };
         let mut spliced = splice_window(&candidate.solution, &window, new_sheets);
-        compact_solution(&mut spliced, kerf_gap_units);
+        compact_solution_guarded(&mut spliced, kerf_gap_units);
         let cand2 = build_candidate(spliced);
         if cand2.used_stock_count < candidate.used_stock_count {
             candidate = cand2;
@@ -4802,6 +4802,55 @@ fn map_optimizer_error(err: cut_optimizer_2d::Error, prepared: &PreparedInput) -
     }
 }
 
+/// True if any pair of pieces on any sheet is closer than `kerf_gap_units`,
+/// measured as the true minimum (Euclidean) clearance between the two
+/// axis-aligned rectangles.  A real overlap (clearance 0) or a sub-kerf
+/// adjacency is flagged; a valid diagonal staircase whose corner-to-corner
+/// distance is >= kerf is NOT (its single-axis gaps may each be below kerf).
+fn solution_violates_kerf(solution: &cut_optimizer_2d::Solution, kerf_gap_units: usize) -> bool {
+    let kerf_sq = (kerf_gap_units as u128) * (kerf_gap_units as u128);
+    for stock in &solution.stock_pieces {
+        let p = &stock.cut_pieces;
+        for i in 0..p.len() {
+            for j in (i + 1)..p.len() {
+                let a = &p[i];
+                let b = &p[j];
+                // Per-axis separation (0 when the ranges overlap on that axis).
+                let dx = (b.x as i64 - (a.x + a.width) as i64)
+                    .max(a.x as i64 - (b.x + b.width) as i64)
+                    .max(0) as u128;
+                let dy = (b.y as i64 - (a.y + a.length) as i64)
+                    .max(a.y as i64 - (b.y + b.length) as i64)
+                    .max(0) as u128;
+                if dx * dx + dy * dy < kerf_sq {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Compacts the solution but never RETURNS a kerf-violating layout: if the
+/// compaction pass (or any future change to it) produces overlapping or
+/// sub-kerf geometry, the pre-compaction layout is restored.  That snapshot
+/// comes straight from the packer, which reserves the blade gap on every cut,
+/// so it is kerf-valid by construction.  Defense in depth: the service must
+/// never emit an invalid layout as `status: "ok"` — there is no other
+/// output-side geometry validation in the pipeline.
+fn compact_solution_guarded(
+    solution: &mut cut_optimizer_2d::Solution,
+    kerf_gap_units: usize,
+) -> u32 {
+    let snapshot = solution.stock_pieces.clone();
+    let moved = compact_solution(solution, kerf_gap_units);
+    if moved > 0 && solution_violates_kerf(solution, kerf_gap_units) {
+        solution.stock_pieces = snapshot;
+        return 0;
+    }
+    moved
+}
+
 /// Slide each cut piece on every sheet as far left and as far up as it can
 /// go while keeping the kerf gap from every other piece, then translate each
 /// sheet's bounding box to balance the four edge gaps.
@@ -4834,73 +4883,84 @@ fn compact_solution(solution: &mut cut_optimizer_2d::Solution, kerf_gap_units: u
         // until a full pass produces no moves — order matters: sliding one
         // piece left can unlock further moves for pieces above/below it.
         //
-        // For each piece we compute its leftmost valid x as MAX(0, all
-        // "right_edge + kerf" of pieces that are currently to the left of
-        // it in y-overlap).  We use MAX — not MIN — because each such value
-        // is a LOWER bound on where the piece can sit, and the tightest
-        // (largest) lower bound wins.  Using MIN here would let a piece
-        // slide past a neighbour that was itself just slid into place, which
-        // produces overlap.
+        // The two axes MUST be slid SEQUENTIALLY, not simultaneously: slide x
+        // first (y fixed), then recompute the x-overlap set at the NEW x and
+        // slide y.  Computing both lower bounds from the pre-move projections
+        // and applying them at once is unsound — a piece lying purely
+        // diagonally (sharing neither the x- nor the y-projection) constrains
+        // neither bound, so the simultaneous move slides it on top of that
+        // neighbour (full overlap or a sub-kerf gap).  Sliding x first makes
+        // the diagonal neighbour share the x-projection, so the subsequent y
+        // slide is correctly blocked by it.
+        //
+        // Each bound is MAX(0, all "edge + kerf" of pieces currently on the
+        // blocking side) — the tightest (largest) lower bound wins; MIN would
+        // let a piece slide past a neighbour and overlap it.
         loop {
             let mut moved_this_pass = false;
             for i in 0..n {
+                // ── Slide x (y fixed): blocked by every piece whose y-range
+                //    overlaps ours and whose right edge is at or left of us. ──
                 let cur_x = stock.cut_pieces[i].x;
                 let cur_y = stock.cut_pieces[i].y;
-                let cur_w = stock.cut_pieces[i].width;
                 let cur_h = stock.cut_pieces[i].length;
 
                 let mut min_x_lower_bound: usize = 0;
-                let mut min_y_lower_bound: usize = 0;
-
                 for j in 0..n {
                     if i == j {
                         continue;
                     }
-                    // Read other's CURRENT position (may have been moved
-                    // earlier in this same pass).
                     let other_x = stock.cut_pieces[j].x;
                     let other_y = stock.cut_pieces[j].y;
                     let other_w = stock.cut_pieces[j].width;
                     let other_h = stock.cut_pieces[j].length;
 
-                    // y-axis overlap: if our y-range intersects the other's
-                    // y-range, sliding in x is constrained by the other.
                     let y_overlap = cur_y < other_y.saturating_add(other_h)
                         && cur_y.saturating_add(cur_h) > other_y;
                     if y_overlap {
                         let right_edge = other_x
                             .saturating_add(other_w)
                             .saturating_add(kerf_gap_units);
-                        if right_edge <= cur_x {
-                            // other is to the left of us with at least kerf;
-                            // right_edge is a LOWER bound on where we can be.
-                            if right_edge > min_x_lower_bound {
-                                min_x_lower_bound = right_edge;
-                            }
+                        if right_edge <= cur_x && right_edge > min_x_lower_bound {
+                            min_x_lower_bound = right_edge;
                         }
                     }
+                }
+                if min_x_lower_bound < cur_x {
+                    stock.cut_pieces[i].x = min_x_lower_bound;
+                    total_moved = total_moved.saturating_add(1);
+                    moved_this_pass = true;
+                }
 
-                    // x-axis overlap: symmetric constraint for vertical slide.
+                // ── Slide y (x fixed at the just-updated value): blocked by
+                //    every piece whose x-range overlaps ours at the NEW x. ──
+                let cur_x = stock.cut_pieces[i].x;
+                let cur_y = stock.cut_pieces[i].y;
+                let cur_w = stock.cut_pieces[i].width;
+
+                let mut min_y_lower_bound: usize = 0;
+                for j in 0..n {
+                    if i == j {
+                        continue;
+                    }
+                    let other_x = stock.cut_pieces[j].x;
+                    let other_y = stock.cut_pieces[j].y;
+                    let other_w = stock.cut_pieces[j].width;
+                    let other_h = stock.cut_pieces[j].length;
+
                     let x_overlap = cur_x < other_x.saturating_add(other_w)
                         && cur_x.saturating_add(cur_w) > other_x;
                     if x_overlap {
                         let top_edge = other_y
                             .saturating_add(other_h)
                             .saturating_add(kerf_gap_units);
-                        if top_edge <= cur_y {
-                            if top_edge > min_y_lower_bound {
-                                min_y_lower_bound = top_edge;
-                            }
+                        if top_edge <= cur_y && top_edge > min_y_lower_bound {
+                            min_y_lower_bound = top_edge;
                         }
                     }
                 }
-
-                let new_x = min_x_lower_bound; // already clamped to >= 0
-                let new_y = min_y_lower_bound;
-                // Only ever move LEFT or UP, never right/down.
-                if new_x < cur_x || new_y < cur_y {
-                    stock.cut_pieces[i].x = new_x;
-                    stock.cut_pieces[i].y = new_y;
+                if min_y_lower_bound < cur_y {
+                    stock.cut_pieces[i].y = min_y_lower_bound;
                     total_moved = total_moved.saturating_add(1);
                     moved_this_pass = true;
                 }
@@ -6636,6 +6696,185 @@ mod tests {
             rotated: false,
             pattern_direction: PatternDirection::None,
         }
+    }
+
+    // ── compact_solution kerf-safety (regression) ────────────────────────────
+
+    /// Build a single-sheet `ResultStockPiece` from `(x, y, w, length)` tuples
+    /// in vendor units. Sheet is large so the slide is never edge-limited.
+    fn stock_from_rects(
+        rects: &[(usize, usize, usize, usize)],
+    ) -> cut_optimizer_2d::ResultStockPiece {
+        let cut_pieces = rects
+            .iter()
+            .enumerate()
+            .map(
+                |(i, &(x, y, width, length))| cut_optimizer_2d::ResultCutPiece {
+                    external_id: Some(i),
+                    x,
+                    y,
+                    width,
+                    length,
+                    pattern_direction: CutPatternDirection::None,
+                    is_rotated: false,
+                },
+            )
+            .collect();
+        cut_optimizer_2d::ResultStockPiece {
+            width: 100_000,
+            length: 100_000,
+            pattern_direction: CutPatternDirection::None,
+            cut_pieces,
+            waste_pieces: Vec::new(),
+            price: 0,
+        }
+    }
+
+    /// Asserts every pair of pieces on the sheet is kerf-clear: separated by at
+    /// least `kerf_gap_units` on at least one axis (the guillotine clearance
+    /// model). Subsumes the no-overlap check (overlap = clearance < 0 on both
+    /// axes).
+    fn assert_all_pairs_kerf_clear(stock: &cut_optimizer_2d::ResultStockPiece, kerf: usize) {
+        let p = &stock.cut_pieces;
+        let kerf = kerf as i64;
+        for i in 0..p.len() {
+            for j in (i + 1)..p.len() {
+                let a = &p[i];
+                let b = &p[j];
+                let gap_x = (b.x as i64 - (a.x + a.width) as i64)
+                    .max(a.x as i64 - (b.x + b.width) as i64);
+                let gap_y = (b.y as i64 - (a.y + a.length) as i64)
+                    .max(a.y as i64 - (b.y + b.length) as i64);
+                assert!(
+                    gap_x >= kerf || gap_y >= kerf,
+                    "pieces {} and {} violate kerf={}: gap_x={} gap_y={} \
+                     (a=({},{},{},{}) b=({},{},{},{}))",
+                    i,
+                    j,
+                    kerf,
+                    gap_x,
+                    gap_y,
+                    a.x,
+                    a.y,
+                    a.width,
+                    a.length,
+                    b.x,
+                    b.y,
+                    b.width,
+                    b.length,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compact_solution_keeps_diagonal_pieces_kerf_clear() {
+        // Two valid, kerf-respecting pieces placed diagonally (no shared x- or
+        // y-projection). The two-axis-at-once slide used to move the
+        // lower-right piece directly on top of the upper-left one because
+        // neither single-axis lower bound constrained a purely diagonal
+        // neighbour.
+        let kerf = 10usize;
+        let mut solution = cut_optimizer_2d::Solution::from_components(
+            1.0,
+            vec![stock_from_rects(&[(0, 0, 100, 100), (200, 200, 100, 100)])],
+            0,
+        );
+
+        compact_solution(&mut solution, kerf);
+
+        assert_all_pairs_kerf_clear(&solution.stock_pieces[0], kerf);
+    }
+
+    #[test]
+    fn solution_violates_kerf_flags_overlap() {
+        let kerf = 10usize;
+        let solution = cut_optimizer_2d::Solution::from_components(
+            1.0,
+            vec![stock_from_rects(&[(0, 0, 100, 100), (50, 50, 100, 100)])],
+            0,
+        );
+        assert!(solution_violates_kerf(&solution, kerf));
+    }
+
+    #[test]
+    fn solution_violates_kerf_flags_sub_kerf_adjacency() {
+        // Side-by-side with y-overlap and only 3 units of x-clearance (< kerf).
+        let kerf = 10usize;
+        let solution = cut_optimizer_2d::Solution::from_components(
+            1.0,
+            vec![stock_from_rects(&[(0, 0, 100, 100), (103, 0, 100, 100)])],
+            0,
+        );
+        assert!(solution_violates_kerf(&solution, kerf));
+    }
+
+    #[test]
+    fn solution_violates_kerf_passes_clear_and_diagonal_layouts() {
+        let kerf = 10usize;
+        // Adjacent with exactly kerf clearance on x → clear.
+        let adjacent = cut_optimizer_2d::Solution::from_components(
+            1.0,
+            vec![stock_from_rects(&[(0, 0, 100, 100), (110, 0, 100, 100)])],
+            0,
+        );
+        assert!(!solution_violates_kerf(&adjacent, kerf));
+
+        // Purely diagonal pieces 8 units apart on each axis: true corner
+        // distance = sqrt(128) ≈ 11.3 >= kerf, so NOT a violation even though
+        // each single-axis gap (8) is below kerf.  The Euclidean check must not
+        // false-flag valid nested staircases.
+        let diagonal = cut_optimizer_2d::Solution::from_components(
+            1.0,
+            vec![stock_from_rects(&[(0, 0, 100, 100), (108, 108, 100, 100)])],
+            0,
+        );
+        assert!(!solution_violates_kerf(&diagonal, kerf));
+    }
+
+    #[test]
+    fn compact_solution_guarded_compacts_valid_layout_without_reverting() {
+        // A loose but kerf-clear layout: the right piece has slack to its left.
+        // The guard must let compaction tighten it (moved > 0) and the result
+        // must stay kerf-clear.
+        let kerf = 10usize;
+        let mut solution = cut_optimizer_2d::Solution::from_components(
+            1.0,
+            vec![stock_from_rects(&[(0, 0, 100, 100), (500, 0, 100, 100)])],
+            0,
+        );
+
+        let moved = compact_solution_guarded(&mut solution, kerf);
+
+        assert!(moved > 0, "expected the loose right piece to be compacted");
+        assert!(!solution_violates_kerf(&solution, kerf));
+        // Right piece should have slid left to kerf clearance (x = 110).
+        let xs: Vec<usize> = solution.stock_pieces[0]
+            .cut_pieces
+            .iter()
+            .map(|p| p.x)
+            .collect();
+        assert!(xs.contains(&110), "right piece should slide to x=110, got {:?}", xs);
+    }
+
+    #[test]
+    fn compact_solution_keeps_staircase_pieces_kerf_clear() {
+        // A staircase of three pieces, each diagonally offset from the next.
+        // Compaction must never collapse the kerf gap between any pair.
+        let kerf = 10usize;
+        let mut solution = cut_optimizer_2d::Solution::from_components(
+            1.0,
+            vec![stock_from_rects(&[
+                (0, 0, 100, 100),
+                (150, 150, 100, 100),
+                (300, 300, 100, 100),
+            ])],
+            0,
+        );
+
+        compact_solution(&mut solution, kerf);
+
+        assert_all_pairs_kerf_clear(&solution.stock_pieces[0], kerf);
     }
 
     fn test_profile_pool_candidate(
