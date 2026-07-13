@@ -560,8 +560,9 @@ fn remnant_metrics(solutions: &[Solution], grid_mm: f64) -> RemnantTelemetry {
         if sol.placements.is_empty() {
             continue;
         }
-        let x0 = sol.trim_mm.left;
-        let y0 = sol.trim_mm.bottom;
+        // Placement coordinates are already relative to the usable-area origin
+        // (API contract: "top-left of the usable area after trim"), so the grid
+        // needs no trim offset — only the usable dimensions account for trim.
         let uw = sol.width_mm - sol.trim_mm.left - sol.trim_mm.right;
         let uh = sol.height_mm - sol.trim_mm.top - sol.trim_mm.bottom;
         if uw <= 0.0 || uh <= 0.0 {
@@ -571,10 +572,10 @@ fn remnant_metrics(solutions: &[Solution], grid_mm: f64) -> RemnantTelemetry {
         let ny = ((uh / grid_mm) as usize).max(1);
         let mut occ = vec![false; nx * ny];
         for p in &sol.placements {
-            let px0 = ((p.x_mm - x0) / grid_mm).floor().max(0.0) as usize;
-            let py0 = ((p.y_mm - y0) / grid_mm).floor().max(0.0) as usize;
-            let px1 = (((p.x_mm + p.width_mm - x0) / grid_mm).ceil() as usize).min(nx);
-            let py1 = (((p.y_mm + p.height_mm - y0) / grid_mm).ceil() as usize).min(ny);
+            let px0 = ((p.x_mm / grid_mm).floor().max(0.0)) as usize;
+            let py0 = ((p.y_mm / grid_mm).floor().max(0.0)) as usize;
+            let px1 = (((p.x_mm + p.width_mm) / grid_mm).ceil() as usize).min(nx);
+            let py1 = (((p.y_mm + p.height_mm) / grid_mm).ceil() as usize).min(ny);
             for gy in py0..py1 {
                 for gx in px0..px1 {
                     occ[gy * nx + gx] = true;
@@ -599,7 +600,7 @@ fn remnant_metrics(solutions: &[Solution], grid_mm: f64) -> RemnantTelemetry {
                 size += 1;
                 let cy = c / nx;
                 let cx = c % nx;
-                let mut push = |idx: usize, seen: &mut [bool], stack: &mut Vec<usize>| {
+                let push = |idx: usize, seen: &mut [bool], stack: &mut Vec<usize>| {
                     if !occ[idx] && !seen[idx] {
                         seen[idx] = true;
                         stack.push(idx);
@@ -7517,5 +7518,29 @@ mod tests {
         let m = remnant_metrics(&[], 20.0);
         assert_eq!(m.free_fragments, 0);
         assert_eq!(m.largest_free_frac, 0.0);
+    }
+
+    #[test]
+    fn remnant_metric_ignores_trim_offset() {
+        // Same usable 100x100 area and the same central full-height bar as
+        // remnant_metric_splits_into_two_fragments, but on a sheet with
+        // asymmetric non-zero trim. Placements are usable-area-relative, so
+        // the metric must match the zero-trim case exactly: 2 equal fragments.
+        let mut sol = remnant_solution(140.0, 130.0, &[(40.0, 0.0, 20.0, 100.0)]);
+        sol.trim_mm = Trim {
+            left: 20.0,
+            right: 20.0,
+            top: 10.0,
+            bottom: 20.0,
+        };
+        let m = remnant_metrics(std::slice::from_ref(&sol), 20.0);
+        assert_eq!(
+            m.free_fragments, 2,
+            "trim offset must not distort the occupancy grid"
+        );
+        assert!(
+            (m.largest_free_frac - 0.5).abs() < 1e-9,
+            "the two free regions stay equal under non-zero trim"
+        );
     }
 }
