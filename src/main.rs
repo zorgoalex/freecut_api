@@ -123,7 +123,7 @@ pub(crate) async fn version() -> Json<VersionResponse> {
     tag = "optimize",
     request_body = OptimizeRequest,
     responses(
-        (status = 200, description = "Optimization result", body = models::OptimizeResponse),
+        (status = 200, description = "Optimization result", body = OptimizeResponse),
         (status = 400, description = "Invalid JSON", body = ErrorResponse),
         (status = 429, description = "Too many concurrent optimize requests", body = ErrorResponse),
         (status = 422, description = "Validation error", body = ErrorResponse),
@@ -144,7 +144,7 @@ pub(crate) async fn optimize(
     tag = "optimize",
     request_body = OptimizeRequest,
     responses(
-        (status = 200, description = "Beam optimization result", body = models::OptimizeResponse),
+        (status = 200, description = "Beam optimization result", body = OptimizeResponse),
         (status = 400, description = "Invalid JSON", body = ErrorResponse),
         (status = 429, description = "Too many concurrent optimize requests", body = ErrorResponse),
         (status = 422, description = "Validation error", body = ErrorResponse),
@@ -165,7 +165,7 @@ pub(crate) async fn optimize_beam(
     tag = "optimize",
     request_body = OptimizeRequest,
     responses(
-        (status = 200, description = "ALNS/LNS optimization result", body = models::OptimizeResponse),
+        (status = 200, description = "ALNS/LNS optimization result", body = OptimizeResponse),
         (status = 400, description = "Invalid JSON", body = ErrorResponse),
         (status = 429, description = "Too many concurrent optimize requests", body = ErrorResponse),
         (status = 422, description = "Validation error", body = ErrorResponse),

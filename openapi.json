@@ -1,1 +1,2377 @@
-{"openapi":"3.0.3","info":{"title":"freecut","description":"","license":{"name":""},"version":"0.1.0"},"paths":{"/health/live":{"get":{"tags":["health"],"operationId":"health_live","responses":{"200":{"description":"Service is live","content":{"text/plain":{"schema":{"type":"string"}}}}}}},"/health/ready":{"get":{"tags":["health"],"operationId":"health_ready","responses":{"200":{"description":"Service is ready","content":{"text/plain":{"schema":{"type":"string"}}}}}}},"/v1/optimize":{"post":{"tags":["optimize"],"operationId":"optimize","requestBody":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/OptimizeRequest"}}},"required":true},"responses":{"200":{"description":"Optimization result","content":{"application/json":{"schema":{"$ref":"#/components/schemas/models.OptimizeResponse"}}}},"400":{"description":"Invalid JSON","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},"408":{"description":"Optimization timeout","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},"422":{"description":"Validation error","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},"500":{"description":"Internal error","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}}}}},"/version":{"get":{"tags":["health"],"operationId":"version","responses":{"200":{"description":"Service version","content":{"application/json":{"schema":{"$ref":"#/components/schemas/VersionResponse"}}}}}}}},"components":{"schemas":{"Artifacts":{"type":"object","required":["svg"],"properties":{"svg":{"type":"string"}}},"ErrorResponse":{"type":"object","required":["status","error_code","message"],"properties":{"details":{"nullable":true},"error_code":{"type":"string"},"message":{"type":"string"},"status":{"type":"string"}}},"Item":{"type":"object","required":["id","width_mm","height_mm","qty","rotation","pattern_direction"],"properties":{"height_mm":{"type":"number","format":"double"},"id":{"type":"string"},"pattern_direction":{"$ref":"#/components/schemas/PatternDirection"},"qty":{"type":"integer","format":"int32","minimum":0},"rotation":{"$ref":"#/components/schemas/Rotation"},"width_mm":{"type":"number","format":"double"}}},"LayoutMode":{"type":"string","enum":["nested","guillotine"]},"Objective":{"type":"string","enum":["min_waste","min_sheets"]},"OptimizeRequest":{"type":"object","required":["units","params","stock","items"],"properties":{"items":{"type":"array","items":{"$ref":"#/components/schemas/Item"}},"params":{"$ref":"#/components/schemas/Params"},"stock":{"type":"array","items":{"$ref":"#/components/schemas/StockItem"}},"units":{"$ref":"#/components/schemas/Units"}}},"OptimizeResponse":{"type":"object","required":["status","summary","solutions","artifacts"],"properties":{"artifacts":{"$ref":"#/components/schemas/Artifacts"},"solutions":{"type":"array","items":{"$ref":"#/components/schemas/Solution"}},"status":{"type":"string"},"summary":{"$ref":"#/components/schemas/Summary"}}},"Params":{"type":"object","required":["kerf_mm","spacing_mm","trim_mm","objective","seed"],"properties":{"kerf_mm":{"type":"number","format":"double"},"layout_mode":{"allOf":[{"$ref":"#/components/schemas/LayoutMode"}],"nullable":true},"objective":{"$ref":"#/components/schemas/Objective"},"restarts":{"type":"integer","format":"int32","nullable":true,"minimum":0},"seed":{"type":"integer","format":"int64","minimum":0},"spacing_mm":{"type":"number","format":"double"},"time_limit_ms":{"type":"integer","format":"int64","nullable":true,"minimum":0},"trim_mm":{"$ref":"#/components/schemas/Trim"}}},"PatternDirection":{"type":"string","enum":["none","along_width","along_height"]},"Placement":{"type":"object","required":["item_id","instance","x_mm","y_mm","width_mm","height_mm","rotated","pattern_direction"],"properties":{"height_mm":{"type":"number","format":"double"},"instance":{"type":"integer","format":"int32","minimum":0},"item_id":{"type":"string"},"pattern_direction":{"$ref":"#/components/schemas/PatternDirection"},"rotated":{"type":"boolean"},"width_mm":{"type":"number","format":"double"},"x_mm":{"type":"number","format":"double"},"y_mm":{"type":"number","format":"double"}}},"Rotation":{"type":"string","enum":["forbid","allow_90"]},"Solution":{"type":"object","required":["stock_id","index","width_mm","height_mm","trim_mm","placements"],"properties":{"height_mm":{"type":"number","format":"double"},"index":{"type":"integer","format":"int32","minimum":0},"placements":{"type":"array","items":{"$ref":"#/components/schemas/Placement"}},"stock_id":{"type":"string"},"trim_mm":{"$ref":"#/components/schemas/Trim"},"width_mm":{"type":"number","format":"double"}}},"StockItem":{"type":"object","required":["id","width_mm","height_mm","qty"],"properties":{"height_mm":{"type":"number","format":"double"},"id":{"type":"string"},"qty":{"type":"integer","format":"int32","minimum":0},"width_mm":{"type":"number","format":"double"}}},"Summary":{"type":"object","required":["objective","used_stock_count","total_waste_area_mm2","waste_percent","time_ms","restarts_used","seed","layout_mode"],"properties":{"layout_mode":{"$ref":"#/components/schemas/LayoutMode"},"objective":{"$ref":"#/components/schemas/Objective"},"restarts_used":{"type":"integer","format":"int32","minimum":0},"seed":{"type":"integer","format":"int64","minimum":0},"time_ms":{"type":"integer","format":"int64","minimum":0},"total_waste_area_mm2":{"type":"number","format":"double"},"used_stock_count":{"type":"integer","format":"int32","minimum":0},"waste_percent":{"type":"number","format":"double"}}},"Trim":{"type":"object","required":["left","right","top","bottom"],"properties":{"bottom":{"type":"number","format":"double"},"left":{"type":"number","format":"double"},"right":{"type":"number","format":"double"},"top":{"type":"number","format":"double"}}},"Units":{"type":"string","enum":["mm"]},"VersionResponse":{"type":"object","required":["service","version"],"properties":{"service":{"type":"string"},"version":{"type":"string"}}}}},"tags":[{"name":"health","description":"Health checks"},{"name":"optimize","description":"Cut optimization"}]}
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "freecut",
+    "description": "",
+    "license": {
+      "name": ""
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health/live": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "operationId": "health_live",
+        "responses": {
+          "200": {
+            "description": "Service is live",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "operationId": "health_ready",
+        "responses": {
+          "200": {
+            "description": "Service is ready",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/optimize": {
+      "post": {
+        "tags": [
+          "optimize"
+        ],
+        "operationId": "optimize",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OptimizeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Optimization result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OptimizeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Optimization timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many concurrent optimize requests",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/optimize/alns": {
+      "post": {
+        "tags": [
+          "optimize"
+        ],
+        "operationId": "optimize_alns",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OptimizeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "ALNS/LNS optimization result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OptimizeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Optimization timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many concurrent optimize requests",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/optimize/beam": {
+      "post": {
+        "tags": [
+          "optimize"
+        ],
+        "operationId": "optimize_beam",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OptimizeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Beam optimization result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OptimizeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Optimization timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many concurrent optimize requests",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/version": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "operationId": "version",
+        "responses": {
+          "200": {
+            "description": "Service version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AlnsOperatorTelemetry": {
+        "type": "object",
+        "required": [
+          "name",
+          "weight",
+          "selected",
+          "accepted",
+          "improved_best"
+        ],
+        "properties": {
+          "accepted": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "improved_best": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "selected": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "weight": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "AlnsParams": {
+        "type": "object",
+        "properties": {
+          "deadline_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total time budget for ALNS orchestration. Optional, defaults to `time_limit_ms`.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable ALNS/LNS mode. Optional, defaults to true when `alns` object is provided.",
+            "nullable": true
+          },
+          "iterations": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Requested number of ALNS iterations. Optional, defaults to 24.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "reaction_factor": {
+            "type": "number",
+            "format": "double",
+            "description": "Reaction factor for adaptive operator weights in range (0, 1]. Optional, defaults to 0.3.",
+            "nullable": true
+          },
+          "segment_size": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Adaptive weight update cadence (iterations per segment). Optional, defaults to 6.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "temperature_end": {
+            "type": "number",
+            "format": "double",
+            "description": "End temperature for acceptance policy. Optional, defaults to 0.12.",
+            "nullable": true
+          },
+          "temperature_start": {
+            "type": "number",
+            "format": "double",
+            "description": "Start temperature for acceptance policy. Optional, defaults to 1.0.",
+            "nullable": true
+          }
+        }
+      },
+      "AlnsTelemetry": {
+        "type": "object",
+        "required": [
+          "deadline_ms",
+          "iterations_requested",
+          "iterations_completed",
+          "segment_size",
+          "temperature_start",
+          "temperature_end",
+          "reaction_factor",
+          "candidates_evaluated",
+          "candidates_timed_out",
+          "candidates_failed",
+          "accepted_worse",
+          "improved_best",
+          "winner_seed",
+          "winner_restarts_used",
+          "operators"
+        ],
+        "properties": {
+          "accepted_worse": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "candidates_evaluated": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "candidates_failed": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "candidates_timed_out": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "deadline_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "improved_best": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "iterations_completed": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "iterations_requested": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "operators": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AlnsOperatorTelemetry"
+            }
+          },
+          "reaction_factor": {
+            "type": "number",
+            "format": "double"
+          },
+          "segment_size": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "temperature_end": {
+            "type": "number",
+            "format": "double"
+          },
+          "temperature_start": {
+            "type": "number",
+            "format": "double"
+          },
+          "winner_restarts_used": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "winner_seed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "Artifacts": {
+        "type": "object",
+        "properties": {
+          "group_shift_before_svg": {
+            "type": "string",
+            "nullable": true
+          },
+          "group_shift_diff_svg": {
+            "type": "string",
+            "nullable": true
+          },
+          "svg": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "BeamParams": {
+        "type": "object",
+        "properties": {
+          "beam_depth": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Search depth (number of expansion levels). Optional, defaults to 2.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "beam_width": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Beam width (how many states are kept per depth level). Optional, defaults to 2.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "branch_factor": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Branch factor (expansions per state). Optional, defaults to 2.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "deadline_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total time budget for beam orchestration. Optional, defaults to `time_limit_ms`.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable beam mode. Optional, defaults to true when `beam` object is provided.",
+            "nullable": true
+          }
+        }
+      },
+      "BeamTelemetry": {
+        "type": "object",
+        "required": [
+          "deadline_ms",
+          "beam_width",
+          "beam_depth",
+          "branch_factor",
+          "nodes_evaluated",
+          "nodes_timed_out",
+          "nodes_failed",
+          "nodes_pruned",
+          "winner_depth",
+          "winner_seed",
+          "winner_restarts_used"
+        ],
+        "properties": {
+          "beam_depth": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "beam_width": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "branch_factor": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "deadline_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "nodes_evaluated": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "nodes_failed": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "nodes_pruned": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "nodes_timed_out": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "winner_depth": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "winner_restarts_used": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "winner_seed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "CandidateSelectionTelemetry": {
+        "type": "object",
+        "required": [
+          "source",
+          "top_k_requested",
+          "candidates_total",
+          "candidates_valid",
+          "candidates_invalid_fitness",
+          "candidates_rejected_primary_objective",
+          "candidates_rejected_tie_bbox_void",
+          "candidates_rejected_tie_bbox_area",
+          "candidates_rejected_tie_perimeter",
+          "candidates_rejected_tie_min_util",
+          "candidates_rejected_tie_corner_free",
+          "candidates_rejected_equal",
+          "winner_used_stock_count",
+          "winner_waste_area_mm2",
+          "winner_bbox_void_area_mm2",
+          "winner_bbox_area_mm2",
+          "winner_piece_perimeter_mm",
+          "winner_min_sheet_util_pct",
+          "winner_max_edge_gap_mm",
+          "winner_sheet_util_spread_pct",
+          "winner_corner_free_area_mm2"
+        ],
+        "properties": {
+          "candidates_invalid_fitness": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Candidates discarded due to invalid fitness.",
+            "minimum": 0
+          },
+          "candidates_rejected_equal": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rejected because score was exactly equal to current best.",
+            "minimum": 0
+          },
+          "candidates_rejected_primary_objective": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rejected because primary objective was worse.",
+            "minimum": 0
+          },
+          "candidates_rejected_tie_bbox_area": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rejected by tie-break on bbox area.",
+            "minimum": 0
+          },
+          "candidates_rejected_tie_bbox_void": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rejected by tie-break on bbox internal void area.",
+            "minimum": 0
+          },
+          "candidates_rejected_tie_corner_free": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rejected by tie-break on corner free rectangle area (V9: waste consolidation).",
+            "minimum": 0
+          },
+          "candidates_rejected_tie_min_util": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rejected by tie-break on minimum per-sheet utilisation (unbalanced layout).",
+            "minimum": 0
+          },
+          "candidates_rejected_tie_perimeter": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rejected by tie-break on total perimeter.",
+            "minimum": 0
+          },
+          "candidates_total": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Total candidates seen by scorer.",
+            "minimum": 0
+          },
+          "candidates_valid": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Candidates with valid fitness considered for ranking.",
+            "minimum": 0
+          },
+          "source": {
+            "type": "string",
+            "description": "Selection source (currently top-K population scoring inside restart)."
+          },
+          "top_k_requested": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Configured top-K candidate pool size.",
+            "minimum": 0
+          },
+          "winner_bbox_area_mm2": {
+            "type": "number",
+            "format": "double"
+          },
+          "winner_bbox_void_area_mm2": {
+            "type": "number",
+            "format": "double"
+          },
+          "winner_corner_free_area_mm2": {
+            "type": "number",
+            "format": "double",
+            "description": "Winner's total corner-anchored free rectangle area (mm^2). Higher =\nwaste consolidated into one reusable corner remnant (V9)."
+          },
+          "winner_max_edge_gap_mm": {
+            "type": "number",
+            "format": "double",
+            "description": "Winner's maximum edge gap across all sheets (mm). Telemetry only (V9)."
+          },
+          "winner_min_sheet_util_pct": {
+            "type": "number",
+            "format": "double",
+            "description": "Winner's minimum per-sheet utilisation (%). Higher = more balanced layout."
+          },
+          "winner_piece_perimeter_mm": {
+            "type": "number",
+            "format": "double"
+          },
+          "winner_sheet_util_spread_pct": {
+            "type": "number",
+            "format": "double",
+            "description": "Winner's per-sheet utilisation standard deviation (%). Telemetry only (V9)."
+          },
+          "winner_used_stock_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Winner snapshot metrics.",
+            "minimum": 0
+          },
+          "winner_waste_area_mm2": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "ConsolidateParams": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable sheet consolidation. Optional, defaults to true when the\n`consolidate` object is provided.",
+            "nullable": true
+          },
+          "max_passes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Maximum number of full consolidation passes over the layout. Optional,\ndefaults to 8. Each pass that saves a sheet restarts the scan.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "max_window": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Largest window of least-full sheets to pool and try to repack into one\nfewer sheet. Optional, defaults to 3 (try 2->1 and 3->2). Clamped to 2..=6.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "window_ga_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Per-window GA budget (ms) used to repack a pooled window when the\ninstant multi-heuristic FFD cannot hit the target sheet count. Optional,\ndefaults to 0 (FFD only — no per-window GA).",
+            "nullable": true,
+            "minimum": 0
+          }
+        }
+      },
+      "ConsolidateTelemetry": {
+        "type": "object",
+        "required": [
+          "sheets_before",
+          "sheets_after",
+          "sheets_saved",
+          "windows_tried",
+          "windows_accepted",
+          "passes",
+          "time_ms"
+        ],
+        "properties": {
+          "passes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of full passes executed.",
+            "minimum": 0
+          },
+          "sheets_after": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Sheets used after consolidation.",
+            "minimum": 0
+          },
+          "sheets_before": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Sheets used before consolidation.",
+            "minimum": 0
+          },
+          "sheets_saved": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Net sheets removed (`sheets_before - sheets_after`).",
+            "minimum": 0
+          },
+          "time_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Wall time spent in consolidation (ms).",
+            "minimum": 0
+          },
+          "windows_accepted": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of windows that successfully consolidated.",
+            "minimum": 0
+          },
+          "windows_tried": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of candidate windows evaluated.",
+            "minimum": 0
+          }
+        }
+      },
+      "CutQuality": {
+        "type": "string",
+        "description": "V62: high-level cut-quality tier for `engine=heuristic`. Expands into the\nlow-level `consolidate`/`lns` post-process flag sets (see\n`Params::cut_quality`). Independent of `sla_profile`/`ga_profile`.",
+        "enum": [
+          "fast",
+          "balanced",
+          "max"
+        ]
+      },
+      "Engine": {
+        "type": "string",
+        "enum": [
+          "ga",
+          "heuristic"
+        ]
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "error_code",
+          "message"
+        ],
+        "properties": {
+          "details": {
+            "nullable": true
+          },
+          "error_code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "GaOverrideParams": {
+        "type": "object",
+        "properties": {
+          "breed_factor": {
+            "type": "number",
+            "format": "double",
+            "description": "Breed factor in range (0, 1].",
+            "nullable": true
+          },
+          "epochs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of GA epochs in range 1..=2000.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "fill_penalty": {
+            "type": "number",
+            "format": "double",
+            "description": "V15/V17 largest-waste-component fill penalty. Optional, defaults to service env/default.",
+            "nullable": true
+          },
+          "survival_factor": {
+            "type": "number",
+            "format": "double",
+            "description": "Survival factor in range [0, 1].",
+            "nullable": true
+          },
+          "top_k_candidates": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Top-K population candidates to evaluate by business scorer in range 1..=64.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "zone_penalty": {
+            "type": "number",
+            "format": "double",
+            "description": "V15/V17 zones-aware GA fitness penalty. Optional, defaults to service env/default.",
+            "nullable": true
+          }
+        }
+      },
+      "GaProfile": {
+        "type": "string",
+        "enum": [
+          "fast",
+          "balanced",
+          "quality"
+        ]
+      },
+      "GroupShiftParams": {
+        "type": "object",
+        "properties": {
+          "debug_artifacts": {
+            "type": "boolean",
+            "description": "Emit before/diff SVG artifacts for paired visual analysis. Optional,\ndefaults to false.",
+            "nullable": true
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable group-shift postprocess. Optional, defaults to true when\n`group_shift` object is provided.",
+            "nullable": true
+          },
+          "max_passes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Maximum accepted side-group shifts. Optional, defaults to 4.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "min_shift_mm": {
+            "type": "number",
+            "format": "double",
+            "description": "Ignore moves smaller than this many millimeters. Optional, defaults to 5.0.",
+            "nullable": true
+          }
+        }
+      },
+      "GroupShiftTelemetry": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "time_ms",
+          "moves_applied",
+          "parts_moved",
+          "passes_run",
+          "corridor_closed_area_mm2",
+          "contact_gain_mm",
+          "corridor_opportunity_before_mm2",
+          "corridor_opportunity_after_mm2",
+          "corridor_opportunity_delta_mm2",
+          "max_shift_mm"
+        ],
+        "properties": {
+          "contact_gain_mm": {
+            "type": "number",
+            "format": "double"
+          },
+          "corridor_closed_area_mm2": {
+            "type": "number",
+            "format": "double"
+          },
+          "corridor_opportunity_after_mm2": {
+            "type": "number",
+            "format": "double"
+          },
+          "corridor_opportunity_before_mm2": {
+            "type": "number",
+            "format": "double"
+          },
+          "corridor_opportunity_delta_mm2": {
+            "type": "number",
+            "format": "double"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "max_shift_mm": {
+            "type": "number",
+            "format": "double"
+          },
+          "moves_applied": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "parts_moved": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "passes_run": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "time_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "Item": {
+        "type": "object",
+        "required": [
+          "id",
+          "width_mm",
+          "height_mm",
+          "qty",
+          "rotation",
+          "pattern_direction"
+        ],
+        "properties": {
+          "height_mm": {
+            "type": "number",
+            "format": "double"
+          },
+          "id": {
+            "type": "string"
+          },
+          "pattern_direction": {
+            "$ref": "#/components/schemas/PatternDirection"
+          },
+          "qty": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "rotation": {
+            "$ref": "#/components/schemas/Rotation"
+          },
+          "width_mm": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "LayoutMode": {
+        "type": "string",
+        "enum": [
+          "nested",
+          "guillotine",
+          "vacuum_table"
+        ]
+      },
+      "LnsParams": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable the LNS polish. Optional, defaults to true when the `lns` object\nis provided.",
+            "nullable": true
+          },
+          "max_iters": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Maximum destroy/repair iterations. Optional, defaults to 2000 (the\ndeadline usually binds first). Clamped to 1..=200000.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "max_window": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Largest destroy window (number of sheets pooled per iteration). Optional,\ndefaults to 4. Clamped to 2..=8.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "window_ga_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Per-window GA budget (ms) used when FFD cannot repack a window into the\ntarget; same semantics as `consolidate.window_ga_ms`. Optional, default 0.",
+            "nullable": true,
+            "minimum": 0
+          }
+        }
+      },
+      "Objective": {
+        "type": "string",
+        "enum": [
+          "min_waste",
+          "min_sheets"
+        ]
+      },
+      "OptimizeRequest": {
+        "type": "object",
+        "required": [
+          "units",
+          "params",
+          "stock",
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Item"
+            }
+          },
+          "params": {
+            "$ref": "#/components/schemas/Params"
+          },
+          "stock": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StockItem"
+            }
+          },
+          "units": {
+            "$ref": "#/components/schemas/Units"
+          }
+        }
+      },
+      "OptimizeResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "summary",
+          "solutions",
+          "artifacts"
+        ],
+        "properties": {
+          "artifacts": {
+            "$ref": "#/components/schemas/Artifacts"
+          },
+          "solutions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Solution"
+            }
+          },
+          "status": {
+            "type": "string"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/Summary"
+          },
+          "unplaced_items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UnplacedItem"
+            },
+            "description": "Items that did not fit on the requested number of sheets"
+          }
+        }
+      },
+      "Params": {
+        "type": "object",
+        "required": [
+          "kerf_mm",
+          "spacing_mm",
+          "trim_mm",
+          "objective"
+        ],
+        "properties": {
+          "alns": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AlnsParams"
+              }
+            ],
+            "nullable": true
+          },
+          "beam": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BeamParams"
+              }
+            ],
+            "nullable": true
+          },
+          "consolidate": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ConsolidateParams"
+              }
+            ],
+            "nullable": true
+          },
+          "cut_quality": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/CutQuality"
+              }
+            ],
+            "nullable": true
+          },
+          "engine": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Engine"
+              }
+            ],
+            "nullable": true
+          },
+          "ga_override": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GaOverrideParams"
+              }
+            ],
+            "nullable": true
+          },
+          "ga_profile": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GaProfile"
+              }
+            ],
+            "nullable": true
+          },
+          "group_shift": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GroupShiftParams"
+              }
+            ],
+            "nullable": true
+          },
+          "include_svg": {
+            "type": "boolean",
+            "description": "Include SVG artifact in response. Optional, defaults to true.",
+            "nullable": true
+          },
+          "kerf_mm": {
+            "type": "number",
+            "format": "double"
+          },
+          "layout_mode": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/LayoutMode"
+              }
+            ],
+            "nullable": true
+          },
+          "lns": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/LnsParams"
+              }
+            ],
+            "nullable": true
+          },
+          "max_retry_attempts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Maximum number of attempts (including the initial one) when\n`retry_strategy = smart`.  Optional, defaults to 3.  Values below 1\nare clamped to 1 (no retry).",
+            "nullable": true,
+            "minimum": 0
+          },
+          "objective": {
+            "$ref": "#/components/schemas/Objective"
+          },
+          "partition": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PartitionParams"
+              }
+            ],
+            "nullable": true
+          },
+          "portfolio": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PortfolioParams"
+              }
+            ],
+            "nullable": true
+          },
+          "profile_pool": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProfilePoolParams"
+              }
+            ],
+            "nullable": true
+          },
+          "restarts": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true,
+            "minimum": 0
+          },
+          "retry_strategy": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RetryStrategy"
+              }
+            ],
+            "nullable": true
+          },
+          "seed": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          },
+          "sla_profile": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SlaProfile"
+              }
+            ],
+            "nullable": true
+          },
+          "spacing_mm": {
+            "type": "number",
+            "format": "double"
+          },
+          "time_limit_ms": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          },
+          "trim_mm": {
+            "$ref": "#/components/schemas/Trim"
+          },
+          "vacuum": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/VacuumParams"
+              }
+            ],
+            "nullable": true
+          }
+        }
+      },
+      "PartitionParams": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable dense-first peeling. Optional, defaults to true when `partition` object is provided.",
+            "nullable": true
+          },
+          "sheet_budget_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Time budget per peeling iteration (ms). Optional, defaults to\n`time_limit_ms / planned_sheet_count`.",
+            "nullable": true,
+            "minimum": 0
+          }
+        }
+      },
+      "PartitionTelemetry": {
+        "type": "object",
+        "required": [
+          "applied",
+          "group_sizes",
+          "group_area_pct"
+        ],
+        "properties": {
+          "applied": {
+            "type": "boolean",
+            "description": "Whether the partitioned (peeled) packing was actually used for the\nfinal answer (false = fell back to the regular pipeline)."
+          },
+          "densest_zones": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "V10: waste regions on the densest sheet for each peel iteration.\nEmpty when partition was not applied."
+          },
+          "fallback_reason": {
+            "type": "string",
+            "description": "Reason for falling back to the regular pipeline, if any.",
+            "nullable": true
+          },
+          "group_area_pct": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "Utilisation (%) of each frozen sheet, peel order."
+          },
+          "group_sizes": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "Number of parts frozen on each sheet, peel order (last = remainder)."
+          }
+        }
+      },
+      "PatternDirection": {
+        "type": "string",
+        "enum": [
+          "none",
+          "along_width",
+          "along_height"
+        ]
+      },
+      "Placement": {
+        "type": "object",
+        "required": [
+          "item_id",
+          "instance",
+          "x_mm",
+          "y_mm",
+          "width_mm",
+          "height_mm",
+          "rotated",
+          "pattern_direction"
+        ],
+        "properties": {
+          "height_mm": {
+            "type": "number",
+            "format": "double"
+          },
+          "instance": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "item_id": {
+            "type": "string"
+          },
+          "pattern_direction": {
+            "$ref": "#/components/schemas/PatternDirection"
+          },
+          "rotated": {
+            "type": "boolean"
+          },
+          "width_mm": {
+            "type": "number",
+            "format": "double"
+          },
+          "x_mm": {
+            "type": "number",
+            "format": "double"
+          },
+          "y_mm": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "PortfolioParams": {
+        "type": "object",
+        "properties": {
+          "candidate_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of candidate strategies in portfolio. Optional, defaults to 4.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "deadline_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total time budget for portfolio orchestration. Optional, defaults to `time_limit_ms`.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable portfolio mode. Optional, defaults to true when `portfolio` object is provided.",
+            "nullable": true
+          }
+        }
+      },
+      "PortfolioTelemetry": {
+        "type": "object",
+        "required": [
+          "deadline_ms",
+          "candidates_total",
+          "candidates_completed",
+          "candidates_timed_out",
+          "candidates_failed",
+          "candidates_skipped",
+          "winner_strategy",
+          "winner_seed",
+          "winner_restarts_used"
+        ],
+        "properties": {
+          "candidates_completed": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "candidates_failed": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "candidates_skipped": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "candidates_timed_out": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "candidates_total": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "deadline_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "winner_restarts_used": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "winner_seed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "winner_strategy": {
+            "type": "string"
+          }
+        }
+      },
+      "ProfilePoolParams": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable profile-pool mode. Optional, defaults to true when `profile_pool` object is provided.",
+            "nullable": true
+          },
+          "fill_penalty": {
+            "type": "number",
+            "format": "double",
+            "description": "Fill penalty used for every profile. Optional, defaults to ga_override/default 0.1.",
+            "nullable": true
+          },
+          "max_lead_drop_pp": {
+            "type": "number",
+            "format": "double",
+            "description": "Maximum lead-utilisation drop allowed before a lower-zone candidate\nis rejected, except breakthrough layouts with <=4 zones. Optional, defaults to 0.8.",
+            "nullable": true
+          },
+          "preset": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProfilePoolPreset"
+              }
+            ],
+            "nullable": true
+          },
+          "rescue_accept_min_max_corner_mm2": {
+            "type": "number",
+            "format": "double",
+            "description": "Reject rescue candidates whose largest corner-free rectangle is below this area.",
+            "nullable": true
+          },
+          "rescue_when_max_corner_below_mm2": {
+            "type": "number",
+            "format": "double",
+            "description": "Trigger adaptive seed rescue when the provisional winner's largest\ncorner-free rectangle is below this area.",
+            "nullable": true
+          },
+          "rescue_when_zones_gt": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Trigger adaptive seed rescue when the provisional winner has more than\nthis many waste regions. Optional, defaults to 5 when seed_offsets exist.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "rescue_zone_penalties": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "Extra zone-penalty profiles evaluated only when profile-pool rescue is triggered.",
+            "nullable": true
+          },
+          "seed_offsets": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "description": "Extra seed offsets to evaluate adaptively when the initial profile pool\nstill has too many waste regions or too small a reusable corner.",
+            "nullable": true
+          },
+          "zone_penalties": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "Zone-penalty profiles to evaluate. Optional, defaults to [0.2, 0.3, 0.4, 0.5].",
+            "nullable": true
+          }
+        }
+      },
+      "ProfilePoolPreset": {
+        "type": "string",
+        "enum": [
+          "cheap",
+          "balanced_quality",
+          "aggressive"
+        ]
+      },
+      "ProfilePoolTelemetry": {
+        "type": "object",
+        "required": [
+          "profiles_requested",
+          "candidates_total",
+          "candidates_completed",
+          "candidates_timed_out",
+          "candidates_failed",
+          "rescue_candidates_rejected_by_guard",
+          "rescue_triggered",
+          "winner_seed",
+          "winner_zone_penalty",
+          "winner_visual_waste_regions",
+          "winner_waste_regions",
+          "winner_lead_util_pct",
+          "winner_max_corner_mm2",
+          "winner_group_shift_opportunity_after_mm2",
+          "winner_group_shift_opportunity_delta_mm2",
+          "winner_group_shift_contact_gain_mm",
+          "max_lead_drop_pp"
+        ],
+        "properties": {
+          "candidates_completed": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "candidates_failed": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "candidates_timed_out": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "candidates_total": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "max_lead_drop_pp": {
+            "type": "number",
+            "format": "double"
+          },
+          "preset": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProfilePoolPreset"
+              }
+            ],
+            "nullable": true
+          },
+          "profiles_requested": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "rescue_accept_min_max_corner_mm2": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "rescue_candidates_rejected_by_guard": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "rescue_triggered": {
+            "type": "boolean"
+          },
+          "rescue_when_max_corner_below_mm2": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "rescue_when_zones_gt": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true,
+            "minimum": 0
+          },
+          "rescue_zone_penalties_requested": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "rescue_zone_penalties_used": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "seed_offsets_requested": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          "seed_offsets_used": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          "winner_group_shift_contact_gain_mm": {
+            "type": "number",
+            "format": "double"
+          },
+          "winner_group_shift_opportunity_after_mm2": {
+            "type": "number",
+            "format": "double"
+          },
+          "winner_group_shift_opportunity_delta_mm2": {
+            "type": "number",
+            "format": "double"
+          },
+          "winner_lead_util_pct": {
+            "type": "number",
+            "format": "double"
+          },
+          "winner_max_corner_mm2": {
+            "type": "number",
+            "format": "double"
+          },
+          "winner_seed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "winner_visual_waste_regions": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Waste regions without part inflation (`gap=0`), closer to visual review.",
+            "minimum": 0
+          },
+          "winner_waste_regions": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Waste regions with kerf+spacing inflation, used by current selection.",
+            "minimum": 0
+          },
+          "winner_zone_penalty": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "RemnantTelemetry": {
+        "type": "object",
+        "description": "V72: honest visual-remnant telemetry. Measures how reusable the offcut is by\nrasterizing the usable area of every used sheet on a coarse grid and\nflood-filling the empty cells into connected regions. Unlike `bbox_void`\n(free area inside the part group's bounding box) this counts *connectivity*:\na layout whose free space is one big rectangle scores far better than one\nwhose free space is split into staircase notches of the same total area.\nComputed only when `include_svg` is true (same inspection intent; skipped on\nthe latency-sensitive `include_svg=false` path).",
+        "required": [
+          "grid_mm",
+          "free_fragments",
+          "largest_free_mm2",
+          "largest_free_frac",
+          "mean_sheet_largest_free_frac"
+        ],
+        "properties": {
+          "free_fragments": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Total number of connected empty regions across all used sheets. Lower is\nbetter — fewer, larger offcuts.",
+            "minimum": 0
+          },
+          "grid_mm": {
+            "type": "number",
+            "format": "double",
+            "description": "Raster grid step in mm (square cells)."
+          },
+          "largest_free_frac": {
+            "type": "number",
+            "format": "double",
+            "description": "`largest_free_mm2` as a fraction of total empty area (0..1). 1.0 means all\nfree space is one connected region; low values mean fragmented offcuts."
+          },
+          "largest_free_mm2": {
+            "type": "number",
+            "format": "double",
+            "description": "Area of the single largest connected empty region, in mm2 — the biggest\nreusable remnant in the whole layout."
+          },
+          "mean_sheet_largest_free_frac": {
+            "type": "number",
+            "format": "double",
+            "description": "Mean over used sheets of each sheet's largest-free-region fraction. Focuses\non per-sheet remnant quality rather than the whole-layout aggregate."
+          }
+        }
+      },
+      "RestartPolicyTelemetry": {
+        "type": "object",
+        "required": [
+          "profile",
+          "min_slice_ms",
+          "min_effective_slice_ms",
+          "restarts_cap_by_effective_slice",
+          "restarts_effective",
+          "baseline_budget_ms",
+          "progressive_slicing",
+          "planned_slices_ms",
+          "timeouts_per_restart",
+          "rescue_used"
+        ],
+        "properties": {
+          "baseline_budget_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "best_found_at_restart": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true,
+            "minimum": 0
+          },
+          "first_timeout_at_restart": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true,
+            "minimum": 0
+          },
+          "min_effective_slice_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "min_slice_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "planned_slices_ms": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          "profile": {
+            "$ref": "#/components/schemas/SlaProfile"
+          },
+          "progressive_slicing": {
+            "type": "boolean"
+          },
+          "rescue_budget_ms": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          },
+          "rescue_used": {
+            "type": "boolean"
+          },
+          "restarts_cap_by_effective_slice": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "restarts_effective": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "timeouts_per_restart": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "RetryStrategy": {
+        "type": "string",
+        "enum": [
+          "disabled",
+          "smart"
+        ]
+      },
+      "RetryTelemetry": {
+        "type": "object",
+        "required": [
+          "attempts",
+          "retries",
+          "strategies"
+        ],
+        "properties": {
+          "attempts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Total number of optimization attempts actually executed (>= 1).",
+            "minimum": 0
+          },
+          "initial_failure": {
+            "type": "string",
+            "description": "Description of the failure mode detected on the first attempt, if\nany.  Drives which strategy is picked for the first retry.",
+            "nullable": true
+          },
+          "retries": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of recovery attempts after the initial one (i.e. retries).",
+            "minimum": 0
+          },
+          "strategies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Strategies used for each attempt beyond the first, in order.\nEmpty when no retry was needed."
+          }
+        }
+      },
+      "Rotation": {
+        "type": "string",
+        "enum": [
+          "forbid",
+          "allow_90"
+        ]
+      },
+      "SlaProfile": {
+        "type": "string",
+        "enum": [
+          "fast",
+          "balanced",
+          "quality"
+        ]
+      },
+      "Solution": {
+        "type": "object",
+        "required": [
+          "stock_id",
+          "index",
+          "width_mm",
+          "height_mm",
+          "trim_mm",
+          "placements"
+        ],
+        "properties": {
+          "height_mm": {
+            "type": "number",
+            "format": "double"
+          },
+          "index": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "placements": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Placement"
+            }
+          },
+          "stock_id": {
+            "type": "string"
+          },
+          "trim_mm": {
+            "$ref": "#/components/schemas/Trim"
+          },
+          "width_mm": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "StockItem": {
+        "type": "object",
+        "required": [
+          "id",
+          "width_mm",
+          "height_mm"
+        ],
+        "properties": {
+          "height_mm": {
+            "type": "number",
+            "format": "double"
+          },
+          "id": {
+            "type": "string"
+          },
+          "qty": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Quantity of this stock available. If omitted or 0, unlimited sheets will be used.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "width_mm": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "Summary": {
+        "type": "object",
+        "required": [
+          "objective",
+          "used_stock_count",
+          "total_waste_area_mm2",
+          "waste_percent",
+          "time_ms",
+          "restarts_used",
+          "restarts_requested",
+          "used_seed",
+          "layout_mode"
+        ],
+        "properties": {
+          "alns": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AlnsTelemetry"
+              }
+            ],
+            "nullable": true
+          },
+          "beam": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BeamTelemetry"
+              }
+            ],
+            "nullable": true
+          },
+          "candidate_selection": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/CandidateSelectionTelemetry"
+              }
+            ],
+            "nullable": true
+          },
+          "consolidate": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ConsolidateTelemetry"
+              }
+            ],
+            "nullable": true
+          },
+          "group_shift": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GroupShiftTelemetry"
+              }
+            ],
+            "nullable": true
+          },
+          "layout_mode": {
+            "$ref": "#/components/schemas/LayoutMode"
+          },
+          "objective": {
+            "$ref": "#/components/schemas/Objective"
+          },
+          "partition": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PartitionTelemetry"
+              }
+            ],
+            "nullable": true
+          },
+          "portfolio": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PortfolioTelemetry"
+              }
+            ],
+            "nullable": true
+          },
+          "profile_pool": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProfilePoolTelemetry"
+              }
+            ],
+            "nullable": true
+          },
+          "remnant": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RemnantTelemetry"
+              }
+            ],
+            "nullable": true
+          },
+          "restart_policy": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RestartPolicyTelemetry"
+              }
+            ],
+            "nullable": true
+          },
+          "restarts_requested": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "restarts_used": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "retry": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RetryTelemetry"
+              }
+            ],
+            "nullable": true
+          },
+          "time_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "timeout_reason": {
+            "type": "string",
+            "nullable": true
+          },
+          "total_waste_area_mm2": {
+            "type": "number",
+            "format": "double"
+          },
+          "used_seed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "used_stock_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "vacuum": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/VacuumTelemetry"
+              }
+            ],
+            "nullable": true
+          },
+          "waste_percent": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "Trim": {
+        "type": "object",
+        "required": [
+          "left",
+          "right",
+          "top",
+          "bottom"
+        ],
+        "properties": {
+          "bottom": {
+            "type": "number",
+            "format": "double"
+          },
+          "left": {
+            "type": "number",
+            "format": "double"
+          },
+          "right": {
+            "type": "number",
+            "format": "double"
+          },
+          "top": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "Units": {
+        "type": "string",
+        "enum": [
+          "mm"
+        ]
+      },
+      "UnplacedItem": {
+        "type": "object",
+        "description": "Item that could not be placed on the requested sheets",
+        "required": [
+          "item_id",
+          "instance",
+          "width_mm",
+          "height_mm",
+          "reason"
+        ],
+        "properties": {
+          "height_mm": {
+            "type": "number",
+            "format": "double"
+          },
+          "instance": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "item_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Reason why item was not placed: \"oversized\" or \"qty_limit\""
+          },
+          "width_mm": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "VacuumDirection": {
+        "type": "string",
+        "enum": [
+          "optimal",
+          "width",
+          "height"
+        ]
+      },
+      "VacuumParams": {
+        "type": "object",
+        "properties": {
+          "direction": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/VacuumDirection"
+              }
+            ],
+            "nullable": true
+          }
+        }
+      },
+      "VacuumTelemetry": {
+        "type": "object",
+        "required": [
+          "chosen_direction",
+          "strategy",
+          "placed_count",
+          "unplaced_count",
+          "coverage_ratio",
+          "min_clearance_mm",
+          "used_bbox"
+        ],
+        "properties": {
+          "chosen_direction": {
+            "$ref": "#/components/schemas/VacuumDirection"
+          },
+          "coverage_ratio": {
+            "type": "number",
+            "format": "double"
+          },
+          "min_clearance_mm": {
+            "type": "number",
+            "format": "double"
+          },
+          "placed_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "strategy": {
+            "type": "string"
+          },
+          "unplaced_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "used_bbox": {
+            "$ref": "#/components/schemas/VacuumUsedBbox"
+          }
+        }
+      },
+      "VacuumUsedBbox": {
+        "type": "object",
+        "required": [
+          "x_mm",
+          "y_mm",
+          "width_mm",
+          "height_mm"
+        ],
+        "properties": {
+          "height_mm": {
+            "type": "number",
+            "format": "double"
+          },
+          "width_mm": {
+            "type": "number",
+            "format": "double"
+          },
+          "x_mm": {
+            "type": "number",
+            "format": "double"
+          },
+          "y_mm": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "VersionResponse": {
+        "type": "object",
+        "required": [
+          "service",
+          "version"
+        ],
+        "properties": {
+          "service": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "health",
+      "description": "Health checks"
+    },
+    {
+      "name": "optimize",
+      "description": "Cut optimization"
+    }
+  ]
+}
