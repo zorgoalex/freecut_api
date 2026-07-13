@@ -259,6 +259,51 @@ Use it for:
 
 Do not use it as the only global default for all requests, because it increases response time.
 
+## Engine Selection: GA vs Heuristic
+
+`engine: "ga"` (default) runs the genetic optimizer inside the request time
+budget. On small and medium jobs it usually beats pure construction.
+
+`engine: "heuristic"` skips the GA and returns the best multi-variant FFD
+construction immediately. On large jobs the GA cannot converge within any
+practical budget and rides the same construction floor anyway, so the heuristic
+returns an equivalent layout ~25-40x faster (for example, 50 sheets in ~130 ms
+instead of ~3 s).
+
+Practical large-job profile:
+
+```json
+{
+  "params": {
+    "engine": "heuristic",
+    "cut_quality": "max",
+    "time_limit_ms": 3000,
+    "objective": "min_waste",
+    "layout_mode": "guillotine"
+  }
+}
+```
+
+`cut_quality` tiers (heuristic path only):
+
+- `"fast"` — construction floor only; milliseconds. Use for previews and
+  quick estimates.
+- `"balanced"` — sheet consolidation; ~tens of ms, typically about -1% sheets.
+  Good default for production heuristic runs.
+- `"max"` — consolidation + anytime LNS bounded by `time_limit_ms`; ~2-3 s,
+  deepest search. Use for final layouts on large jobs.
+
+Rules of thumb:
+
+- keep `engine: "ga"` for small/medium jobs where the GA has time to converge;
+- switch to `engine: "heuristic"` + `cut_quality: "balanced"|"max"` when jobs
+  are large (hundreds of instances) or when GA runs keep hitting the time
+  budget (`timeout_reason` in `summary`);
+- `cut_quality` is ignored for `engine: "ga"` — do not combine them expecting
+  extra post-processing;
+- explicit `consolidate`/`lns` objects are research-level overrides; prefer
+  the `cut_quality` tier.
+
 ## Practical Group Shift Settings
 
 `group_shift` is a post-process that moves peripheral groups of parts toward the main dense group. This is the mechanism studied in V29-V33 and later re-evaluated using contact/anchor metrics.

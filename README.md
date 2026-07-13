@@ -32,6 +32,10 @@ The goal is to make practical cutting optimization accessible to small workshops
 - Separate vacuum-table profile for compact left-anchored vacuum press/table layouts
 - Rotation constraints and pattern direction flags
 - Multi-start optimization with deterministic seeds
+- Two solver engines: GA (`engine: "ga"`, default) and instant multi-variant FFD
+  construction (`engine: "heuristic"`, ~25-40x faster on large jobs) with
+  `cut_quality` post-process tiers (sheet consolidation + anytime LNS)
+- Visual-remnant connectivity telemetry (`summary.remnant`) for offcut reusability
 - **Multi-sheet support** with automatic sheet allocation
 - **Partial placement** with unplaced items tracking
 - **SVG visualization** of multiple sheets (vertical layout)
@@ -142,6 +146,13 @@ Example file: `examples/optimize_request.json`
   - `layout_mode`: Layout mode: `"guillotine"` (default, guillotine-only cuts), `"nested"`, or `"vacuum_table"`. Optional in the request.
   - `vacuum`: Optional settings used only with `layout_mode: "vacuum_table"`.
     - `direction`: `"optimal"` (default), `"width"`, or `"height"`. The service clusters parts toward the left/top edge while keeping the effective kerf gap.
+  - `engine`: Optional solver engine: `"ga"` (default) or `"heuristic"` — instant
+    FFD construction without GA (same floor quality as a timed-out GA, ~25-40x
+    faster on large jobs).
+  - `cut_quality`: Optional post-process tier for `engine: "heuristic"`:
+    `"fast"` (floor only), `"balanced"` (sheet consolidation), `"max"`
+    (consolidation + anytime LNS). Ignored for `engine: "ga"`. Explicit
+    `consolidate`/`lns` objects override the tier (see `docs/API_SPEC.md`).
   - `include_svg`: Optional flag (`true` by default). Set to `false` to skip SVG generation and omit `artifacts.svg` in response.
   - `portfolio`: Optional anytime orchestration settings.
     - `enabled`: Optional (`true` by default when object is present).
@@ -296,6 +307,9 @@ FREECUT_NUM_TESTS=500 FREECUT_TOP_N=20 python3 scripts/optimize_search.py
 - `DEFAULT_TIME_LIMIT_MS` (default `2000`)
 - `DEFAULT_RESTARTS` (default `10`)
 - `MAX_CONCURRENT_OPTIMIZE` (default: available CPU count, minimum `1`)
+- `OPTIMIZE_QUEUE_WAIT_MS` (default `60000`) — how long a request waits for a free
+  optimize slot before `429 OVERLOADED`; `0` disables queueing. Keep it below the
+  caller's HTTP timeout.
 
 ## Testing
 ```bash

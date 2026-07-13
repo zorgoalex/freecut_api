@@ -95,6 +95,7 @@ docker rm freecut
 | `DEFAULT_TIME_LIMIT_MS` | `2000` | Default optimizer time budget when request omits `params.time_limit_ms`. |
 | `DEFAULT_RESTARTS` | `10` | Default restart count when request omits `params.restarts`. |
 | `MAX_CONCURRENT_OPTIMIZE` | CPU count, minimum `1` | Maximum concurrent optimize requests. |
+| `OPTIMIZE_QUEUE_WAIT_MS` | `60000` | Queue wait for a free optimize slot before `429 OVERLOADED`; `0` disables queueing. Keep below the calling client's HTTP timeout. |
 
 If you change the internal `PORT`, also change the Docker port mapping:
 
@@ -384,15 +385,20 @@ Increase:
 
 ### Too many concurrent requests
 
-The service returns `429 OVERLOADED` when all optimize slots are busy.
+When all optimize slots are busy, a request first waits in the queue up to
+`OPTIMIZE_QUEUE_WAIT_MS` (default 60 s). The service returns `429 OVERLOADED`
+only when the queue wait times out (or immediately when
+`OPTIMIZE_QUEUE_WAIT_MS=0`).
 
-Increase:
+Increase capacity:
 
 ```bash
 -e MAX_CONCURRENT_OPTIMIZE=8
 ```
 
-Only do this if the host has enough CPU/RAM.
+Only do this if the host has enough CPU/RAM. For API clients with their own
+HTTP timeout, set `OPTIMIZE_QUEUE_WAIT_MS` below that timeout so the client
+gets a retryable `429` instead of aborting mid-queue.
 
 ### Optimization is too slow
 

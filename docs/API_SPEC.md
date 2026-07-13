@@ -177,6 +177,8 @@ effective_gap_mm = kerf_mm + spacing_mm
 | `seed` | integer | generated from current time | `u64` | Deterministic seed for reproducible layouts. |
 | `layout_mode` | string | `"guillotine"` | `"guillotine"`, `"nested"`, `"vacuum_table"` | Layout/cutting mode. |
 | `vacuum` | object | omitted | see below | Vacuum-table profile settings; used only with `layout_mode: "vacuum_table"`. |
+| `engine` | string | `"ga"` | `"ga"`, `"heuristic"` | Solver engine. `heuristic` skips the GA and returns the best multi-variant FFD construction immediately (~25-40x faster on large jobs, same floor quality as a timed-out GA). |
+| `cut_quality` | string | omitted | `"fast"`, `"balanced"`, `"max"` | High-level post-process tier for `engine: "heuristic"`; expands into `consolidate`/`lns` flag sets. Ignored for `engine: "ga"`. |
 | `sla_profile` | string | `"balanced"` | `"fast"`, `"balanced"`, `"quality"` | Restart-budget profile for `/v1/optimize`. |
 | `ga_profile` | string | `"balanced"` | `"fast"`, `"balanced"`, `"quality"` | GA internal profile. |
 | `include_svg` | boolean | `true` | `true`, `false` | Include `artifacts.svg` in the response. |
@@ -189,6 +191,8 @@ effective_gap_mm = kerf_mm + spacing_mm
 | `alns` | object | omitted | see below | ALNS/LNS orchestration. |
 | `partition` | object | omitted | see below | Dense-first peeling/partition mode. |
 | `group_shift` | object | omitted | see below | Post-process group compaction. |
+| `consolidate` | object | omitted | see below | Post-process consolidation of under-full sheets (heuristic path). |
+| `lns` | object | omitted | see below | Anytime Large-Neighborhood-Search polish (heuristic path). |
 
 ## Kerf vs Spacing
 
@@ -335,6 +339,37 @@ Example vacuum-table request:
 }
 ```
 
+### engine
+
+Values:
+
+- `"ga"` (default): genetic optimizer with multi-start restarts.
+- `"heuristic"`: FFD construction only, no GA. Returns the best of all
+  heuristic variants immediately. For large jobs the GA cannot converge within
+  any practical budget and rides the same construction floor anyway, so
+  `heuristic` gives an equivalent layout ~25-40x faster (e.g. 50 sheets in
+  ~130 ms instead of ~3 s). Combine with `cut_quality` to spend the saved time
+  on post-processing.
+
+### cut_quality
+
+High-level post-process tier for `engine: "heuristic"`. Expands into the
+low-level `consolidate`/`lns` flag sets so a caller sends one word instead of
+tuning both post-processors by hand. Ignored for `engine: "ga"`. An explicit
+`consolidate` or `lns` object always overrides the tier.
+
+Values:
+
+- `"fast"`: construction floor only — no consolidation, no LNS; milliseconds.
+- `"balanced"`: sheet consolidation (FFD-only repack); ~tens of ms, typically
+  about -1% sheets.
+- `"max"`: consolidation plus anytime LNS (`max_iters=4000`); ~2-3 s, deepest
+  search. The LNS destroy window is mode-aware: `nested` uses a wider window
+  (6) than `guillotine` (4).
+
+Distinct from `sla_profile`/`ga_profile`, which control GA restart budgeting
+and do not affect the heuristic path.
+
 ### rotation
 
 Values:
@@ -467,6 +502,60 @@ Dense-first peeling/partition mode.
 |---|---:|---:|---|
 | `enabled` | boolean | `true` when object is present | Enable partition mode. |
 | `sheet_budget_ms` | integer | `time_limit_ms / planned_sheet_count` | Budget per peeling iteration. |
+
+## consolidate
+
+Post-process that consolidates under-full sheets (V59). It pools the parts of
+the K least-full sheets and tries to repack them into K-1 sheets; on success
+the sheet count drops by one. Iterates until no window improves or the pass
+budget is exhausted. Runs on the `engine: "heuristic"` path; usually enabled
+via `cut_quality` rather than directly.
+
+```json
+{
+  "enabled": true,
+  "max_window": 3,
+  "max_passes": 8,
+  "window_ga_ms": 0
+}
+```
+
+| Field | Type | Default | Valid values | Description |
+|---|---:|---:|---|---|
+| `enabled` | boolean | `true` when object is present | boolean | Enable consolidation. |
+| `max_window` | integer | `3` | clamped to `2..=6` | Largest window of least-full sheets pooled per attempt. |
+| `max_passes` | integer | `8` | `>= 1` | Maximum full passes; each saved sheet restarts the scan. |
+| `window_ga_ms` | integer | `0` | `>= 0` | Per-window GA budget (ms) when FFD cannot hit the target; `0` = FFD only. |
+
+When enabled, telemetry appears in `summary.consolidate`.
+
+## lns
+
+Anytime Large-Neighborhood-Search polish (V61). Runs after consolidation on
+the `engine: "heuristic"` path. Each iteration destroys a stochastic window of
+sheets (always including the emptiest) and repacks it; strictly-fewer-sheet
+repacks are accepted, and equal-sheet repacks are accepted when they
+concentrate free area onto one sheet. Deadline-bounded by `time_limit_ms`.
+Usually enabled via `cut_quality: "max"` rather than directly.
+
+```json
+{
+  "enabled": true,
+  "max_iters": 2000,
+  "max_window": 4,
+  "window_ga_ms": 0
+}
+```
+
+| Field | Type | Default | Valid values | Description |
+|---|---:|---:|---|---|
+| `enabled` | boolean | `true` when object is present | boolean | Enable the LNS polish. |
+| `max_iters` | integer | `2000` | clamped to `1..=200000` | Maximum destroy/repair iterations (the deadline usually binds first). |
+| `max_window` | integer | `4` | clamped to `2..=8` | Largest destroy window (sheets pooled per iteration). |
+| `window_ga_ms` | integer | `0` | `>= 0` | Per-window GA budget (ms); same semantics as `consolidate.window_ga_ms`. |
+
+LNS has no separate telemetry block; accepted moves are reflected in the final
+layout (and in `summary.consolidate` when consolidation also ran).
 
 ## portfolio
 
@@ -652,6 +741,8 @@ Successful response:
 | `retry` | object/null | Present when smart retry performed recovery attempts. |
 | `partition` | object/null | Present when partition mode is enabled. |
 | `group_shift` | object/null | Present when group shift is enabled. |
+| `consolidate` | object/null | Present when sheet consolidation ran (`consolidate` or `cut_quality`). Includes `sheets_before`, `sheets_after`, `sheets_saved`, `windows_tried`, `windows_accepted`, `passes`, `time_ms`. |
+| `remnant` | object/null | Visual-remnant connectivity telemetry. Present only when `include_svg=true`. |
 | `vacuum` | object/null | Present when `layout_mode` is `"vacuum_table"`. Includes chosen direction, strategy, coverage, clearance, and first-sheet used bbox. |
 
 ### solutions[]
@@ -815,6 +906,36 @@ Important fields:
 - `corridor_closed_area_mm2`: closed/shifted corridor area.
 - `corridor_opportunity_after_mm2`: remaining detected group-shift opportunity.
 
+## remnant telemetry
+
+When `params.include_svg=true`, `summary.remnant` measures how reusable the
+offcut is (V72). Each used sheet's usable area is rasterized on a coarse grid
+and the empty cells are flood-filled into connected regions. Unlike waste
+percent this measures *connectivity*: one big reusable offcut scores better
+than many staircase notches of the same total area. Skipped on the
+latency-sensitive `include_svg=false` path.
+
+```json
+{
+  "grid_mm": 20.0,
+  "free_fragments": 3,
+  "largest_free_mm2": 812000.0,
+  "largest_free_frac": 0.78,
+  "mean_sheet_largest_free_frac": 0.84
+}
+```
+
+| Field | Type | Description |
+|---|---:|---|
+| `grid_mm` | number | Raster grid step in mm (square cells). |
+| `free_fragments` | integer | Total connected empty regions across all used sheets. Lower is better. |
+| `largest_free_mm2` | number | Area of the single largest connected empty region — the biggest reusable remnant. |
+| `largest_free_frac` | number | `largest_free_mm2` as a fraction of total empty area (0..1). |
+| `mean_sheet_largest_free_frac` | number | Mean per-sheet largest-free-region fraction. |
+
+Placement coordinates are usable-area-relative, and the remnant grid is built
+in the same coordinate space; trim only reduces the usable dimensions.
+
 ## vacuum telemetry
 
 When `params.layout_mode = "vacuum_table"`, `summary.vacuum` is present:
@@ -872,7 +993,7 @@ HTTP statuses:
 | `422` | `VALIDATION_ERROR` | Request validation error. |
 | `422` | `CONSTRAINT_ERROR` | Optimization/input constraint error. |
 | `408` | `TIMEOUT` | Optimization timed out. |
-| `429` | `OVERLOADED` | Too many concurrent optimize requests. |
+| `429` | `OVERLOADED` | Optimize queue wait timed out (or queueing disabled) while all slots were busy. |
 | `500` | `INTERNAL` | Internal service error. |
 
 ## Validation Limits
@@ -887,6 +1008,7 @@ Service/env defaults:
 | `DEFAULT_TIME_LIMIT_MS` | `2000` | Default optimization budget. |
 | `DEFAULT_RESTARTS` | `10` | Default requested restarts. |
 | `MAX_CONCURRENT_OPTIMIZE` | CPU count, min `1` | Concurrent optimize requests. |
+| `OPTIMIZE_QUEUE_WAIT_MS` | `60000` | How long a request waits in the queue for a free optimize slot before `429 OVERLOADED`. `0` disables queueing (immediate `429` when all slots are busy). Keep it below the caller's own HTTP timeout, otherwise the caller aborts while the request still occupies the queue. |
 
 Request validation:
 
