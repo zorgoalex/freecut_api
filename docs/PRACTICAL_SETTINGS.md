@@ -654,7 +654,12 @@ Practical notes:
 
 - expose this as a separate "Vacuum table" workflow/profile in UI;
 - use exactly one stock entry for the table size;
+- represent roll film in portrait/feed coordinates: fixed film width in
+  `stock.width_mm`, available feed length in `stock.height_mm`;
 - keep `direction: "optimal"` unless the operator explicitly needs rows along width or height;
+- for rotatable non-textured parts, `optimal` minimizes occupied feed length
+  first and uses more of the available width, producing compact rows across the
+  film instead of a long narrow column;
 - do not expose GA, profile-pool, or group-shift controls for this profile, because the vacuum path bypasses those search modes;
 - interpret `kerf_mm + spacing_mm` as the minimum clearance between neighboring parts; extra slack should move outside the main part cluster, primarily to the right/bottom.
 

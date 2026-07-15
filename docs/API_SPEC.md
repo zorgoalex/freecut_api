@@ -312,9 +312,14 @@ Used only when `params.layout_mode = "vacuum_table"`.
 
 | Field | Type | Default | Valid values | Description |
 |---|---:|---:|---|---|
-| `direction` | string | `"optimal"` | `"optimal"`, `"width"`, `"height"` | Row direction for the vacuum table. `optimal` evaluates both width-wise rows and height-wise columns. |
+| `direction` | string | `"optimal"` | `"optimal"`, `"width"`, `"height"` | Row direction for the vacuum table. `optimal` evaluates both width-wise rows and height-wise columns, then prefers the layout that places the same parts using the shortest occupied film length; width utilization is the next tie-break. |
 
 Vacuum-table mode requires exactly one `stock` entry. `stock.qty` limits how many table loads may be emitted; omitted or `0` means unlimited table loads. `kerf_mm + spacing_mm` is treated as the minimum clearance between neighboring parts. Remaining slack is pushed to the right/bottom side instead of being distributed as internal corridors.
+
+For roll-film workflows, provide stock in portrait/feed coordinates: `width_mm`
+is the fixed table/film width and `height_mm` is the available feed length. With
+`direction: "optimal"` and rotatable non-textured parts, Freecut fills rows across
+the width before consuming more feed length.
 
 Example vacuum-table request:
 

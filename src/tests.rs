@@ -1087,6 +1087,93 @@ async fn optimize_vacuum_table_profile_clusters_homogeneous_parts() {
 }
 
 #[tokio::test]
+async fn optimize_vacuum_auto_fills_table_width_before_consuming_more_film_length() {
+    let app = app_for_test();
+    let body = serde_json::json!({
+        "units": "mm",
+        "stock": [
+            { "id": "vacuum_1050x2080", "width_mm": 1050.0, "height_mm": 2080.0, "qty": 1 }
+        ],
+        "items": [
+            { "id": "a", "width_mm": 417.0, "height_mm": 717.0, "qty": 1, "rotation": "allow_90", "pattern_direction": "none" },
+            { "id": "b", "width_mm": 417.0, "height_mm": 717.0, "qty": 1, "rotation": "allow_90", "pattern_direction": "none" },
+            { "id": "c", "width_mm": 416.0, "height_mm": 716.0, "qty": 1, "rotation": "allow_90", "pattern_direction": "none" },
+            { "id": "d", "width_mm": 415.0, "height_mm": 715.0, "qty": 1, "rotation": "allow_90", "pattern_direction": "none" }
+        ],
+        "params": {
+            "kerf_mm": 80.0,
+            "spacing_mm": 0.0,
+            "trim_mm": { "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0 },
+            "objective": "min_waste",
+            "layout_mode": "vacuum_table",
+            "vacuum": { "direction": "optimal" },
+            "include_svg": false
+        }
+    })
+    .to_string();
+
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    assert_eq!(
+        json.pointer("/summary/vacuum/chosen_direction")
+            .and_then(Value::as_str),
+        Some("height")
+    );
+
+    let bbox = json
+        .pointer("/summary/vacuum/used_bbox")
+        .expect("expected vacuum bbox");
+    let width = bbox.get("width_mm").and_then(Value::as_f64).unwrap();
+    let height = bbox.get("height_mm").and_then(Value::as_f64).unwrap();
+    assert!(
+        width >= 913.0 - 0.001,
+        "expected two columns to fill table width, bbox={bbox}"
+    );
+    assert!(
+        height <= 1514.0 + 0.001,
+        "expected two compact rows to reduce consumed film length, bbox={bbox}"
+    );
+
+    let placements = json
+        .pointer("/solutions/0/placements")
+        .and_then(Value::as_array)
+        .expect("expected placements");
+    assert_eq!(placements.len(), 4);
+    let distinct_x = placements
+        .iter()
+        .filter_map(|placement| placement.get("x_mm").and_then(Value::as_f64))
+        .map(|value| value.round() as i64)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(distinct_x.len(), 2, "expected two columns: {placements:?}");
+    let top_row = placements
+        .iter()
+        .filter(|placement| {
+            placement
+                .get("y_mm")
+                .and_then(Value::as_f64)
+                .is_some_and(|value| value <= 1.0)
+        })
+        .count();
+    let second_row = placements
+        .iter()
+        .filter(|placement| {
+            placement
+                .get("y_mm")
+                .and_then(Value::as_f64)
+                .is_some_and(|value| (795.0..=798.0).contains(&value))
+        })
+        .count();
+    assert_eq!(
+        top_row, 2,
+        "expected two parts in first row: {placements:?}"
+    );
+    assert_eq!(
+        second_row, 2,
+        "expected two parts in second row: {placements:?}"
+    );
+}
+
+#[tokio::test]
 async fn optimize_vacuum_table_does_not_retry_into_nested() {
     let app = app_for_test();
     let body = serde_json::json!({

@@ -52,6 +52,7 @@ struct VacuumScore {
     unplaced_count: usize,
     coverage_ratio: f64,
     bbox_width_ratio: f64,
+    bbox_height_ratio: f64,
     bbox_area_ratio: f64,
     edge_offset: f64,
     homogeneous: bool,
@@ -644,6 +645,7 @@ fn candidate_from_rows(
         0.0
     };
     let bbox_width_ratio = bbox.width_mm / usable_width.max(EPS);
+    let bbox_height_ratio = bbox.height_mm / usable_height.max(EPS);
     let edge_offset = bbox.x_mm / usable_width.max(EPS) + bbox.y_mm / usable_height.max(EPS);
 
     Some(VacuumCandidate {
@@ -655,6 +657,7 @@ fn candidate_from_rows(
             unplaced_count: requested_count.saturating_sub(placed_count),
             coverage_ratio,
             bbox_width_ratio,
+            bbox_height_ratio,
             bbox_area_ratio,
             edge_offset,
             homogeneous,
@@ -672,8 +675,15 @@ fn score_better(candidate: VacuumScore, current: VacuumScore) -> bool {
     if (candidate.coverage_ratio - current.coverage_ratio).abs() > EPS {
         return candidate.coverage_ratio > current.coverage_ratio;
     }
+    // Vacuum film has a fixed roll/table width. Once the same parts fit on a
+    // load, material consumption is driven by occupied length, not by the
+    // smallest two-dimensional bounding-box area. Prefer rows that fill the
+    // available width and therefore finish sooner along the feed axis.
+    if (candidate.bbox_height_ratio - current.bbox_height_ratio).abs() > EPS {
+        return candidate.bbox_height_ratio < current.bbox_height_ratio;
+    }
     if (candidate.bbox_width_ratio - current.bbox_width_ratio).abs() > EPS {
-        return candidate.bbox_width_ratio < current.bbox_width_ratio;
+        return candidate.bbox_width_ratio > current.bbox_width_ratio;
     }
     if (candidate.bbox_area_ratio - current.bbox_area_ratio).abs() > EPS {
         return candidate.bbox_area_ratio < current.bbox_area_ratio;
