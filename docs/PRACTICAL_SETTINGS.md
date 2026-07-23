@@ -656,10 +656,17 @@ Practical notes:
 - use exactly one stock entry for the table size;
 - represent roll film in portrait/feed coordinates: fixed film width in
   `stock.width_mm`, available feed length in `stock.height_mm`;
-- keep `direction: "optimal"` unless the operator explicitly needs rows along width or height;
-- for rotatable non-textured parts, `optimal` minimizes occupied feed length
-  first and uses more of the available width, producing compact rows across the
-  film instead of a long narrow column;
+- keep `direction: "optimal"` unless the operator explicitly needs the raw
+  `width_mm` or `height_mm` axis;
+- `optimal` detects the shorter original stock axis (before trim) as the
+  physical table width, so portrait and legacy landscape payloads behave
+  consistently;
+- the dedicated planner fills rows across that physical width before consuming
+  more film length, then packs whole rows into table loads; if its bounded
+  search cannot improve safely, it uses the same-axis legacy layout;
+- the dedicated width-first planner is used only for `direction: "optimal"`;
+  explicit `direction: "width"` and `"height"` retain the legacy directional
+  planners on their raw API axes;
 - do not expose GA, profile-pool, or group-shift controls for this profile, because the vacuum path bypasses those search modes;
 - interpret `kerf_mm + spacing_mm` as the minimum clearance between neighboring parts; extra slack should move outside the main part cluster, primarily to the right/bottom.
 

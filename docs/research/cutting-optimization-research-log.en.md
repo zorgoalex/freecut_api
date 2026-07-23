@@ -754,3 +754,25 @@ targeted repair candidates before investing more in scoring formula changes.
   Next mixed-size tests should check whether vacuum mode also needs local
   group/anchor compaction to pull edge shelf groups toward the main mass without
   losing placed count.
+
+## V78: Vacuum Width-First Rows Across Table Loads
+
+- Branch: `feat/vacuum-width-first`.
+- Motivation: mixed-size vacuum jobs were packed greedily one sheet at a time
+  and could consume film length before pairing parts that complete the table
+  width on the next load. Repro: 1050 x 1100 table, two loads, gap 50, two
+  600 x 400 and two 400 x 600 non-rotatable parts. The old result was 3 + 1;
+  the required result is two `400 + 50 + 600` rows, or 2 + 2.
+- Axis contract: for `direction: "optimal"`, physical width is the shorter
+  original stock axis before trim. Portrait 1050 x 2080 therefore selects
+  `width`; legacy landscape 2080 x 1050 selects `height`. Explicit `width` and
+  `height` retain their raw API-axis meaning.
+- Implementation: a dedicated bounded planner evaluates deterministic seed
+  parts, builds rows with one-step width-fill lookahead, then uses BFD to assign
+  indivisible rows to table loads. Search is capped at
+  `clamp(N * 2000, 50k, 2M)` probes; exhaustion keeps the legacy same-axis shelf
+  plan. The new plan is accepted only if it does not lose parts, increase
+  unplaced instances, or add loads, and only after bounds and instance
+  conservation validation.
+- Regressions cover exact mixed-size geometry, transposed stock, pre-trim axis
+  selection, `qty_limit`, and existing vacuum scenarios.

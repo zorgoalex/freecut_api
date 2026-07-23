@@ -312,14 +312,19 @@ Used only when `params.layout_mode = "vacuum_table"`.
 
 | Field | Type | Default | Valid values | Description |
 |---|---:|---:|---|---|
-| `direction` | string | `"optimal"` | `"optimal"`, `"width"`, `"height"` | Row direction for the vacuum table. `optimal` evaluates both width-wise rows and height-wise columns, then prefers the layout that places the same parts using the shortest occupied film length; width utilization is the next tie-break. |
+| `direction` | string | `"optimal"` | `"optimal"`, `"width"`, `"height"` | Row direction for the vacuum table. `optimal` uses the dedicated width-first planner: it treats the shorter original stock axis (before trim) as the physical table width, fills that axis first, and only then consumes table/film length. Explicit `width` and `height` keep the legacy directional planners on their raw API axes. |
 
 Vacuum-table mode requires exactly one `stock` entry. `stock.qty` limits how many table loads may be emitted; omitted or `0` means unlimited table loads. `kerf_mm + spacing_mm` is treated as the minimum clearance between neighboring parts. Remaining slack is pushed to the right/bottom side instead of being distributed as internal corridors.
 
-For roll-film workflows, provide stock in portrait/feed coordinates: `width_mm`
-is the fixed table/film width and `height_mm` is the available feed length. With
-`direction: "optimal"` and rotatable non-textured parts, Freecut fills rows across
-the width before consuming more feed length.
+For roll-film workflows, portrait/feed coordinates remain recommended:
+`width_mm` is the fixed table/film width and `height_mm` is the available feed
+length. Legacy landscape requests are also supported: `optimal` detects the
+shorter original stock axis as the same physical width. Trim changes the usable
+spans but never flips that axis. The width-first planner builds rows globally,
+packs complete rows into table loads, and accepts the result only when it does
+not place fewer parts or use more loads than the same-axis legacy fallback.
+Advanced work is capped at 2,000,000 fit probes; the legacy baseline and
+homogeneous row enumeration each have independent 25,000,000-check caps.
 
 Example vacuum-table request:
 
