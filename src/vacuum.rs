@@ -6,6 +6,13 @@ use crate::models::{
 };
 
 const EPS: f64 = 1.0e-7;
+const MIN_WIDTH_FIRST_PROBES: usize = 50_000;
+const MAX_WIDTH_FIRST_PROBES: usize = 2_000_000;
+const WIDTH_FIRST_PROBES_PER_PART: usize = 2_000;
+const MAX_WIDTH_FIRST_SEEDS: usize = 32;
+const EXTREME_SEEDS_PER_METRIC: usize = 6;
+const MAX_LEGACY_FIT_CHECKS: usize = 25_000_000;
+const MAX_HOMOGENEOUS_COMBINATIONS: usize = 25_000_000;
 
 pub(crate) struct VacuumLayoutResult {
     pub solutions: Vec<Solution>,
@@ -40,10 +47,56 @@ struct VacuumRow {
 
 #[derive(Clone)]
 struct VacuumCandidate {
-    axis: VacuumDirection,
     strategy: &'static str,
     rows: Vec<VacuumRow>,
     score: VacuumScore,
+}
+
+#[derive(Clone)]
+struct VacuumPlan {
+    axis: VacuumDirection,
+    strategy: &'static str,
+    loads: Vec<Vec<VacuumRow>>,
+    remaining: Vec<VacuumPart>,
+}
+
+struct VacuumSearchBudget {
+    remaining: usize,
+    exhausted: bool,
+}
+
+struct VacuumSeedPortfolio {
+    orders: [Vec<usize>; 6],
+    cursors: [usize; 6],
+    stable_order: Vec<usize>,
+    stable_cursor: usize,
+}
+
+impl VacuumSearchBudget {
+    fn for_parts(part_count: usize) -> Self {
+        Self {
+            remaining: part_count
+                .saturating_mul(WIDTH_FIRST_PROBES_PER_PART)
+                .clamp(MIN_WIDTH_FIRST_PROBES, MAX_WIDTH_FIRST_PROBES),
+            exhausted: false,
+        }
+    }
+
+    fn legacy() -> Self {
+        Self {
+            remaining: MAX_LEGACY_FIT_CHECKS,
+            exhausted: false,
+        }
+    }
+
+    fn probe(&mut self) -> bool {
+        if self.remaining == 0 {
+            self.exhausted = true;
+            return false;
+        }
+        self.remaining -= 1;
+        true
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -103,64 +156,59 @@ pub(crate) fn run_vacuum_layout(req: &OptimizeRequest) -> Result<VacuumLayoutRes
         _ => remaining.len().max(1) as u32,
     };
 
-    let mut solutions = Vec::new();
-    let mut chosen_direction = match requested_direction {
-        VacuumDirection::Optimal => VacuumDirection::Width,
+    let concrete_axis = match requested_direction {
+        VacuumDirection::Optimal => physical_width_axis(stock.width_mm, stock.height_mm),
         direction => direction,
     };
-    let mut strategy: Option<&'static str> = None;
-
-    for sheet_index in 0..max_sheets {
-        if remaining.is_empty() {
-            break;
-        }
-
-        let Some(candidate) = choose_candidate(
+    let baseline = build_legacy_plan(
+        &remaining,
+        concrete_axis,
+        usable_width,
+        usable_height,
+        gap_mm,
+        max_sheets,
+    )
+    .ok_or_else(|| "vacuum baseline search budget exceeded".to_string())?;
+    let plan = if requested_direction == VacuumDirection::Optimal {
+        build_width_first_plan(
             &remaining,
+            concrete_axis,
             usable_width,
             usable_height,
             gap_mm,
-            requested_direction,
-        ) else {
-            break;
-        };
+            max_sheets,
+        )
+        .filter(|advanced| {
+            plan_is_valid(advanced, &remaining, usable_width, usable_height, gap_mm)
+                && width_first_plan_is_better(advanced, &baseline, gap_mm)
+        })
+        .unwrap_or(baseline)
+    } else {
+        baseline
+    };
 
-        if candidate.score.placed_count == 0 {
-            break;
-        }
-
-        if solutions.is_empty() {
-            chosen_direction = candidate.axis;
-        }
-        strategy = Some(match strategy {
-            None => candidate.strategy,
-            Some(prev) if prev == candidate.strategy => prev,
-            Some(_) => "mixed",
-        });
-
-        let placements = rows_to_placements(
-            &candidate.rows,
-            candidate.axis,
-            usable_width,
-            usable_height,
-            gap_mm,
-        );
-        let placed_seq: HashSet<usize> = candidate
-            .rows
-            .iter()
-            .flat_map(|row| row.parts.iter().map(|part| part.part.seq))
-            .collect();
-        remaining.retain(|part| !placed_seq.contains(&part.seq));
-
-        solutions.push(Solution {
+    let chosen_direction = plan.axis;
+    let strategy = plan.strategy;
+    remaining = plan.remaining;
+    let solutions = plan
+        .loads
+        .iter()
+        .enumerate()
+        .map(|(sheet_index, rows)| Solution {
             stock_id: stock.id.clone(),
-            index: sheet_index,
+            index: sheet_index as u32,
             width_mm: stock.width_mm,
             height_mm: stock.height_mm,
             trim_mm: trim,
-            placements,
-        });
-    }
+            placements: rows_to_placements(
+                rows,
+                chosen_direction,
+                usable_width,
+                usable_height,
+                gap_mm,
+            ),
+        })
+        .collect::<Vec<_>>();
 
     let sheet_limit_reached =
         matches!(stock.qty, Some(qty) if qty > 0 && solutions.len() as u32 >= qty);
@@ -181,7 +229,7 @@ pub(crate) fn run_vacuum_layout(req: &OptimizeRequest) -> Result<VacuumLayoutRes
         &solutions,
         &unplaced_items,
         chosen_direction,
-        strategy.unwrap_or("none"),
+        strategy,
         usable_width,
         usable_height,
     );
@@ -191,6 +239,668 @@ pub(crate) fn run_vacuum_layout(req: &OptimizeRequest) -> Result<VacuumLayoutRes
         unplaced_items,
         telemetry,
     })
+}
+
+fn physical_width_axis(stock_width: f64, stock_height: f64) -> VacuumDirection {
+    if stock_width <= stock_height {
+        VacuumDirection::Width
+    } else {
+        VacuumDirection::Height
+    }
+}
+
+fn build_legacy_plan(
+    parts: &[VacuumPart],
+    axis: VacuumDirection,
+    usable_width: f64,
+    usable_height: f64,
+    gap_mm: f64,
+    max_sheets: u32,
+) -> Option<VacuumPlan> {
+    let mut remaining = parts.to_vec();
+    let mut loads = Vec::new();
+    let mut strategy: Option<&'static str> = None;
+    let mut budget = VacuumSearchBudget::legacy();
+
+    for _ in 0..max_sheets {
+        if remaining.is_empty() {
+            break;
+        }
+        let Some(candidate) = choose_candidate(
+            &remaining,
+            usable_width,
+            usable_height,
+            gap_mm,
+            axis,
+            &mut budget,
+        ) else {
+            break;
+        };
+        if candidate.score.placed_count == 0 {
+            break;
+        }
+
+        strategy = Some(match strategy {
+            None => candidate.strategy,
+            Some(previous) if previous == candidate.strategy => previous,
+            Some(_) => "mixed",
+        });
+        let placed_seq = row_seqs(&candidate.rows);
+        remaining = remove_placed_parts(remaining, &placed_seq, &mut budget)?;
+        loads.push(candidate.rows);
+    }
+
+    if budget.exhausted {
+        return None;
+    }
+
+    Some(VacuumPlan {
+        axis,
+        strategy: strategy.unwrap_or("none"),
+        loads,
+        remaining,
+    })
+}
+
+fn build_width_first_plan(
+    parts: &[VacuumPart],
+    axis: VacuumDirection,
+    usable_width: f64,
+    usable_height: f64,
+    gap_mm: f64,
+    max_sheets: u32,
+) -> Option<VacuumPlan> {
+    let (primary_span, cross_span) = axis_spans(axis, usable_width, usable_height);
+    let mut budget = VacuumSearchBudget::for_parts(parts.len());
+    let mut seed_portfolio = (parts.len() > 256).then(|| VacuumSeedPortfolio::new(parts, axis));
+    let mut remaining = parts.to_vec();
+    let mut rows = Vec::new();
+
+    while !remaining.is_empty() {
+        let row = best_width_first_row(
+            &remaining,
+            axis,
+            primary_span,
+            cross_span,
+            gap_mm,
+            &mut budget,
+            seed_portfolio.as_mut(),
+        )?;
+        let placed_seq = row_seqs(std::slice::from_ref(&row));
+        remaining = remove_placed_parts(remaining, &placed_seq, &mut budget)?;
+        rows.push(row);
+    }
+    if budget.exhausted {
+        return None;
+    }
+
+    let (loads, rejected) = pack_rows_best_fit(rows, cross_span, gap_mm, max_sheets, &mut budget)?;
+    remaining.extend(rejected.into_iter().flat_map(|row| {
+        row.parts
+            .into_iter()
+            .map(|row_part| row_part.part)
+            .collect::<Vec<_>>()
+    }));
+    remaining.sort_by_key(|part| part.seq);
+
+    Some(VacuumPlan {
+        axis,
+        strategy: "width_first_rows",
+        loads,
+        remaining,
+    })
+}
+
+fn best_width_first_row(
+    parts: &[VacuumPart],
+    axis: VacuumDirection,
+    primary_span: f64,
+    cross_span: f64,
+    gap_mm: f64,
+    budget: &mut VacuumSearchBudget,
+    seed_portfolio: Option<&mut VacuumSeedPortfolio>,
+) -> Option<VacuumRow> {
+    let seed_indices = match seed_portfolio {
+        Some(portfolio) => portfolio.seed_indices(parts, budget)?,
+        None => (0..parts.len()).collect(),
+    };
+    let mut best: Option<VacuumRow> = None;
+
+    for seed_idx in seed_indices {
+        for rotated in [false, true] {
+            let seed = &parts[seed_idx];
+            if rotated && !seed.can_rotate {
+                continue;
+            }
+            let (width_mm, height_mm) = oriented_size(seed, rotated);
+            if primary_size(axis, width_mm, height_mm) > primary_span + EPS
+                || cross_size(axis, width_mm, height_mm) > cross_span + EPS
+            {
+                continue;
+            }
+            if !budget.probe() {
+                return None;
+            }
+
+            let candidate = build_width_first_row_from_seed(
+                parts,
+                seed_idx,
+                rotated,
+                axis,
+                primary_span,
+                gap_mm,
+                budget,
+            )?;
+            if best
+                .as_ref()
+                .map(|current| width_first_row_is_better(&candidate, current, axis, gap_mm))
+                .unwrap_or(true)
+            {
+                best = Some(candidate);
+            }
+        }
+    }
+    best
+}
+
+fn build_width_first_row_from_seed(
+    parts: &[VacuumPart],
+    seed_idx: usize,
+    seed_rotated: bool,
+    axis: VacuumDirection,
+    primary_span: f64,
+    gap_mm: f64,
+    budget: &mut VacuumSearchBudget,
+) -> Option<VacuumRow> {
+    let seed = &parts[seed_idx];
+    let (width_mm, height_mm) = oriented_size(seed, seed_rotated);
+    let mut row = VacuumRow {
+        cross_size_mm: cross_size(axis, width_mm, height_mm),
+        parts: vec![RowPart {
+            part: seed.clone(),
+            width_mm,
+            height_mm,
+            rotated: seed_rotated,
+        }],
+    };
+    let mut primary_used = primary_size(axis, width_mm, height_mm);
+    let mut selected = HashSet::from([seed.seq]);
+
+    loop {
+        let primary_remaining = primary_span - primary_used - gap_mm;
+        if primary_remaining <= EPS {
+            break;
+        }
+        let next = best_width_first_next(
+            parts,
+            &selected,
+            axis,
+            primary_remaining,
+            row.cross_size_mm,
+            gap_mm,
+            budget,
+        )?;
+        let Some(row_part) = next else {
+            break;
+        };
+        primary_used += gap_mm + primary_size(axis, row_part.width_mm, row_part.height_mm);
+        selected.insert(row_part.part.seq);
+        row.parts.push(row_part);
+    }
+    Some(row)
+}
+
+fn best_width_first_next(
+    parts: &[VacuumPart],
+    selected: &HashSet<usize>,
+    axis: VacuumDirection,
+    primary_remaining: f64,
+    row_cross_size: f64,
+    gap_mm: f64,
+    budget: &mut VacuumSearchBudget,
+) -> Option<Option<RowPart>> {
+    let mut best: Option<(RowPart, f64)> = None;
+    for (idx, part) in parts.iter().enumerate() {
+        if !budget.probe() {
+            return None;
+        }
+        if selected.contains(&part.seq) {
+            continue;
+        }
+        for rotated in [false, true] {
+            if rotated && !part.can_rotate {
+                continue;
+            }
+            let (width_mm, height_mm) = oriented_size(part, rotated);
+            let primary = primary_size(axis, width_mm, height_mm);
+            let cross = cross_size(axis, width_mm, height_mm);
+            if primary > primary_remaining + EPS || cross > row_cross_size + EPS {
+                continue;
+            }
+            let second_span = primary_remaining - primary - gap_mm;
+            let lookahead = if second_span > EPS {
+                best_lookahead_fill(
+                    parts,
+                    selected,
+                    idx,
+                    axis,
+                    second_span,
+                    row_cross_size,
+                    budget,
+                )?
+            } else {
+                0.0
+            };
+            let projected_fill = primary
+                + if lookahead > 0.0 {
+                    gap_mm + lookahead
+                } else {
+                    0.0
+                };
+            let candidate = RowPart {
+                part: part.clone(),
+                width_mm,
+                height_mm,
+                rotated,
+            };
+            let replace = best
+                .as_ref()
+                .map(|(current, current_fill)| {
+                    projected_fill > *current_fill + EPS
+                        || nearly_eq(projected_fill, *current_fill)
+                            && (primary
+                                > primary_size(axis, current.width_mm, current.height_mm) + EPS
+                                || nearly_eq(
+                                    primary,
+                                    primary_size(axis, current.width_mm, current.height_mm),
+                                ) && (cross
+                                    < cross_size(axis, current.width_mm, current.height_mm) - EPS
+                                    || nearly_eq(
+                                        cross,
+                                        cross_size(axis, current.width_mm, current.height_mm),
+                                    ) && part.seq < current.part.seq))
+                })
+                .unwrap_or(true);
+            if replace {
+                best = Some((candidate, projected_fill));
+            }
+        }
+    }
+    Some(best.map(|(part, _)| part))
+}
+
+fn best_lookahead_fill(
+    parts: &[VacuumPart],
+    selected: &HashSet<usize>,
+    excluded_idx: usize,
+    axis: VacuumDirection,
+    primary_limit: f64,
+    cross_limit: f64,
+    budget: &mut VacuumSearchBudget,
+) -> Option<f64> {
+    let mut best = 0.0_f64;
+    for (idx, part) in parts.iter().enumerate() {
+        if !budget.probe() {
+            return None;
+        }
+        if idx == excluded_idx || selected.contains(&part.seq) {
+            continue;
+        }
+        for rotated in [false, true] {
+            if rotated && !part.can_rotate {
+                continue;
+            }
+            let (width_mm, height_mm) = oriented_size(part, rotated);
+            let primary = primary_size(axis, width_mm, height_mm);
+            let cross = cross_size(axis, width_mm, height_mm);
+            if primary <= primary_limit + EPS && cross <= cross_limit + EPS {
+                best = best.max(primary);
+            }
+        }
+    }
+    Some(best)
+}
+
+impl VacuumSeedPortfolio {
+    fn new(parts: &[VacuumPart], axis: VacuumDirection) -> Self {
+        let mut orders: [Vec<usize>; 6] = std::array::from_fn(|_| (0..parts.len()).collect());
+        for (metric, order) in orders.iter_mut().enumerate() {
+            order.sort_by(|&a, &b| seed_metric_order(a, b, parts, axis, metric));
+            for idx in order {
+                *idx = parts[*idx].seq;
+            }
+        }
+        Self {
+            orders,
+            cursors: [0; 6],
+            stable_order: parts.iter().map(|part| part.seq).collect(),
+            stable_cursor: 0,
+        }
+    }
+
+    fn seed_indices(
+        &mut self,
+        parts: &[VacuumPart],
+        budget: &mut VacuumSearchBudget,
+    ) -> Option<Vec<usize>> {
+        let mut extremes: [Vec<usize>; 6] = std::array::from_fn(|_| Vec::new());
+        for (metric, selected) in extremes.iter_mut().enumerate() {
+            while self.cursors[metric] < self.orders[metric].len() {
+                if !budget.probe() {
+                    return None;
+                }
+                let seq = self.orders[metric][self.cursors[metric]];
+                if part_index_by_seq(parts, seq).is_some() {
+                    break;
+                }
+                self.cursors[metric] += 1;
+            }
+
+            let mut position = self.cursors[metric];
+            while position < self.orders[metric].len() && selected.len() < EXTREME_SEEDS_PER_METRIC
+            {
+                if !budget.probe() {
+                    return None;
+                }
+                let seq = self.orders[metric][position];
+                if let Some(idx) = part_index_by_seq(parts, seq) {
+                    selected.push(idx);
+                }
+                position += 1;
+            }
+        }
+
+        let mut seeds = Vec::with_capacity(MAX_WIDTH_FIRST_SEEDS);
+        let mut seen = HashSet::new();
+        for rank in 0..EXTREME_SEEDS_PER_METRIC {
+            for selected in &extremes {
+                if let Some(&idx) = selected.get(rank) {
+                    if seen.insert(parts[idx].seq) {
+                        seeds.push(idx);
+                        if seeds.len() == MAX_WIDTH_FIRST_SEEDS {
+                            return Some(seeds);
+                        }
+                    }
+                }
+            }
+        }
+
+        while self.stable_cursor < self.stable_order.len() {
+            if !budget.probe() {
+                return None;
+            }
+            let seq = self.stable_order[self.stable_cursor];
+            if part_index_by_seq(parts, seq).is_some() {
+                break;
+            }
+            self.stable_cursor += 1;
+        }
+        let mut position = self.stable_cursor;
+        while position < self.stable_order.len() && seeds.len() < MAX_WIDTH_FIRST_SEEDS {
+            if !budget.probe() {
+                return None;
+            }
+            let seq = self.stable_order[position];
+            if let Some(idx) = part_index_by_seq(parts, seq) {
+                if seen.insert(seq) {
+                    seeds.push(idx);
+                }
+            }
+            position += 1;
+        }
+        Some(seeds)
+    }
+}
+
+fn part_index_by_seq(parts: &[VacuumPart], seq: usize) -> Option<usize> {
+    parts.binary_search_by_key(&seq, |part| part.seq).ok()
+}
+
+fn seed_metric_order(
+    a: usize,
+    b: usize,
+    parts: &[VacuumPart],
+    axis: VacuumDirection,
+    metric: usize,
+) -> std::cmp::Ordering {
+    let primary_a = seed_primary_metric(&parts[a], axis);
+    let primary_b = seed_primary_metric(&parts[b], axis);
+    let cross_a = seed_cross_metric(&parts[a], axis);
+    let cross_b = seed_cross_metric(&parts[b], axis);
+    let area_a = parts[a].width_mm * parts[a].height_mm;
+    let area_b = parts[b].width_mm * parts[b].height_mm;
+    let order = match metric {
+        0 => primary_a.total_cmp(&primary_b),
+        1 => primary_b.total_cmp(&primary_a),
+        2 => cross_a.total_cmp(&cross_b),
+        3 => cross_b.total_cmp(&cross_a),
+        4 => area_a.total_cmp(&area_b),
+        5 => area_b.total_cmp(&area_a),
+        _ => unreachable!("unknown vacuum seed metric"),
+    };
+    order.then_with(|| parts[a].seq.cmp(&parts[b].seq))
+}
+
+fn seed_primary_metric(part: &VacuumPart, axis: VacuumDirection) -> f64 {
+    let unrotated = primary_size(axis, part.width_mm, part.height_mm);
+    if part.can_rotate {
+        unrotated.max(primary_size(axis, part.height_mm, part.width_mm))
+    } else {
+        unrotated
+    }
+}
+
+fn seed_cross_metric(part: &VacuumPart, axis: VacuumDirection) -> f64 {
+    let unrotated = cross_size(axis, part.width_mm, part.height_mm);
+    if part.can_rotate {
+        unrotated.max(cross_size(axis, part.height_mm, part.width_mm))
+    } else {
+        unrotated
+    }
+}
+
+fn width_first_row_is_better(
+    candidate: &VacuumRow,
+    current: &VacuumRow,
+    axis: VacuumDirection,
+    gap_mm: f64,
+) -> bool {
+    let candidate_used = row_primary_used(candidate, axis, gap_mm);
+    let current_used = row_primary_used(current, axis, gap_mm);
+    candidate_used > current_used + EPS
+        || nearly_eq(candidate_used, current_used)
+            && (candidate.cross_size_mm < current.cross_size_mm - EPS
+                || nearly_eq(candidate.cross_size_mm, current.cross_size_mm)
+                    && (candidate.parts.len() > current.parts.len()
+                        || candidate.parts.len() == current.parts.len()
+                            && row_min_seq(candidate) < row_min_seq(current)))
+}
+
+fn pack_rows_best_fit(
+    mut rows: Vec<VacuumRow>,
+    cross_span: f64,
+    gap_mm: f64,
+    max_sheets: u32,
+    budget: &mut VacuumSearchBudget,
+) -> Option<(Vec<Vec<VacuumRow>>, Vec<VacuumRow>)> {
+    rows.sort_by(|a, b| {
+        b.cross_size_mm
+            .total_cmp(&a.cross_size_mm)
+            .then_with(|| row_min_seq(a).cmp(&row_min_seq(b)))
+    });
+    let mut loads: Vec<Vec<VacuumRow>> = Vec::new();
+    let mut load_cross_used = Vec::new();
+    let mut rejected = Vec::new();
+
+    for row in rows {
+        let mut best_load: Option<(usize, f64)> = None;
+        for (idx, load) in loads.iter().enumerate() {
+            if !budget.probe() {
+                return None;
+            }
+            let used = load_cross_used[idx];
+            let next_used = used + if load.is_empty() { 0.0 } else { gap_mm } + row.cross_size_mm;
+            if next_used > cross_span + EPS {
+                continue;
+            }
+            let remaining = cross_span - next_used;
+            if best_load
+                .map(|(_, best_remaining)| remaining < best_remaining)
+                .unwrap_or(true)
+            {
+                best_load = Some((idx, remaining));
+            }
+        }
+
+        if let Some((load_idx, _)) = best_load {
+            load_cross_used[load_idx] += gap_mm + row.cross_size_mm;
+            loads[load_idx].push(row);
+        } else if loads.len() < max_sheets as usize {
+            load_cross_used.push(row.cross_size_mm);
+            loads.push(vec![row]);
+        } else {
+            rejected.push(row);
+        }
+    }
+
+    for load in &mut loads {
+        load.sort_by_key(row_min_seq);
+    }
+    loads.sort_by_key(|load| load.iter().map(row_min_seq).min().unwrap_or(usize::MAX));
+    Some((loads, rejected))
+}
+
+fn plan_is_valid(
+    plan: &VacuumPlan,
+    original_parts: &[VacuumPart],
+    usable_width: f64,
+    usable_height: f64,
+    gap_mm: f64,
+) -> bool {
+    let expected = original_parts
+        .iter()
+        .map(|part| part.seq)
+        .collect::<HashSet<_>>();
+    let mut actual = HashSet::new();
+    for load in &plan.loads {
+        let placements = rows_to_placements(load, plan.axis, usable_width, usable_height, gap_mm);
+        if placements.iter().any(|placement| {
+            placement.x_mm < -EPS
+                || placement.y_mm < -EPS
+                || placement.x_mm + placement.width_mm > usable_width + EPS
+                || placement.y_mm + placement.height_mm > usable_height + EPS
+        }) {
+            return false;
+        }
+        for seq in row_seqs(load) {
+            if !actual.insert(seq) {
+                return false;
+            }
+        }
+    }
+    for part in &plan.remaining {
+        if !actual.insert(part.seq) {
+            return false;
+        }
+    }
+    actual == expected
+}
+
+fn width_first_plan_is_better(advanced: &VacuumPlan, baseline: &VacuumPlan, gap_mm: f64) -> bool {
+    let advanced_placed = plan_placed_count(advanced);
+    let baseline_placed = plan_placed_count(baseline);
+    if advanced_placed < baseline_placed
+        || advanced.remaining.len() > baseline.remaining.len()
+        || advanced.loads.len() > baseline.loads.len()
+    {
+        return false;
+    }
+    if advanced_placed > baseline_placed
+        || advanced.remaining.len() < baseline.remaining.len()
+        || advanced.loads.len() < baseline.loads.len()
+    {
+        return true;
+    }
+
+    let advanced_feed = plan_feed_used(advanced, gap_mm);
+    let baseline_feed = plan_feed_used(baseline, gap_mm);
+    advanced_feed < baseline_feed - EPS
+        || nearly_eq(advanced_feed, baseline_feed)
+            && (plan_primary_fill(advanced, gap_mm) > plan_primary_fill(baseline, gap_mm) + EPS
+                || nearly_eq(
+                    plan_primary_fill(advanced, gap_mm),
+                    plan_primary_fill(baseline, gap_mm),
+                ) && plan_sequence(advanced) < plan_sequence(baseline))
+}
+
+fn plan_placed_count(plan: &VacuumPlan) -> usize {
+    plan.loads
+        .iter()
+        .flat_map(|rows| rows.iter())
+        .map(|row| row.parts.len())
+        .sum()
+}
+
+fn plan_feed_used(plan: &VacuumPlan, gap_mm: f64) -> f64 {
+    plan.loads
+        .iter()
+        .map(|rows| rows_cross_used(rows, gap_mm))
+        .sum()
+}
+
+fn plan_primary_fill(plan: &VacuumPlan, gap_mm: f64) -> f64 {
+    plan.loads
+        .iter()
+        .flat_map(|rows| rows.iter())
+        .map(|row| row_primary_used(row, plan.axis, gap_mm))
+        .sum()
+}
+
+fn plan_sequence(plan: &VacuumPlan) -> Vec<usize> {
+    plan.loads
+        .iter()
+        .flat_map(|rows| rows.iter())
+        .flat_map(|row| row.parts.iter().map(|part| part.part.seq))
+        .collect()
+}
+
+fn row_primary_used(row: &VacuumRow, axis: VacuumDirection, gap_mm: f64) -> f64 {
+    row.parts
+        .iter()
+        .map(|part| primary_size(axis, part.width_mm, part.height_mm))
+        .sum::<f64>()
+        + gap_mm * row.parts.len().saturating_sub(1) as f64
+}
+
+fn row_min_seq(row: &VacuumRow) -> usize {
+    row.parts
+        .iter()
+        .map(|part| part.part.seq)
+        .min()
+        .unwrap_or(usize::MAX)
+}
+
+fn row_seqs(rows: &[VacuumRow]) -> HashSet<usize> {
+    rows.iter()
+        .flat_map(|row| row.parts.iter().map(|part| part.part.seq))
+        .collect()
+}
+
+fn remove_placed_parts(
+    parts: Vec<VacuumPart>,
+    placed_seq: &HashSet<usize>,
+    budget: &mut VacuumSearchBudget,
+) -> Option<Vec<VacuumPart>> {
+    let mut remaining = Vec::with_capacity(parts.len().saturating_sub(placed_seq.len()));
+    for part in parts {
+        if !budget.probe() {
+            return None;
+        }
+        if !placed_seq.contains(&part.seq) {
+            remaining.push(part);
+        }
+    }
+    Some(remaining)
 }
 
 fn collect_vacuum_parts(
@@ -247,6 +957,7 @@ fn choose_candidate(
     usable_height: f64,
     gap_mm: f64,
     requested_direction: VacuumDirection,
+    budget: &mut VacuumSearchBudget,
 ) -> Option<VacuumCandidate> {
     let axes: &[VacuumDirection] = match requested_direction {
         VacuumDirection::Optimal => &[VacuumDirection::Width, VacuumDirection::Height],
@@ -256,20 +967,36 @@ fn choose_candidate(
 
     let mut best: Option<VacuumCandidate> = None;
     for &axis in axes {
-        if let Some(candidate) = pack_homogeneous(parts, axis, usable_width, usable_height, gap_mm)
+        if let Some(candidate) =
+            pack_homogeneous(parts, axis, usable_width, usable_height, gap_mm, budget)
         {
             replace_if_better(&mut best, candidate);
+        }
+        if budget.exhausted {
+            break;
         }
         for sorter in [
             VacuumSorter::Area,
             VacuumSorter::LongSide,
             VacuumSorter::ShortSide,
         ] {
-            if let Some(candidate) =
-                pack_general(parts, axis, usable_width, usable_height, gap_mm, sorter)
-            {
+            if let Some(candidate) = pack_general(
+                parts,
+                axis,
+                usable_width,
+                usable_height,
+                gap_mm,
+                sorter,
+                budget,
+            ) {
                 replace_if_better(&mut best, candidate);
             }
+            if budget.exhausted {
+                break;
+            }
+        }
+        if budget.exhausted {
+            break;
         }
     }
     best
@@ -291,6 +1018,7 @@ fn pack_homogeneous(
     usable_width: f64,
     usable_height: f64,
     gap_mm: f64,
+    budget: &mut VacuumSearchBudget,
 ) -> Option<VacuumCandidate> {
     let first = parts.first()?;
     if !parts.iter().all(|part| {
@@ -321,7 +1049,7 @@ fn pack_homogeneous(
             .then_with(|| b.cross_mm.total_cmp(&a.cross_mm))
     });
 
-    let counts = best_homogeneous_row_counts(&row_types, parts.len(), cross_span, gap_mm)?;
+    let counts = best_homogeneous_row_counts(&row_types, parts.len(), cross_span, gap_mm, budget)?;
     let mut rows = Vec::new();
     let mut next_part = 0_usize;
     for (row_type, &row_count) in row_types.iter().zip(counts.iter()) {
@@ -394,6 +1122,7 @@ fn best_homogeneous_row_counts(
     requested_count: usize,
     cross_span: f64,
     gap_mm: f64,
+    budget: &mut VacuumSearchBudget,
 ) -> Option<Vec<usize>> {
     let mut best_counts: Option<Vec<usize>> = None;
     let mut best_key: Option<(usize, usize, usize, usize)> = None;
@@ -403,11 +1132,13 @@ fn best_homogeneous_row_counts(
         if rows_total == 0 {
             return;
         }
-        let capacity_total: usize = counts
-            .iter()
-            .zip(row_types.iter())
-            .map(|(count, row_type)| count * row_type.capacity)
-            .sum();
+        let capacity_total =
+            counts
+                .iter()
+                .zip(row_types.iter())
+                .fold(0_usize, |total, (count, row_type)| {
+                    total.saturating_add(count.saturating_mul(row_type.capacity))
+                });
         let placed = capacity_total.min(requested_count);
         if placed == 0 {
             return;
@@ -441,13 +1172,28 @@ fn best_homogeneous_row_counts(
 
     match row_types {
         [a] => {
-            for a_count in 1..=a.max_rows {
+            let a_limit = a.max_rows.min(requested_count);
+            for a_count in 1..=a_limit {
+                if !budget.probe() {
+                    return None;
+                }
                 visit(vec![a_count]);
             }
         }
         [a, b] => {
-            for a_count in 0..=a.max_rows {
-                for b_count in 0..=b.max_rows {
+            let a_limit = a.max_rows.min(requested_count);
+            let b_limit = b.max_rows.min(requested_count);
+            let combinations = a_limit
+                .saturating_add(1)
+                .saturating_mul(b_limit.saturating_add(1));
+            if combinations > MAX_HOMOGENEOUS_COMBINATIONS {
+                return None;
+            }
+            for a_count in 0..=a_limit {
+                for b_count in 0..=b_limit {
+                    if !budget.probe() {
+                        return None;
+                    }
                     visit(vec![a_count, b_count]);
                 }
             }
@@ -465,6 +1211,7 @@ fn pack_general(
     usable_height: f64,
     gap_mm: f64,
     sorter: VacuumSorter,
+    budget: &mut VacuumSearchBudget,
 ) -> Option<VacuumCandidate> {
     let (primary_span, cross_span) = axis_spans(axis, usable_width, usable_height);
     let mut remaining = parts.to_vec();
@@ -486,7 +1233,7 @@ fn pack_general(
         }
 
         let Some((seed_idx, seed_part)) =
-            find_seed_part(&remaining, axis, primary_span, cross_remaining)
+            find_seed_part(&remaining, axis, primary_span, cross_remaining, budget)
         else {
             break;
         };
@@ -507,9 +1254,13 @@ fn pack_general(
             if remaining_primary <= EPS {
                 break;
             }
-            let Some((idx, row_part)) =
-                find_next_row_part(&remaining, axis, remaining_primary, row.cross_size_mm)
-            else {
+            let Some((idx, row_part)) = find_next_row_part(
+                &remaining,
+                axis,
+                remaining_primary,
+                row.cross_size_mm,
+                budget,
+            ) else {
                 break;
             };
             primary_used += gap_mm + primary_size(axis, row_part.width_mm, row_part.height_mm);
@@ -518,6 +1269,9 @@ fn pack_general(
         }
 
         rows.push(row);
+    }
+    if budget.exhausted {
+        return None;
     }
 
     candidate_from_rows(
@@ -555,10 +1309,20 @@ fn find_seed_part(
     axis: VacuumDirection,
     primary_span: f64,
     cross_remaining: f64,
+    budget: &mut VacuumSearchBudget,
 ) -> Option<(usize, RowPart)> {
-    parts.iter().enumerate().find_map(|(idx, part)| {
-        best_orientation(part, axis, primary_span, cross_remaining).map(|row_part| (idx, row_part))
-    })
+    for (idx, part) in parts.iter().enumerate() {
+        if !budget.probe() {
+            return None;
+        }
+        if part.can_rotate && !budget.probe() {
+            return None;
+        }
+        if let Some(row_part) = best_orientation(part, axis, primary_span, cross_remaining) {
+            return Some((idx, row_part));
+        }
+    }
+    None
 }
 
 fn find_next_row_part(
@@ -566,11 +1330,20 @@ fn find_next_row_part(
     axis: VacuumDirection,
     primary_remaining: f64,
     row_cross_size: f64,
+    budget: &mut VacuumSearchBudget,
 ) -> Option<(usize, RowPart)> {
-    parts.iter().enumerate().find_map(|(idx, part)| {
-        best_orientation(part, axis, primary_remaining, row_cross_size)
-            .map(|row_part| (idx, row_part))
-    })
+    for (idx, part) in parts.iter().enumerate() {
+        if !budget.probe() {
+            return None;
+        }
+        if part.can_rotate && !budget.probe() {
+            return None;
+        }
+        if let Some(row_part) = best_orientation(part, axis, primary_remaining, row_cross_size) {
+            return Some((idx, row_part));
+        }
+    }
+    None
 }
 
 fn best_orientation(
@@ -649,7 +1422,6 @@ fn candidate_from_rows(
     let edge_offset = bbox.x_mm / usable_width.max(EPS) + bbox.y_mm / usable_height.max(EPS);
 
     Some(VacuumCandidate {
-        axis,
         strategy,
         rows,
         score: VacuumScore {
@@ -933,4 +1705,25 @@ fn max_count_in_span(span: f64, size: f64, gap_mm: f64) -> usize {
 
 fn nearly_eq(a: f64, b: f64) -> bool {
     (a - b).abs() <= EPS
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    #[test]
+    fn vacuum_search_budgets_have_hard_caps() {
+        let mut advanced = VacuumSearchBudget::for_parts(5_000);
+        assert_eq!(advanced.remaining, MAX_WIDTH_FIRST_PROBES);
+        for _ in 0..MAX_WIDTH_FIRST_PROBES {
+            assert!(advanced.probe());
+        }
+        assert!(!advanced.probe());
+        assert!(advanced.exhausted);
+
+        let baseline = VacuumSearchBudget::legacy();
+        assert_eq!(baseline.remaining, MAX_LEGACY_FIT_CHECKS);
+        assert!(!baseline.exhausted);
+        assert_eq!(MAX_HOMOGENEOUS_COMBINATIONS, 25_000_000);
+    }
 }

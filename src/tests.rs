@@ -1013,17 +1013,17 @@ async fn optimize_vacuum_table_profile_clusters_homogeneous_parts() {
     assert_eq!(
         json.pointer("/summary/vacuum/chosen_direction")
             .and_then(Value::as_str),
-        Some("width")
+        Some("height")
     );
     assert_eq!(
         json.pointer("/summary/vacuum/strategy")
             .and_then(Value::as_str),
-        Some("homogeneous")
+        Some("width_first_rows")
     );
     assert_eq!(
         json.pointer("/summary/vacuum/placed_count")
             .and_then(Value::as_u64),
-        Some(11)
+        Some(8)
     );
     assert!(
         json.pointer("/summary/vacuum/min_clearance_mm")
@@ -1036,7 +1036,7 @@ async fn optimize_vacuum_table_profile_clusters_homogeneous_parts() {
         .pointer("/solutions/0/placements")
         .and_then(Value::as_array)
         .expect("expected placements");
-    assert_eq!(placements.len(), 11);
+    assert_eq!(placements.len(), 8);
     assert!(placements
         .iter()
         .any(|placement| placement.get("rotated").and_then(Value::as_bool) == Some(true)));
@@ -1117,7 +1117,7 @@ async fn optimize_vacuum_auto_fills_table_width_before_consuming_more_film_lengt
     assert_eq!(
         json.pointer("/summary/vacuum/chosen_direction")
             .and_then(Value::as_str),
-        Some("height")
+        Some("width")
     );
 
     let bbox = json
@@ -1144,7 +1144,10 @@ async fn optimize_vacuum_auto_fills_table_width_before_consuming_more_film_lengt
         .filter_map(|placement| placement.get("x_mm").and_then(Value::as_f64))
         .map(|value| value.round() as i64)
         .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(distinct_x.len(), 2, "expected two columns: {placements:?}");
+    assert!(
+        distinct_x.len() >= 2,
+        "expected width-filling rows: {placements:?}"
+    );
     let top_row = placements
         .iter()
         .filter(|placement| {
@@ -1170,6 +1173,391 @@ async fn optimize_vacuum_auto_fills_table_width_before_consuming_more_film_lengt
     assert_eq!(
         second_row, 2,
         "expected two parts in second row: {placements:?}"
+    );
+}
+
+#[tokio::test]
+async fn optimize_vacuum_width_first_balances_heterogeneous_parts_across_loads() {
+    let app = app_for_test();
+    let body = serde_json::json!({
+        "units": "mm",
+        "stock": [
+            { "id": "vacuum_1050x1100", "width_mm": 1050.0, "height_mm": 1100.0, "qty": 2 }
+        ],
+        "items": [
+            { "id": "a", "width_mm": 600.0, "height_mm": 400.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" },
+            { "id": "b", "width_mm": 600.0, "height_mm": 400.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" },
+            { "id": "c", "width_mm": 400.0, "height_mm": 600.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" },
+            { "id": "d", "width_mm": 400.0, "height_mm": 600.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" }
+        ],
+        "params": {
+            "kerf_mm": 50.0,
+            "spacing_mm": 0.0,
+            "trim_mm": { "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0 },
+            "objective": "min_waste",
+            "layout_mode": "vacuum_table",
+            "vacuum": { "direction": "optimal" },
+            "include_svg": false
+        }
+    })
+    .to_string();
+
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    assert_eq!(
+        json.pointer("/summary/vacuum/chosen_direction")
+            .and_then(Value::as_str),
+        Some("width")
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/placed_count")
+            .and_then(Value::as_u64),
+        Some(4)
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/unplaced_count")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
+
+    let solutions = json
+        .get("solutions")
+        .and_then(Value::as_array)
+        .expect("expected solutions");
+    assert_eq!(
+        solutions.len(),
+        2,
+        "expected two table loads: {solutions:?}"
+    );
+
+    let expected = [
+        [
+            ("c", 0.0, 0.0, 400.0, 600.0),
+            ("a", 450.0, 0.0, 600.0, 400.0),
+        ],
+        [
+            ("d", 0.0, 0.0, 400.0, 600.0),
+            ("b", 450.0, 0.0, 600.0, 400.0),
+        ],
+    ];
+    for (solution, expected_placements) in solutions.iter().zip(expected) {
+        let placements = solution
+            .get("placements")
+            .and_then(Value::as_array)
+            .expect("expected placements");
+        assert_eq!(placements.len(), 2);
+        for (placement, (id, x, y, width, height)) in placements.iter().zip(expected_placements) {
+            assert_eq!(placement.get("item_id").and_then(Value::as_str), Some(id));
+            assert_eq!(placement.get("x_mm").and_then(Value::as_f64), Some(x));
+            assert_eq!(placement.get("y_mm").and_then(Value::as_f64), Some(y));
+            assert_eq!(
+                placement.get("width_mm").and_then(Value::as_f64),
+                Some(width)
+            );
+            assert_eq!(
+                placement.get("height_mm").and_then(Value::as_f64),
+                Some(height)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn optimize_vacuum_explicit_width_keeps_directional_legacy() {
+    let app = app_for_test();
+    let body = serde_json::json!({
+        "units": "mm",
+        "stock": [
+            { "id": "vacuum_1050x1100", "width_mm": 1050.0, "height_mm": 1100.0, "qty": 2 }
+        ],
+        "items": [
+            { "id": "a", "width_mm": 600.0, "height_mm": 400.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" },
+            { "id": "b", "width_mm": 600.0, "height_mm": 400.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" },
+            { "id": "c", "width_mm": 400.0, "height_mm": 600.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" },
+            { "id": "d", "width_mm": 400.0, "height_mm": 600.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" }
+        ],
+        "params": {
+            "kerf_mm": 50.0,
+            "spacing_mm": 0.0,
+            "trim_mm": { "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0 },
+            "objective": "min_waste",
+            "layout_mode": "vacuum_table",
+            "vacuum": { "direction": "width" },
+            "include_svg": false
+        }
+    })
+    .to_string();
+
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    assert_eq!(
+        json.pointer("/summary/vacuum/chosen_direction")
+            .and_then(Value::as_str),
+        Some("width")
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/strategy")
+            .and_then(Value::as_str),
+        Some("mixed")
+    );
+    let memberships = json
+        .get("solutions")
+        .and_then(Value::as_array)
+        .expect("expected solutions")
+        .iter()
+        .map(|solution| {
+            solution
+                .get("placements")
+                .and_then(Value::as_array)
+                .expect("expected placements")
+                .iter()
+                .filter_map(|placement| placement.get("item_id").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(memberships, vec![vec!["a", "b"], vec!["c", "d"]]);
+}
+
+#[tokio::test]
+async fn optimize_vacuum_width_first_is_invariant_to_stock_transpose() {
+    let app = app_for_test();
+    let body = serde_json::json!({
+        "units": "mm",
+        "stock": [
+            { "id": "vacuum_1100x1050", "width_mm": 1100.0, "height_mm": 1050.0, "qty": 2 }
+        ],
+        "items": [
+            { "id": "a", "width_mm": 400.0, "height_mm": 600.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" },
+            { "id": "b", "width_mm": 400.0, "height_mm": 600.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" },
+            { "id": "c", "width_mm": 600.0, "height_mm": 400.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" },
+            { "id": "d", "width_mm": 600.0, "height_mm": 400.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" }
+        ],
+        "params": {
+            "kerf_mm": 50.0,
+            "spacing_mm": 0.0,
+            "trim_mm": { "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0 },
+            "objective": "min_waste",
+            "layout_mode": "vacuum_table",
+            "vacuum": { "direction": "optimal" },
+            "include_svg": false
+        }
+    })
+    .to_string();
+
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    assert_eq!(
+        json.pointer("/summary/vacuum/chosen_direction")
+            .and_then(Value::as_str),
+        Some("height")
+    );
+
+    let solutions = json
+        .get("solutions")
+        .and_then(Value::as_array)
+        .expect("expected solutions");
+    assert_eq!(solutions.len(), 2);
+    let expected = [
+        [
+            ("c", 0.0, 0.0, 600.0, 400.0),
+            ("a", 0.0, 450.0, 400.0, 600.0),
+        ],
+        [
+            ("d", 0.0, 0.0, 600.0, 400.0),
+            ("b", 0.0, 450.0, 400.0, 600.0),
+        ],
+    ];
+    for (solution, expected_placements) in solutions.iter().zip(expected) {
+        let placements = solution
+            .get("placements")
+            .and_then(Value::as_array)
+            .expect("expected placements");
+        for (placement, (id, x, y, width, height)) in placements.iter().zip(expected_placements) {
+            assert_eq!(placement.get("item_id").and_then(Value::as_str), Some(id));
+            assert_eq!(placement.get("x_mm").and_then(Value::as_f64), Some(x));
+            assert_eq!(placement.get("y_mm").and_then(Value::as_f64), Some(y));
+            assert_eq!(
+                placement.get("width_mm").and_then(Value::as_f64),
+                Some(width)
+            );
+            assert_eq!(
+                placement.get("height_mm").and_then(Value::as_f64),
+                Some(height)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn optimize_vacuum_width_axis_is_selected_before_trim() {
+    let app = app_for_test();
+    let body = serde_json::json!({
+        "units": "mm",
+        "stock": [
+            { "id": "vacuum_1050x1100", "width_mm": 1050.0, "height_mm": 1100.0, "qty": 1 }
+        ],
+        "items": [
+            { "id": "a", "width_mm": 400.0, "height_mm": 300.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" }
+        ],
+        "params": {
+            "kerf_mm": 50.0,
+            "spacing_mm": 0.0,
+            "trim_mm": { "left": 0.0, "right": 0.0, "top": 200.0, "bottom": 200.0 },
+            "objective": "min_waste",
+            "layout_mode": "vacuum_table",
+            "vacuum": { "direction": "optimal" },
+            "include_svg": false
+        }
+    })
+    .to_string();
+
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    assert_eq!(
+        json.pointer("/summary/vacuum/chosen_direction")
+            .and_then(Value::as_str),
+        Some("width")
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/placed_count")
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+}
+
+#[tokio::test]
+async fn optimize_vacuum_width_first_preserves_qty_limit_conservation() {
+    let app = app_for_test();
+    let body = serde_json::json!({
+        "units": "mm",
+        "stock": [
+            { "id": "vacuum_1050x1100", "width_mm": 1050.0, "height_mm": 1100.0, "qty": 1 }
+        ],
+        "items": [
+            { "id": "a", "width_mm": 600.0, "height_mm": 400.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" },
+            { "id": "b", "width_mm": 600.0, "height_mm": 400.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" },
+            { "id": "c", "width_mm": 400.0, "height_mm": 600.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" },
+            { "id": "d", "width_mm": 400.0, "height_mm": 600.0, "qty": 1, "rotation": "forbid", "pattern_direction": "none" }
+        ],
+        "params": {
+            "kerf_mm": 50.0,
+            "spacing_mm": 0.0,
+            "trim_mm": { "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0 },
+            "objective": "min_waste",
+            "layout_mode": "vacuum_table",
+            "vacuum": { "direction": "optimal" },
+            "include_svg": false
+        }
+    })
+    .to_string();
+
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    assert_eq!(
+        json.pointer("/summary/vacuum/placed_count")
+            .and_then(Value::as_u64),
+        Some(2)
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/unplaced_count")
+            .and_then(Value::as_u64),
+        Some(2)
+    );
+    assert!(json
+        .get("unplaced_items")
+        .and_then(Value::as_array)
+        .is_some_and(|items| items.len() == 2
+            && items
+                .iter()
+                .all(|item| item.get("reason").and_then(Value::as_str) == Some("qty_limit"))));
+}
+
+#[tokio::test]
+async fn optimize_vacuum_5000_instances_uses_bounded_fallback() {
+    let app = app_for_test();
+    let body = serde_json::json!({
+        "units": "mm",
+        "stock": [
+            { "id": "vacuum_1050x1100", "width_mm": 1050.0, "height_mm": 1100.0, "qty": 1 }
+        ],
+        "items": [
+            { "id": "tiny", "width_mm": 10.0, "height_mm": 10.0, "qty": 5000, "rotation": "forbid", "pattern_direction": "none" }
+        ],
+        "params": {
+            "kerf_mm": 0.0,
+            "spacing_mm": 0.0,
+            "trim_mm": { "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0 },
+            "objective": "min_waste",
+            "layout_mode": "vacuum_table",
+            "vacuum": { "direction": "optimal" },
+            "include_svg": false
+        }
+    })
+    .to_string();
+
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    assert_eq!(
+        json.pointer("/summary/vacuum/strategy")
+            .and_then(Value::as_str),
+        Some("homogeneous")
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/placed_count")
+            .and_then(Value::as_u64),
+        Some(5000)
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/unplaced_count")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
+}
+
+#[tokio::test]
+async fn optimize_vacuum_5000_exact_width_rows_stay_bounded() {
+    let app = app_for_test();
+    let body = serde_json::json!({
+        "units": "mm",
+        "stock": [
+            { "id": "vacuum_1050x1100", "width_mm": 1050.0, "height_mm": 1100.0, "qty": 1 }
+        ],
+        "items": [
+            { "id": "full_table", "width_mm": 1050.0, "height_mm": 1100.0, "qty": 5000, "rotation": "forbid", "pattern_direction": "none" }
+        ],
+        "params": {
+            "kerf_mm": 0.0,
+            "spacing_mm": 0.0,
+            "trim_mm": { "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0 },
+            "objective": "min_waste",
+            "layout_mode": "vacuum_table",
+            "vacuum": { "direction": "optimal" },
+            "include_svg": false
+        }
+    })
+    .to_string();
+
+    let started = std::time::Instant::now();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "vacuum planner exceeded its bounded-search deadline"
+    );
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    assert_eq!(
+        json.pointer("/summary/vacuum/strategy")
+            .and_then(Value::as_str),
+        Some("homogeneous")
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/placed_count")
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/unplaced_count")
+            .and_then(Value::as_u64),
+        Some(4999)
     );
 }
 

@@ -29,7 +29,8 @@ The goal is to make practical cutting optimization accessible to small workshops
 
 ## Features
 - 2D rectangle nesting with kerf/spacing/trim support
-- Separate vacuum-table profile for compact left-anchored vacuum press/table layouts
+- Separate vacuum-table profile that fills the physical table width before
+  consuming table/film length
 - Rotation constraints and pattern direction flags
 - Multi-start optimization with deterministic seeds
 - Two solver engines: GA (`engine: "ga"`, default) and instant multi-variant FFD
