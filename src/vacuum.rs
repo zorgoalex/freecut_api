@@ -6,7 +6,10 @@ use crate::models::{
 };
 
 const EPS: f64 = 1.0e-7;
-const MIN_WIDTH_FIRST_PROBES: usize = 50_000;
+// A heterogeneous width-first row uses bounded two-part lookahead. Medium real
+// jobs can legitimately need the full probe allowance; a smaller linear budget
+// aborts after the first row and silently falls back to the legacy planner.
+const MIN_WIDTH_FIRST_PROBES: usize = 2_000_000;
 const MAX_WIDTH_FIRST_PROBES: usize = 2_000_000;
 const WIDTH_FIRST_PROBES_PER_PART: usize = 2_000;
 const MAX_WIDTH_FIRST_SEEDS: usize = 32;
