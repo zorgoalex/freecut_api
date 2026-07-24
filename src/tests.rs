@@ -1177,6 +1177,131 @@ async fn optimize_vacuum_auto_fills_table_width_before_consuming_more_film_lengt
 }
 
 #[tokio::test]
+async fn optimize_vacuum_realistic_mixed_batch_keeps_width_first_planner() {
+    let app = app_for_test();
+    let dimensions: &[(f64, f64, u32)] = &[
+        (97.0, 1200.0, 1),
+        (797.0, 358.0, 1),
+        (797.0, 324.0, 1),
+        (97.0, 933.0, 1),
+        (448.0, 715.0, 1),
+        (448.0, 715.0, 1),
+        (97.0, 600.0, 1),
+        (597.0, 2197.0, 1),
+        (97.0, 600.0, 1),
+        (597.0, 358.0, 1),
+        (597.0, 820.0, 1),
+        (600.0, 65.0, 1),
+        (600.0, 52.0, 1),
+        (597.0, 512.0, 1),
+        (597.0, 512.0, 1),
+        (597.0, 512.0, 2),
+        (597.0, 797.0, 1),
+        (597.0, 797.0, 1),
+        (597.0, 807.0, 1),
+        (597.0, 512.0, 1),
+        (2702.0, 52.0, 1),
+        (40.0, 800.0, 1),
+        (800.0, 52.0, 1),
+        (1200.0, 90.0, 1),
+        (2749.0, 90.0, 1),
+        (40.0, 2702.0, 1),
+        (97.0, 768.0, 1),
+        (597.0, 512.0, 1),
+        (184.0, 651.0, 1),
+        (184.0, 2168.0, 1),
+        (184.0, 2168.0, 1),
+        (184.0, 651.0, 1),
+        (97.0, 636.0, 1),
+        (619.0, 2168.0, 1),
+        (168.0, 619.0, 1),
+        (184.0, 499.0, 1),
+        (184.0, 499.0, 1),
+        (184.0, 619.0, 1),
+        (184.0, 651.0, 1),
+        (619.0, 483.0, 1),
+        (651.0, 90.0, 1),
+        (800.0, 90.0, 1),
+        (883.0, 512.0, 1),
+    ];
+    let items = dimensions
+        .iter()
+        .enumerate()
+        .map(|(index, &(width_mm, height_mm, qty))| {
+            serde_json::json!({
+                "id": format!("part-{index}"),
+                "width_mm": width_mm,
+                "height_mm": height_mm,
+                "qty": qty,
+                "rotation": "allow_90",
+                "pattern_direction": "none"
+            })
+        })
+        .collect::<Vec<_>>();
+    let body = serde_json::json!({
+        "units": "mm",
+        "stock": [
+            { "id": "vacuum_1050x2080", "width_mm": 1050.0, "height_mm": 2080.0, "qty": 0 }
+        ],
+        "items": items,
+        "params": {
+            "kerf_mm": 80.0,
+            "spacing_mm": 0.0,
+            "trim_mm": { "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0 },
+            "objective": "min_waste",
+            "layout_mode": "vacuum_table",
+            "vacuum": { "direction": "optimal" },
+            "include_svg": false
+        }
+    })
+    .to_string();
+
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    assert_eq!(
+        json.pointer("/summary/vacuum/strategy")
+            .and_then(Value::as_str),
+        Some("width_first_rows")
+    );
+    assert_eq!(
+        json.pointer("/summary/used_stock_count")
+            .and_then(Value::as_u64),
+        Some(7)
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/placed_count")
+            .and_then(Value::as_u64),
+        Some(37)
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/unplaced_count")
+            .and_then(Value::as_u64),
+        Some(7)
+    );
+
+    let solutions = json
+        .get("solutions")
+        .and_then(Value::as_array)
+        .expect("expected solutions");
+    assert_eq!(solutions.len(), 7);
+    for (sheet_index, solution) in solutions.iter().take(6).enumerate() {
+        let max_x = solution
+            .get("placements")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|placement| {
+                Some(placement.get("x_mm")?.as_f64()? + placement.get("width_mm")?.as_f64()?)
+            })
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_x >= 1029.0 - 0.001,
+            "expected sheet {sheet_index} to fill the 1050 mm table width, max_x={max_x}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn optimize_vacuum_width_first_balances_heterogeneous_parts_across_loads() {
     let app = app_for_test();
     let body = serde_json::json!({
