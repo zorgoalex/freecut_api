@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use cut_optimizer_2d::{CutPiece, Optimizer, PatternDirection as CutPatternDirection, StockPiece};
+
 use crate::models::{
     OptimizeRequest, PatternDirection, Placement, Rotation, Solution, UnplacedItem,
     VacuumDirection, VacuumTelemetry, VacuumUsedBbox,
@@ -14,6 +16,8 @@ const MAX_WIDTH_FIRST_PROBES: usize = 2_000_000;
 const WIDTH_FIRST_PROBES_PER_PART: usize = 2_000;
 const MAX_WIDTH_FIRST_SEEDS: usize = 32;
 const EXTREME_SEEDS_PER_METRIC: usize = 6;
+const MAX_NESTED_WIDTH_FIRST_PARTS: usize = 256;
+const VACUUM_SCALE: f64 = 1000.0;
 const MAX_LEGACY_FIT_CHECKS: usize = 25_000_000;
 const MAX_HOMOGENEOUS_COMBINATIONS: usize = 25_000_000;
 
@@ -60,6 +64,12 @@ struct VacuumPlan {
     axis: VacuumDirection,
     strategy: &'static str,
     loads: Vec<Vec<VacuumRow>>,
+    remaining: Vec<VacuumPart>,
+}
+
+struct VacuumPlacementPlan {
+    strategy: &'static str,
+    loads: Vec<Vec<Placement>>,
     remaining: Vec<VacuumPart>,
 }
 
@@ -152,8 +162,7 @@ pub(crate) fn run_vacuum_layout(req: &OptimizeRequest) -> Result<VacuumLayoutRes
         .and_then(|vacuum| vacuum.direction)
         .unwrap_or(VacuumDirection::Optimal);
 
-    let (mut remaining, mut unplaced_items) =
-        collect_vacuum_parts(req, usable_width, usable_height);
+    let (remaining, mut unplaced_items) = collect_vacuum_parts(req, usable_width, usable_height);
     let max_sheets = match stock.qty {
         Some(qty) if qty > 0 => qty,
         _ => remaining.len().max(1) as u32,
@@ -172,7 +181,7 @@ pub(crate) fn run_vacuum_layout(req: &OptimizeRequest) -> Result<VacuumLayoutRes
         max_sheets,
     )
     .ok_or_else(|| "vacuum baseline search budget exceeded".to_string())?;
-    let plan = if requested_direction == VacuumDirection::Optimal {
+    let row_plan = if requested_direction == VacuumDirection::Optimal {
         build_width_first_plan(
             &remaining,
             concrete_axis,
@@ -190,26 +199,44 @@ pub(crate) fn run_vacuum_layout(req: &OptimizeRequest) -> Result<VacuumLayoutRes
         baseline
     };
 
-    let chosen_direction = plan.axis;
-    let strategy = plan.strategy;
-    remaining = plan.remaining;
-    let solutions = plan
-        .loads
-        .iter()
+    let chosen_direction = row_plan.axis;
+    let nested_plan = nested_width_first_enabled(requested_direction, remaining.len())
+        .then(|| {
+            build_nested_width_first_plan(
+                &remaining,
+                chosen_direction,
+                usable_width,
+                usable_height,
+                gap_mm,
+                max_sheets,
+            )
+        })
+        .flatten()
+        .filter(|nested| nested_plan_is_better(nested, &row_plan, chosen_direction, gap_mm));
+
+    let (strategy, remaining, placement_loads) = match nested_plan {
+        Some(nested) => (nested.strategy, nested.remaining, nested.loads),
+        None => {
+            let loads = row_plan
+                .loads
+                .iter()
+                .map(|rows| {
+                    rows_to_placements(rows, chosen_direction, usable_width, usable_height, gap_mm)
+                })
+                .collect();
+            (row_plan.strategy, row_plan.remaining, loads)
+        }
+    };
+    let solutions = placement_loads
+        .into_iter()
         .enumerate()
-        .map(|(sheet_index, rows)| Solution {
+        .map(|(sheet_index, placements)| Solution {
             stock_id: stock.id.clone(),
             index: sheet_index as u32,
             width_mm: stock.width_mm,
             height_mm: stock.height_mm,
             trim_mm: trim,
-            placements: rows_to_placements(
-                rows,
-                chosen_direction,
-                usable_width,
-                usable_height,
-                gap_mm,
-            ),
+            placements,
         })
         .collect::<Vec<_>>();
 
@@ -250,6 +277,10 @@ fn physical_width_axis(stock_width: f64, stock_height: f64) -> VacuumDirection {
     } else {
         VacuumDirection::Height
     }
+}
+
+fn nested_width_first_enabled(direction: VacuumDirection, part_count: usize) -> bool {
+    direction == VacuumDirection::Optimal && part_count <= MAX_NESTED_WIDTH_FIRST_PARTS
 }
 
 fn build_legacy_plan(
@@ -352,6 +383,293 @@ fn build_width_first_plan(
         loads,
         remaining,
     })
+}
+
+fn build_nested_width_first_plan(
+    parts: &[VacuumPart],
+    axis: VacuumDirection,
+    usable_width: f64,
+    usable_height: f64,
+    gap_mm: f64,
+    max_sheets: u32,
+) -> Option<VacuumPlacementPlan> {
+    if parts.is_empty() {
+        return None;
+    }
+    let (primary_span, cross_span) = axis_spans(axis, usable_width, usable_height);
+    let mut optimizer = Optimizer::new();
+    optimizer
+        .set_random_seed(1)
+        .set_cut_width(vacuum_to_units(gap_mm)?)
+        .add_stock_pieces(std::iter::once(StockPiece {
+            width: vacuum_to_units(primary_span)?,
+            length: vacuum_to_units(cross_span)?,
+            pattern_direction: CutPatternDirection::None,
+            price: 0,
+            quantity: None,
+        }));
+    for (index, part) in parts.iter().enumerate() {
+        optimizer.add_cut_pieces(std::iter::once(CutPiece {
+            quantity: 1,
+            external_id: Some(index),
+            width: vacuum_to_units(primary_size(axis, part.width_mm, part.height_mm))?,
+            length: vacuum_to_units(cross_size(axis, part.width_mm, part.height_mm))?,
+            pattern_direction: CutPatternDirection::None,
+            can_rotate: part.can_rotate,
+        }));
+    }
+
+    let mut best: Option<VacuumPlacementPlan> = None;
+    for solution in optimizer.build_nested_heuristic() {
+        let mut seen = HashSet::new();
+        let mut valid = true;
+        let mut sheets = Vec::new();
+        for stock in solution.stock_pieces {
+            let mut placements = Vec::with_capacity(stock.cut_pieces.len());
+            let mut indices = Vec::with_capacity(stock.cut_pieces.len());
+            for cut_piece in stock.cut_pieces {
+                let Some(index) = cut_piece.external_id else {
+                    valid = false;
+                    break;
+                };
+                let Some(part) = parts.get(index) else {
+                    valid = false;
+                    break;
+                };
+                if !seen.insert(index) {
+                    valid = false;
+                    break;
+                }
+                indices.push(index);
+                placements.push(nested_placement(&cut_piece, part, axis));
+            }
+            if !valid {
+                break;
+            }
+            sort_nested_placements(&mut placements, axis);
+            if !placement_load_is_valid(&placements, usable_width, usable_height, gap_mm) {
+                valid = false;
+                break;
+            }
+            sheets.push((placements, indices));
+        }
+        if !valid {
+            continue;
+        }
+
+        sheets.sort_by(|(placements_a, _), (placements_b, _)| {
+            placements_b
+                .len()
+                .cmp(&placements_a.len())
+                .then_with(|| placement_area(placements_b).total_cmp(&placement_area(placements_a)))
+                .then_with(|| {
+                    placement_load_feed(placements_a, axis)
+                        .total_cmp(&placement_load_feed(placements_b, axis))
+                })
+        });
+        sheets.truncate(max_sheets as usize);
+
+        let placed_indices = sheets
+            .iter()
+            .flat_map(|(_, indices)| indices.iter().copied())
+            .collect::<HashSet<_>>();
+        let remaining = parts
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !placed_indices.contains(index))
+            .map(|(_, part)| part.clone())
+            .collect();
+        let candidate = VacuumPlacementPlan {
+            strategy: "width_first_nested",
+            loads: sheets
+                .into_iter()
+                .map(|(placements, _)| placements)
+                .collect(),
+            remaining,
+        };
+        if best
+            .as_ref()
+            .map(|current| placement_plan_is_better(&candidate, current, axis))
+            .unwrap_or(true)
+        {
+            best = Some(candidate);
+        }
+    }
+    best
+}
+
+fn nested_placement(
+    cut_piece: &cut_optimizer_2d::ResultCutPiece,
+    part: &VacuumPart,
+    axis: VacuumDirection,
+) -> Placement {
+    let primary_pos = vacuum_from_units(cut_piece.x);
+    let cross_pos = vacuum_from_units(cut_piece.y);
+    let primary_size_mm = vacuum_from_units(cut_piece.width);
+    let cross_size_mm = vacuum_from_units(cut_piece.length);
+    let (x_mm, y_mm, width_mm, height_mm) = match axis {
+        VacuumDirection::Width => (primary_pos, cross_pos, primary_size_mm, cross_size_mm),
+        VacuumDirection::Height => (cross_pos, primary_pos, cross_size_mm, primary_size_mm),
+        VacuumDirection::Optimal => unreachable!("optimal is not a concrete axis"),
+    };
+    Placement {
+        item_id: part.item_id.clone(),
+        instance: part.instance,
+        x_mm,
+        y_mm,
+        width_mm,
+        height_mm,
+        rotated: cut_piece.is_rotated,
+        pattern_direction: part.pattern_direction,
+    }
+}
+
+fn sort_nested_placements(placements: &mut [Placement], axis: VacuumDirection) {
+    placements.sort_by(|a, b| {
+        let (a_cross, a_primary) = placement_axes(a, axis);
+        let (b_cross, b_primary) = placement_axes(b, axis);
+        a_cross
+            .total_cmp(&b_cross)
+            .then_with(|| a_primary.total_cmp(&b_primary))
+            .then_with(|| a.item_id.cmp(&b.item_id))
+            .then_with(|| a.instance.cmp(&b.instance))
+    });
+}
+
+fn placement_axes(placement: &Placement, axis: VacuumDirection) -> (f64, f64) {
+    match axis {
+        VacuumDirection::Width => (placement.y_mm, placement.x_mm),
+        VacuumDirection::Height => (placement.x_mm, placement.y_mm),
+        VacuumDirection::Optimal => unreachable!("optimal is not a concrete axis"),
+    }
+}
+
+fn placement_load_is_valid(
+    placements: &[Placement],
+    usable_width: f64,
+    usable_height: f64,
+    gap_mm: f64,
+) -> bool {
+    if placements.iter().any(|placement| {
+        placement.x_mm < -EPS
+            || placement.y_mm < -EPS
+            || placement.x_mm + placement.width_mm > usable_width + EPS
+            || placement.y_mm + placement.height_mm > usable_height + EPS
+    }) {
+        return false;
+    }
+    for (index, placement) in placements.iter().enumerate() {
+        if placements[index + 1..]
+            .iter()
+            .any(|other| rect_clearance(placement, other) + EPS < gap_mm)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn placement_plan_is_better(
+    candidate: &VacuumPlacementPlan,
+    current: &VacuumPlacementPlan,
+    axis: VacuumDirection,
+) -> bool {
+    let candidate_placed = placement_plan_placed_count(candidate);
+    let current_placed = placement_plan_placed_count(current);
+    if candidate_placed != current_placed {
+        return candidate_placed > current_placed;
+    }
+    if candidate.remaining.len() != current.remaining.len() {
+        return candidate.remaining.len() < current.remaining.len();
+    }
+    if candidate.loads.len() != current.loads.len() {
+        return candidate.loads.len() < current.loads.len();
+    }
+    let candidate_feed = placement_plan_feed(candidate, axis);
+    let current_feed = placement_plan_feed(current, axis);
+    if !nearly_eq(candidate_feed, current_feed) {
+        return candidate_feed < current_feed;
+    }
+    placement_plan_primary_fill(candidate, axis) > placement_plan_primary_fill(current, axis) + EPS
+}
+
+fn nested_plan_is_better(
+    nested: &VacuumPlacementPlan,
+    rows: &VacuumPlan,
+    axis: VacuumDirection,
+    gap_mm: f64,
+) -> bool {
+    let nested_placed = placement_plan_placed_count(nested);
+    let row_placed = plan_placed_count(rows);
+    if nested_placed != row_placed {
+        return nested_placed > row_placed;
+    }
+    if nested.remaining.len() != rows.remaining.len() {
+        return nested.remaining.len() < rows.remaining.len();
+    }
+    if nested.loads.len() != rows.loads.len() {
+        return nested.loads.len() < rows.loads.len();
+    }
+    let nested_feed = placement_plan_feed(nested, axis);
+    let row_feed = plan_feed_used(rows, gap_mm);
+    if !nearly_eq(nested_feed, row_feed) {
+        return nested_feed < row_feed;
+    }
+    placement_plan_primary_fill(nested, axis) > plan_primary_fill(rows, gap_mm) + EPS
+}
+
+fn placement_plan_placed_count(plan: &VacuumPlacementPlan) -> usize {
+    plan.loads.iter().map(Vec::len).sum()
+}
+
+fn placement_plan_feed(plan: &VacuumPlacementPlan, axis: VacuumDirection) -> f64 {
+    plan.loads
+        .iter()
+        .map(|load| placement_load_feed(load, axis))
+        .sum()
+}
+
+fn placement_load_feed(placements: &[Placement], axis: VacuumDirection) -> f64 {
+    placements
+        .iter()
+        .map(|placement| match axis {
+            VacuumDirection::Width => placement.y_mm + placement.height_mm,
+            VacuumDirection::Height => placement.x_mm + placement.width_mm,
+            VacuumDirection::Optimal => unreachable!("optimal is not a concrete axis"),
+        })
+        .fold(0.0, f64::max)
+}
+
+fn placement_plan_primary_fill(plan: &VacuumPlacementPlan, axis: VacuumDirection) -> f64 {
+    plan.loads
+        .iter()
+        .map(|load| {
+            load.iter()
+                .map(|placement| match axis {
+                    VacuumDirection::Width => placement.x_mm + placement.width_mm,
+                    VacuumDirection::Height => placement.y_mm + placement.height_mm,
+                    VacuumDirection::Optimal => unreachable!("optimal is not a concrete axis"),
+                })
+                .fold(0.0, f64::max)
+        })
+        .sum()
+}
+
+fn placement_area(placements: &[Placement]) -> f64 {
+    placements
+        .iter()
+        .map(|placement| placement.width_mm * placement.height_mm)
+        .sum()
+}
+
+fn vacuum_to_units(value_mm: f64) -> Option<usize> {
+    let scaled = value_mm * VACUUM_SCALE;
+    (scaled.is_finite() && scaled >= 0.0 && scaled <= usize::MAX as f64)
+        .then_some(scaled.round() as usize)
+}
+
+fn vacuum_from_units(value: usize) -> f64 {
+    value as f64 / VACUUM_SCALE
 }
 
 fn best_width_first_row(
@@ -1728,5 +2046,13 @@ mod budget_tests {
         assert_eq!(baseline.remaining, MAX_LEGACY_FIT_CHECKS);
         assert!(!baseline.exhausted);
         assert_eq!(MAX_HOMOGENEOUS_COMBINATIONS, 25_000_000);
+    }
+
+    #[test]
+    fn nested_width_first_has_a_hard_part_count_boundary() {
+        assert!(nested_width_first_enabled(VacuumDirection::Optimal, 256));
+        assert!(!nested_width_first_enabled(VacuumDirection::Optimal, 257));
+        assert!(!nested_width_first_enabled(VacuumDirection::Width, 256));
+        assert!(!nested_width_first_enabled(VacuumDirection::Height, 256));
     }
 }

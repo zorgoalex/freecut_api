@@ -970,7 +970,9 @@ When `params.layout_mode = "vacuum_table"`, `summary.vacuum` is present:
 Important fields:
 
 - `chosen_direction`: actual row direction selected after scoring.
-- `strategy`: `homogeneous`, `general_shelf`, `mixed`, or `none`.
+- `strategy`: `width_first_nested` for the 2D width-first Auto planner,
+  `width_first_rows` for its bounded shelf fallback, or the directional
+  planner values `homogeneous`, `general_shelf`, `mixed`, and `none`.
 - `min_clearance_mm`: measured minimum part-to-part clearance in the final layout.
 - `used_bbox`: first-sheet occupied bounding box. In a compact vacuum layout it should start near `x_mm=0`, `y_mm=0`; the main slack should remain outside the occupied cluster.
 
