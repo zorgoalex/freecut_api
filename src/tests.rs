@@ -1018,12 +1018,12 @@ async fn optimize_vacuum_table_profile_clusters_homogeneous_parts() {
     assert_eq!(
         json.pointer("/summary/vacuum/strategy")
             .and_then(Value::as_str),
-        Some("width_first_rows")
+        Some("width_first_nested")
     );
     assert_eq!(
         json.pointer("/summary/vacuum/placed_count")
             .and_then(Value::as_u64),
-        Some(8)
+        Some(11)
     );
     assert!(
         json.pointer("/summary/vacuum/min_clearance_mm")
@@ -1036,7 +1036,7 @@ async fn optimize_vacuum_table_profile_clusters_homogeneous_parts() {
         .pointer("/solutions/0/placements")
         .and_then(Value::as_array)
         .expect("expected placements");
-    assert_eq!(placements.len(), 8);
+    assert_eq!(placements.len(), 11);
     assert!(placements
         .iter()
         .any(|placement| placement.get("rotated").and_then(Value::as_bool) == Some(true)));
@@ -1261,12 +1261,12 @@ async fn optimize_vacuum_realistic_mixed_batch_keeps_width_first_planner() {
     assert_eq!(
         json.pointer("/summary/vacuum/strategy")
             .and_then(Value::as_str),
-        Some("width_first_rows")
+        Some("width_first_nested")
     );
     assert_eq!(
         json.pointer("/summary/used_stock_count")
             .and_then(Value::as_u64),
-        Some(7)
+        Some(5)
     );
     assert_eq!(
         json.pointer("/summary/vacuum/placed_count")
@@ -1283,22 +1283,43 @@ async fn optimize_vacuum_realistic_mixed_batch_keeps_width_first_planner() {
         .get("solutions")
         .and_then(Value::as_array)
         .expect("expected solutions");
-    assert_eq!(solutions.len(), 7);
-    for (sheet_index, solution) in solutions.iter().take(6).enumerate() {
-        let max_x = solution
+    assert_eq!(solutions.len(), 5);
+    let mut total_feed = 0.0_f64;
+    let mut rotated_count = 0_usize;
+    for (sheet_index, solution) in solutions.iter().enumerate() {
+        let placements = solution
             .get("placements")
             .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
+            .expect("expected placements");
+        let max_x = placements
+            .iter()
             .filter_map(|placement| {
                 Some(placement.get("x_mm")?.as_f64()? + placement.get("width_mm")?.as_f64()?)
             })
             .fold(0.0_f64, f64::max);
         assert!(
-            max_x >= 1029.0 - 0.001,
-            "expected sheet {sheet_index} to fill the 1050 mm table width, max_x={max_x}"
+            max_x >= 945.0 - 0.001,
+            "expected sheet {sheet_index} to use at least 90% of the 1050 mm table width, max_x={max_x}"
         );
+        total_feed += placements
+            .iter()
+            .filter_map(|placement| {
+                Some(placement.get("y_mm")?.as_f64()? + placement.get("height_mm")?.as_f64()?)
+            })
+            .fold(0.0_f64, f64::max);
+        rotated_count += placements
+            .iter()
+            .filter(|placement| placement.get("rotated").and_then(Value::as_bool) == Some(true))
+            .count();
     }
+    assert!(
+        total_feed <= 10_100.0,
+        "expected compact feed usage for job #29, total_feed={total_feed}, solutions={solutions:?}"
+    );
+    assert!(
+        rotated_count >= 8,
+        "expected auto profile to rotate fitting parts, rotated_count={rotated_count}"
+    );
 }
 
 #[tokio::test]
@@ -1581,20 +1602,92 @@ async fn optimize_vacuum_width_first_preserves_qty_limit_conservation() {
     assert_eq!(
         json.pointer("/summary/vacuum/placed_count")
             .and_then(Value::as_u64),
-        Some(2)
+        Some(3)
     );
     assert_eq!(
         json.pointer("/summary/vacuum/unplaced_count")
             .and_then(Value::as_u64),
-        Some(2)
+        Some(1)
     );
     assert!(json
         .get("unplaced_items")
         .and_then(Value::as_array)
-        .is_some_and(|items| items.len() == 2
+        .is_some_and(|items| items.len() == 1
             && items
                 .iter()
                 .all(|item| item.get("reason").and_then(Value::as_str) == Some("qty_limit"))));
+}
+
+#[tokio::test]
+async fn optimize_vacuum_nested_respects_texture_rotation_and_asymmetric_trim() {
+    let app = app_for_test();
+    let body = serde_json::json!({
+        "units": "mm",
+        "stock": [
+            { "id": "vacuum_trimmed", "width_mm": 1150.0, "height_mm": 1200.0, "qty": 1 }
+        ],
+        "items": [
+            { "id": "a", "width_mm": 600.0, "height_mm": 400.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "along_width" },
+            { "id": "b", "width_mm": 400.0, "height_mm": 600.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "along_width" }
+        ],
+        "params": {
+            "kerf_mm": 50.0,
+            "spacing_mm": 0.0,
+            "trim_mm": { "left": 50.0, "right": 50.0, "top": 60.0, "bottom": 40.0 },
+            "objective": "min_waste",
+            "layout_mode": "vacuum_table",
+            "vacuum": { "direction": "optimal" },
+            "include_svg": false
+        }
+    })
+    .to_string();
+
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    assert_eq!(
+        json.pointer("/summary/vacuum/strategy")
+            .and_then(Value::as_str),
+        Some("width_first_nested")
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/placed_count")
+            .and_then(Value::as_u64),
+        Some(3)
+    );
+    let placements = json
+        .pointer("/solutions/0/placements")
+        .and_then(Value::as_array)
+        .expect("expected placements");
+    assert!(placements.iter().all(|placement| {
+        placement.get("rotated").and_then(Value::as_bool) == Some(false)
+            && placement.get("pattern_direction").and_then(Value::as_str) == Some("along_width")
+            && placement
+                .get("x_mm")
+                .and_then(Value::as_f64)
+                .unwrap_or(-1.0)
+                >= 0.0
+            && placement
+                .get("y_mm")
+                .and_then(Value::as_f64)
+                .unwrap_or(-1.0)
+                >= 0.0
+            && placement
+                .get("x_mm")
+                .and_then(Value::as_f64)
+                .zip(placement.get("width_mm").and_then(Value::as_f64))
+                .is_some_and(|(x, width)| x + width <= 1050.001)
+            && placement
+                .get("y_mm")
+                .and_then(Value::as_f64)
+                .zip(placement.get("height_mm").and_then(Value::as_f64))
+                .is_some_and(|(y, height)| y + height <= 1100.001)
+    }));
+    assert!(
+        json.pointer("/summary/vacuum/min_clearance_mm")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+            >= 50.0
+    );
 }
 
 #[tokio::test]
