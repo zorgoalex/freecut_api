@@ -200,7 +200,10 @@ pub(crate) fn run_vacuum_layout(req: &OptimizeRequest) -> Result<VacuumLayoutRes
     };
 
     let chosen_direction = row_plan.axis;
-    let nested_plan = nested_width_first_enabled(requested_direction, remaining.len())
+    // The 2D nested planner keeps each part's allowed orientation, so it also
+    // serves directional (textured) profiles: shelf rows alone leave the tail
+    // of the sheet unused whenever a part is wider than every existing row.
+    let nested_plan = nested_width_first_enabled(remaining.len())
         .then(|| {
             build_nested_width_first_plan(
                 &remaining,
@@ -279,8 +282,8 @@ fn physical_width_axis(stock_width: f64, stock_height: f64) -> VacuumDirection {
     }
 }
 
-fn nested_width_first_enabled(direction: VacuumDirection, part_count: usize) -> bool {
-    direction == VacuumDirection::Optimal && part_count <= MAX_NESTED_WIDTH_FIRST_PARTS
+fn nested_width_first_enabled(part_count: usize) -> bool {
+    part_count <= MAX_NESTED_WIDTH_FIRST_PARTS
 }
 
 fn build_legacy_plan(
@@ -2050,9 +2053,7 @@ mod budget_tests {
 
     #[test]
     fn nested_width_first_has_a_hard_part_count_boundary() {
-        assert!(nested_width_first_enabled(VacuumDirection::Optimal, 256));
-        assert!(!nested_width_first_enabled(VacuumDirection::Optimal, 257));
-        assert!(!nested_width_first_enabled(VacuumDirection::Width, 256));
-        assert!(!nested_width_first_enabled(VacuumDirection::Height, 256));
+        assert!(nested_width_first_enabled(256));
+        assert!(!nested_width_first_enabled(257));
     }
 }
