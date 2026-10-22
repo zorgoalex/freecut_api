@@ -970,9 +970,12 @@ When `params.layout_mode = "vacuum_table"`, `summary.vacuum` is present:
 Important fields:
 
 - `chosen_direction`: actual row direction selected after scoring.
-- `strategy`: `width_first_nested` for the 2D width-first Auto planner,
-  `width_first_rows` for its bounded shelf fallback, or the directional
-  planner values `homogeneous`, `general_shelf`, `mixed`, and `none`.
+- `strategy`: `width_first_nested` for the 2D nested planner (Auto and,
+  up to 256 parts, directional `width`/`height` profiles; it keeps each part's
+  allowed orientation, so `rotation: "forbid"` parts are never turned),
+  `width_first_rows` for the Auto bounded shelf fallback, or the shelf
+  planner values `homogeneous`, `general_shelf`, `mixed`, and `none` when the
+  nested candidate is not better (more placed parts, fewer sheets, or less feed).
 - `min_clearance_mm`: measured minimum part-to-part clearance in the final layout.
 - `used_bbox`: first-sheet occupied bounding box. In a compact vacuum layout it should start near `x_mm=0`, `y_mm=0`; the main slack should remain outside the occupied cluster.
 

@@ -1691,6 +1691,82 @@ async fn optimize_vacuum_nested_respects_texture_rotation_and_asymmetric_trim() 
 }
 
 #[tokio::test]
+async fn optimize_vacuum_directional_textured_fills_sheet_tail_before_new_sheet() {
+    // Real «вдоль полотна» job: the shelf planner left the 985 mm part alone on
+    // a second sheet although the first sheet tail (y 2690..2790) was free.
+    let app = app_for_test();
+    let body = serde_json::json!({
+        "units": "mm",
+        "stock": [
+            { "id": "bath", "width_mm": 1050.0, "height_mm": 2800.0, "qty": 0 }
+        ],
+        "items": [
+            { "id": "a", "width_mm": 490.0, "height_mm": 1265.0, "qty": 2, "rotation": "forbid", "pattern_direction": "along_height" },
+            { "id": "b", "width_mm": 469.0, "height_mm": 315.0, "qty": 2, "rotation": "forbid", "pattern_direction": "along_height" },
+            { "id": "c", "width_mm": 186.0, "height_mm": 1368.0, "qty": 1, "rotation": "forbid", "pattern_direction": "along_height" },
+            { "id": "d", "width_mm": 985.0, "height_mm": 100.0, "qty": 1, "rotation": "forbid", "pattern_direction": "along_height" }
+        ],
+        "params": {
+            "kerf_mm": 80.0,
+            "spacing_mm": 0.0,
+            "trim_mm": { "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0 },
+            "objective": "min_sheets",
+            "layout_mode": "vacuum_table",
+            "vacuum": { "direction": "height" },
+            "include_svg": false
+        }
+    })
+    .to_string();
+
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    assert_eq!(
+        json.pointer("/summary/used_stock_count")
+            .and_then(Value::as_u64),
+        Some(1),
+        "body: {json}"
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/chosen_direction")
+            .and_then(Value::as_str),
+        Some("height")
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/placed_count")
+            .and_then(Value::as_u64),
+        Some(6)
+    );
+    assert!(
+        json.pointer("/summary/vacuum/min_clearance_mm")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+            >= 80.0 - 0.001
+    );
+    let placements = json
+        .pointer("/solutions/0/placements")
+        .and_then(Value::as_array)
+        .expect("expected placements");
+    assert_eq!(placements.len(), 6);
+    assert!(placements.iter().all(|placement| {
+        let x = placement.get("x_mm").and_then(Value::as_f64).unwrap_or(-1.0);
+        let y = placement.get("y_mm").and_then(Value::as_f64).unwrap_or(-1.0);
+        let width = placement.get("width_mm").and_then(Value::as_f64).unwrap_or(f64::MAX);
+        let height = placement.get("height_mm").and_then(Value::as_f64).unwrap_or(f64::MAX);
+        placement.get("rotated").and_then(Value::as_bool) == Some(false)
+            && placement.get("pattern_direction").and_then(Value::as_str) == Some("along_height")
+            && x >= 0.0
+            && y >= 0.0
+            && x + width <= 1050.001
+            && y + height <= 2800.001
+    }));
+    assert!(placements.iter().any(|placement| {
+        placement.get("item_id").and_then(Value::as_str) == Some("d")
+            && placement.get("width_mm").and_then(Value::as_f64) == Some(985.0)
+            && placement.get("height_mm").and_then(Value::as_f64) == Some(100.0)
+    }));
+}
+
+#[tokio::test]
 async fn optimize_vacuum_5000_instances_uses_bounded_fallback() {
     let app = app_for_test();
     let body = serde_json::json!({
@@ -1832,7 +1908,20 @@ async fn optimize_vacuum_table_does_not_retry_into_nested() {
     assert_eq!(
         json.pointer("/summary/vacuum/placed_count")
             .and_then(Value::as_u64),
-        Some(8)
+        Some(11)
+    );
+    // The 2D nested planner now runs for directional profiles too and fits all
+    // 11 parts on the single sheet the shelf rows could only fill with 8.
+    assert_eq!(
+        json.pointer("/summary/vacuum/unplaced_count")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
+    assert!(
+        json.pointer("/summary/vacuum/min_clearance_mm")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+            >= 80.0 - 0.001
     );
     let placements = json
         .pointer("/solutions/0/placements")
@@ -1856,14 +1945,8 @@ async fn optimize_vacuum_table_does_not_retry_into_nested() {
         .fold(f64::NEG_INFINITY, f64::max);
     assert!((min_x - 0.0).abs() < 0.001, "min_x={min_x}");
     assert!((min_y - 0.0).abs() < 0.001, "min_y={min_y}");
-    assert!(
-        max_x <= 2640.001,
-        "height mode should cluster left, max_x={max_x}"
-    );
-    assert!(
-        max_y <= 680.001,
-        "height mode should avoid distributed bottom waste, max_y={max_y}"
-    );
+    assert!(max_x <= 2800.001, "max_x={max_x}");
+    assert!(max_y <= 1050.001, "max_y={max_y}");
 }
 
 #[tokio::test]
