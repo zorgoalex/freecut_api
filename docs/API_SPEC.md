@@ -313,6 +313,7 @@ Used only when `params.layout_mode = "vacuum_table"`.
 | Field | Type | Default | Valid values | Description |
 |---|---:|---:|---|---|
 | `direction` | string | `"optimal"` | `"optimal"`, `"width"`, `"height"` | Row direction for the vacuum table. `optimal` uses the dedicated width-first planner: it treats the shorter original stock axis (before trim) as the physical table width, fills that axis first, and only then consumes table/film length. Explicit `width` and `height` keep the legacy directional planners on their raw API axes. |
+| `algorithm` | string | `"standard"` | `"standard"`, `"min_film"` | Plan selection. `standard` compares the shelf and nested plans by placed parts, table loads and feed. `min_film` keeps the standard pick as the incumbent and also runs a multi-order bottom-left search; a plan replaces the incumbent only when it places more parts, uses fewer loads, or with equal loads passes fewer film marks (800 and 1800 mm from the start of the long stock side, trim included) or occupies less total length along that side. The search is skipped above 256 parts and is capped at 4,000 orders and 40,000,000 clearance checks; it is deterministic. |
 
 Vacuum-table mode requires exactly one `stock` entry. `stock.qty` limits how many table loads may be emitted; omitted or `0` means unlimited table loads. `kerf_mm + spacing_mm` is treated as the minimum clearance between neighboring parts. Remaining slack is pushed to the right/bottom side instead of being distributed as internal corridors.
 
@@ -970,6 +971,7 @@ When `params.layout_mode = "vacuum_table"`, `summary.vacuum` is present:
 Important fields:
 
 - `chosen_direction`: actual row direction selected after scoring.
+- `strategy`: `min_film_search` when the `min_film` search plan was chosen.
 - `strategy`: `width_first_nested` for the 2D nested planner (Auto and,
   up to 256 parts, directional `width`/`height` profiles; it keeps each part's
   allowed orientation, so `rotation: "forbid"` parts are never turned),

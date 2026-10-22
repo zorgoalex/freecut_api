@@ -3,8 +3,8 @@ use std::collections::HashSet;
 use cut_optimizer_2d::{CutPiece, Optimizer, PatternDirection as CutPatternDirection, StockPiece};
 
 use crate::models::{
-    OptimizeRequest, PatternDirection, Placement, Rotation, Solution, UnplacedItem,
-    VacuumDirection, VacuumTelemetry, VacuumUsedBbox,
+    OptimizeRequest, PatternDirection, Placement, Rotation, Solution, Trim, UnplacedItem,
+    VacuumAlgorithm, VacuumDirection, VacuumTelemetry, VacuumUsedBbox,
 };
 
 const EPS: f64 = 1.0e-7;
@@ -20,6 +20,15 @@ const MAX_NESTED_WIDTH_FIRST_PARTS: usize = 256;
 const VACUUM_SCALE: f64 = 1000.0;
 const MAX_LEGACY_FIT_CHECKS: usize = 25_000_000;
 const MAX_HOMOGENEOUS_COMBINATIONS: usize = 25_000_000;
+// Film is pulled from the start of the long stock side; the bath has marks at
+// these distances, so a sheet ending before a mark consumes one metre less.
+const VACUUM_FILM_MARKS_MM: [f64; 2] = [800.0, 1800.0];
+// Same tolerance as ERP's bath film zones, so both sides count the same marks.
+const VACUUM_FILM_MARK_EPS: f64 = 1.0e-6;
+const MAX_MIN_FILM_PARTS: usize = 256;
+const MIN_FILM_ORDERS: usize = 4_000;
+const MIN_FILM_PROBES: usize = 40_000_000;
+const MIN_FILM_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 
 pub(crate) struct VacuumLayoutResult {
     pub solutions: Vec<Solution>,
@@ -214,22 +223,62 @@ pub(crate) fn run_vacuum_layout(req: &OptimizeRequest) -> Result<VacuumLayoutRes
                 max_sheets,
             )
         })
-        .flatten()
-        .filter(|nested| nested_plan_is_better(nested, &row_plan, chosen_direction, gap_mm));
+        .flatten();
+    let nested_wins = nested_plan
+        .as_ref()
+        .is_some_and(|nested| nested_plan_is_better(nested, &row_plan, chosen_direction, gap_mm));
+    let row_placement_plan = |row_plan: VacuumPlan| VacuumPlacementPlan {
+        strategy: row_plan.strategy,
+        loads: row_plan
+            .loads
+            .iter()
+            .map(|rows| {
+                rows_to_placements(rows, chosen_direction, usable_width, usable_height, gap_mm)
+            })
+            .collect(),
+        remaining: row_plan.remaining,
+    };
 
-    let (strategy, remaining, placement_loads) = match nested_plan {
-        Some(nested) => (nested.strategy, nested.remaining, nested.loads),
-        None => {
-            let loads = row_plan
-                .loads
-                .iter()
-                .map(|rows| {
-                    rows_to_placements(rows, chosen_direction, usable_width, usable_height, gap_mm)
+    let algorithm = req
+        .params
+        .vacuum
+        .as_ref()
+        .and_then(|vacuum| vacuum.algorithm)
+        .unwrap_or_default();
+    let chosen = match (algorithm, nested_plan) {
+        (VacuumAlgorithm::Standard, Some(nested)) if nested_wins => nested,
+        (VacuumAlgorithm::Standard, _) => row_placement_plan(row_plan),
+        (VacuumAlgorithm::MinFilm, nested_plan) => {
+            // The standard pick stays the incumbent: an alternative replaces it
+            // only when it is strictly better by sheets and film, so the film
+            // algorithm never uses more sheets than the standard one.
+            let film = FilmMeter::new(stock.width_mm, stock.height_mm, trim);
+            let (mut chosen, other) = match nested_plan {
+                Some(nested) if nested_wins => (nested, Some(row_placement_plan(row_plan))),
+                nested => (row_placement_plan(row_plan), nested),
+            };
+            let search = min_film_search_enabled(remaining.len())
+                .then(|| {
+                    build_min_film_plan(
+                        &remaining,
+                        chosen_direction,
+                        usable_width,
+                        usable_height,
+                        gap_mm,
+                        max_sheets,
+                        &film,
+                    )
                 })
-                .collect();
-            (row_plan.strategy, row_plan.remaining, loads)
+                .flatten();
+            for alternative in other.into_iter().chain(search) {
+                if film_plan_is_better(&alternative, &chosen, &film) {
+                    chosen = alternative;
+                }
+            }
+            chosen
         }
     };
+    let (strategy, remaining, placement_loads) = (chosen.strategy, chosen.remaining, chosen.loads);
     let solutions = placement_loads
         .into_iter()
         .enumerate()
@@ -619,6 +668,408 @@ fn nested_plan_is_better(
         return nested_feed < row_feed;
     }
     placement_plan_primary_fill(nested, axis) > plan_primary_fill(rows, gap_mm) + EPS
+}
+
+struct FilmMeter {
+    long_is_y: bool,
+    origin_mm: f64,
+}
+
+impl FilmMeter {
+    fn new(stock_width: f64, stock_height: f64, trim: Trim) -> Self {
+        let long_is_y = stock_height >= stock_width;
+        Self {
+            long_is_y,
+            origin_mm: if long_is_y { trim.top } else { trim.left },
+        }
+    }
+
+    fn load_end(&self, placements: &[Placement]) -> f64 {
+        placements
+            .iter()
+            .map(|placement| {
+                if self.long_is_y {
+                    placement.y_mm + placement.height_mm
+                } else {
+                    placement.x_mm + placement.width_mm
+                }
+            })
+            .fold(0.0, f64::max)
+    }
+
+    fn marks_passed(&self, end_mm: f64) -> usize {
+        VACUUM_FILM_MARKS_MM
+            .iter()
+            .filter(|&&mark| self.origin_mm + end_mm > mark + VACUUM_FILM_MARK_EPS)
+            .count()
+    }
+}
+
+/// (placed parts, sheets, film marks passed, occupied length along the film).
+fn film_score(loads: &[Vec<Placement>], film: &FilmMeter) -> (usize, usize, usize, f64) {
+    let mut placed = 0;
+    let mut sheets = 0;
+    let mut marks = 0;
+    let mut length = 0.0;
+    for load in loads.iter().filter(|load| !load.is_empty()) {
+        let end = film.load_end(load);
+        placed += load.len();
+        sheets += 1;
+        marks += film.marks_passed(end);
+        length += end;
+    }
+    (placed, sheets, marks, length)
+}
+
+fn film_score_is_better(
+    candidate: (usize, usize, usize, f64),
+    current: (usize, usize, usize, f64),
+) -> bool {
+    if candidate.0 != current.0 {
+        return candidate.0 > current.0;
+    }
+    if candidate.1 != current.1 {
+        return candidate.1 < current.1;
+    }
+    if candidate.2 != current.2 {
+        return candidate.2 < current.2;
+    }
+    candidate.3 + 1.0e-6 < current.3
+}
+
+fn film_plan_is_better(
+    candidate: &VacuumPlacementPlan,
+    current: &VacuumPlacementPlan,
+    film: &FilmMeter,
+) -> bool {
+    film_score_is_better(
+        film_score(&candidate.loads, film),
+        film_score(&current.loads, film),
+    )
+}
+
+fn min_film_search_enabled(part_count: usize) -> bool {
+    part_count <= MAX_MIN_FILM_PARTS
+}
+
+/// A part in film coordinates: `along` runs with the film (long stock side),
+/// `across` spans the table width.
+#[derive(Clone, Copy)]
+struct FilmRect {
+    along: f64,
+    across: f64,
+    along_size: f64,
+    across_size: f64,
+}
+
+struct FilmPacked {
+    part_index: usize,
+    rect: FilmRect,
+    rotated: bool,
+}
+
+/// Bottom-left position closest to the film start, or None when the part does
+/// not fit or the probe budget is spent (the caller checks `probes`).
+/// `probes` counts clearance checks against placed parts.
+fn film_bottom_left(
+    sheet: &[FilmPacked],
+    along_size: f64,
+    across_size: f64,
+    along_span: f64,
+    across_span: f64,
+    gap_mm: f64,
+    probes: &mut usize,
+) -> Option<(f64, f64)> {
+    let mut alongs = Vec::with_capacity(sheet.len() + 1);
+    let mut acrosses = Vec::with_capacity(sheet.len() + 1);
+    alongs.push(0.0);
+    acrosses.push(0.0);
+    for packed in sheet {
+        alongs.push(packed.rect.along + packed.rect.along_size + gap_mm);
+        acrosses.push(packed.rect.across + packed.rect.across_size + gap_mm);
+    }
+    alongs.sort_by(f64::total_cmp);
+    alongs.dedup_by(|a, b| (*a - *b).abs() <= EPS);
+    acrosses.sort_by(f64::total_cmp);
+    acrosses.dedup_by(|a, b| (*a - *b).abs() <= EPS);
+
+    for &along in &alongs {
+        if along + along_size > along_span + EPS {
+            break;
+        }
+        for &across in &acrosses {
+            if across + across_size > across_span + EPS {
+                break;
+            }
+            if *probes + sheet.len() > MIN_FILM_PROBES {
+                *probes = MIN_FILM_PROBES + 1;
+                return None;
+            }
+            *probes += sheet.len();
+            let clear = sheet.iter().all(|packed| {
+                let other = packed.rect;
+                along + along_size + gap_mm <= other.along + EPS
+                    || other.along + other.along_size + gap_mm <= along + EPS
+                    || across + across_size + gap_mm <= other.across + EPS
+                    || other.across + other.across_size + gap_mm <= across + EPS
+            });
+            if clear {
+                return Some((along, across));
+            }
+        }
+    }
+    None
+}
+
+/// Packs parts in the given order, each into the first sheet where it fits at
+/// the bottom-left spot closest to the film start. Returns None when the probe
+/// budget runs out mid-order.
+fn pack_film_order(
+    parts: &[VacuumPart],
+    order: &[usize],
+    film: &FilmMeter,
+    usable_width: f64,
+    usable_height: f64,
+    gap_mm: f64,
+    max_sheets: u32,
+    probes: &mut usize,
+) -> Option<(Vec<Vec<FilmPacked>>, Vec<usize>)> {
+    let (along_span, across_span) = if film.long_is_y {
+        (usable_height, usable_width)
+    } else {
+        (usable_width, usable_height)
+    };
+    let mut sheets: Vec<Vec<FilmPacked>> = Vec::new();
+    let mut unplaced = Vec::new();
+    for &part_index in order {
+        let part = &parts[part_index];
+        let mut orientations = vec![(part.width_mm, part.height_mm, false)];
+        if part.can_rotate && !nearly_eq(part.width_mm, part.height_mm) {
+            orientations.push((part.height_mm, part.width_mm, true));
+        }
+        let mut placed = false;
+        for sheet_index in 0..=sheets.len() {
+            if sheet_index == sheets.len() {
+                if sheets.len() as u32 >= max_sheets {
+                    break;
+                }
+                sheets.push(Vec::new());
+            }
+            let mut best: Option<(FilmRect, bool)> = None;
+            for &(width_mm, height_mm, rotated) in &orientations {
+                let (along_size, across_size) = if film.long_is_y {
+                    (height_mm, width_mm)
+                } else {
+                    (width_mm, height_mm)
+                };
+                let Some((along, across)) = film_bottom_left(
+                    &sheets[sheet_index],
+                    along_size,
+                    across_size,
+                    along_span,
+                    across_span,
+                    gap_mm,
+                    probes,
+                ) else {
+                    if *probes > MIN_FILM_PROBES {
+                        return None;
+                    }
+                    continue;
+                };
+                let rect = FilmRect {
+                    along,
+                    across,
+                    along_size,
+                    across_size,
+                };
+                let better = best.is_none_or(|(current, _)| {
+                    (rect.along + rect.along_size, rect.across)
+                        < (current.along + current.along_size, current.across)
+                });
+                if better {
+                    best = Some((rect, rotated));
+                }
+            }
+            if let Some((rect, rotated)) = best {
+                sheets[sheet_index].push(FilmPacked {
+                    part_index,
+                    rect,
+                    rotated,
+                });
+                placed = true;
+                break;
+            }
+            if sheets[sheet_index].is_empty() {
+                sheets.pop();
+                break;
+            }
+        }
+        if !placed {
+            unplaced.push(part_index);
+        }
+    }
+    Some((sheets, unplaced))
+}
+
+fn film_packed_score(
+    sheets: &[Vec<FilmPacked>],
+    film: &FilmMeter,
+) -> (usize, usize, usize, f64) {
+    let mut placed = 0;
+    let mut marks = 0;
+    let mut length = 0.0;
+    for sheet in sheets {
+        let end = sheet
+            .iter()
+            .map(|packed| packed.rect.along + packed.rect.along_size)
+            .fold(0.0, f64::max);
+        placed += sheet.len();
+        marks += film.marks_passed(end);
+        length += end;
+    }
+    (placed, sheets.len(), marks, length)
+}
+
+/// Deterministic xorshift64*, enough to shuffle part orders reproducibly.
+struct FilmRng(u64);
+
+impl FilmRng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    fn below(&mut self, bound: usize) -> usize {
+        (self.next() % bound as u64) as usize
+    }
+
+    fn unit(&mut self) -> f64 {
+        (self.next() >> 11) as f64 / (1_u64 << 53) as f64
+    }
+}
+
+fn build_min_film_plan(
+    parts: &[VacuumPart],
+    axis: VacuumDirection,
+    usable_width: f64,
+    usable_height: f64,
+    gap_mm: f64,
+    max_sheets: u32,
+    film: &FilmMeter,
+) -> Option<VacuumPlacementPlan> {
+    if parts.is_empty() {
+        return None;
+    }
+    let along_size = |part: &VacuumPart| {
+        if film.long_is_y {
+            part.height_mm
+        } else {
+            part.width_mm
+        }
+    };
+    let across_size = |part: &VacuumPart| {
+        if film.long_is_y {
+            part.width_mm
+        } else {
+            part.height_mm
+        }
+    };
+    let by_key = |key: &dyn Fn(&VacuumPart) -> f64| {
+        let mut order = (0..parts.len()).collect::<Vec<_>>();
+        order.sort_by(|&a, &b| key(&parts[b]).total_cmp(&key(&parts[a])).then(a.cmp(&b)));
+        order
+    };
+    let seeded_orders = [
+        by_key(&|part| along_size(part)),
+        by_key(&|part| part.width_mm * part.height_mm),
+        by_key(&|part| across_size(part)),
+        by_key(&|part| part.width_mm.max(part.height_mm)),
+    ];
+
+    let mut rng = FilmRng(MIN_FILM_SEED);
+    let mut probes = 0_usize;
+    let mut best: Option<(Vec<Vec<FilmPacked>>, Vec<usize>)> = None;
+    for attempt in 0..MIN_FILM_ORDERS {
+        let order = if let Some(order) = seeded_orders.get(attempt) {
+            order.clone()
+        } else if attempt % 3 == 0 {
+            let jitter = (0..parts.len())
+                .map(|index| along_size(&parts[index]) * (0.7 + 0.6 * rng.unit()))
+                .collect::<Vec<_>>();
+            let mut order = (0..parts.len()).collect::<Vec<_>>();
+            order.sort_by(|&a, &b| jitter[b].total_cmp(&jitter[a]).then(a.cmp(&b)));
+            order
+        } else {
+            let mut order = (0..parts.len()).collect::<Vec<_>>();
+            for index in (1..order.len()).rev() {
+                order.swap(index, rng.below(index + 1));
+            }
+            order
+        };
+        let Some(packed) = pack_film_order(
+            parts,
+            &order,
+            film,
+            usable_width,
+            usable_height,
+            gap_mm,
+            max_sheets,
+            &mut probes,
+        ) else {
+            break;
+        };
+        let score = film_packed_score(&packed.0, film);
+        let better = best.as_ref().is_none_or(|(sheets, _)| {
+            film_score_is_better(score, film_packed_score(sheets, film))
+        });
+        if better {
+            best = Some(packed);
+        }
+    }
+
+    let (sheets, unplaced) = best?;
+    let loads = sheets
+        .into_iter()
+        .map(|sheet| {
+            let mut placements = sheet
+                .into_iter()
+                .map(|packed| {
+                    let part = &parts[packed.part_index];
+                    let rect = packed.rect;
+                    let (x_mm, y_mm, width_mm, height_mm) = if film.long_is_y {
+                        (rect.across, rect.along, rect.across_size, rect.along_size)
+                    } else {
+                        (rect.along, rect.across, rect.along_size, rect.across_size)
+                    };
+                    Placement {
+                        item_id: part.item_id.clone(),
+                        instance: part.instance,
+                        x_mm,
+                        y_mm,
+                        width_mm,
+                        height_mm,
+                        rotated: packed.rotated,
+                        pattern_direction: part.pattern_direction,
+                    }
+                })
+                .collect::<Vec<_>>();
+            sort_nested_placements(&mut placements, axis);
+            placements
+        })
+        .collect::<Vec<_>>();
+    if !loads
+        .iter()
+        .all(|load| placement_load_is_valid(load, usable_width, usable_height, gap_mm))
+    {
+        return None;
+    }
+    Some(VacuumPlacementPlan {
+        strategy: "min_film_search",
+        loads,
+        remaining: unplaced.into_iter().map(|index| parts[index].clone()).collect(),
+    })
 }
 
 fn placement_plan_placed_count(plan: &VacuumPlacementPlan) -> usize {
@@ -2055,5 +2506,51 @@ mod budget_tests {
     fn nested_width_first_has_a_hard_part_count_boundary() {
         assert!(nested_width_first_enabled(256));
         assert!(!nested_width_first_enabled(257));
+        assert!(min_film_search_enabled(256));
+        assert!(!min_film_search_enabled(257));
+    }
+
+    #[test]
+    fn min_film_packing_stops_at_the_probe_budget() {
+        let parts = (0..40)
+            .map(|seq| VacuumPart {
+                seq,
+                item_id: format!("p{seq}"),
+                instance: 1,
+                width_mm: 100.0,
+                height_mm: 100.0,
+                can_rotate: false,
+                pattern_direction: PatternDirection::None,
+            })
+            .collect::<Vec<_>>();
+        let order = (0..parts.len()).collect::<Vec<_>>();
+        let film = FilmMeter::new(1050.0, 2800.0, Trim { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 });
+        let mut probes = MIN_FILM_PROBES - 5;
+        let packed = pack_film_order(&parts, &order, &film, 1050.0, 2800.0, 10.0, 40, &mut probes);
+        assert!(packed.is_none());
+        assert!(probes <= MIN_FILM_PROBES + 1);
+
+        let mut probes = 0;
+        let (sheets, unplaced) =
+            pack_film_order(&parts, &order, &film, 1050.0, 2800.0, 10.0, 40, &mut probes)
+                .expect("a fresh budget packs 40 parts");
+        assert!(unplaced.is_empty());
+        assert_eq!(sheets.len(), 1);
+        assert!(probes < MIN_FILM_PROBES);
+    }
+
+    #[test]
+    fn film_meter_counts_marks_from_the_stock_edge() {
+        let trimmed = FilmMeter::new(1050.0, 2800.0, Trim { left: 5.0, right: 0.0, top: 20.0, bottom: 0.0 });
+        assert_eq!(trimmed.marks_passed(780.0), 0);
+        assert_eq!(trimmed.marks_passed(790.0), 1);
+        assert_eq!(trimmed.marks_passed(1790.0), 2);
+        let plain = FilmMeter::new(1050.0, 2800.0, Trim { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 });
+        assert_eq!(plain.marks_passed(800.0000005), 0);
+        assert_eq!(plain.marks_passed(800.00001), 1);
+        assert_eq!(plain.marks_passed(1800.0000005), 1);
+        let landscape = FilmMeter::new(2800.0, 1050.0, Trim { left: 20.0, right: 0.0, top: 0.0, bottom: 0.0 });
+        assert!(!landscape.long_is_y);
+        assert_eq!(landscape.marks_passed(790.0), 1);
     }
 }
