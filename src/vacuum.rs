@@ -23,6 +23,8 @@ const MAX_HOMOGENEOUS_COMBINATIONS: usize = 25_000_000;
 // Film is pulled from the start of the long stock side; the bath has marks at
 // these distances, so a sheet ending before a mark consumes one metre less.
 const VACUUM_FILM_MARKS_MM: [f64; 2] = [800.0, 1800.0];
+// Same tolerance as ERP's bath film zones, so both sides count the same marks.
+const VACUUM_FILM_MARK_EPS: f64 = 1.0e-6;
 const MAX_MIN_FILM_PARTS: usize = 256;
 const MIN_FILM_ORDERS: usize = 4_000;
 const MIN_FILM_PROBES: usize = 40_000_000;
@@ -698,7 +700,7 @@ impl FilmMeter {
     fn marks_passed(&self, end_mm: f64) -> usize {
         VACUUM_FILM_MARKS_MM
             .iter()
-            .filter(|&&mark| self.origin_mm + end_mm > mark + EPS)
+            .filter(|&&mark| self.origin_mm + end_mm > mark + VACUUM_FILM_MARK_EPS)
             .count()
     }
 }
@@ -2543,6 +2545,10 @@ mod budget_tests {
         assert_eq!(trimmed.marks_passed(780.0), 0);
         assert_eq!(trimmed.marks_passed(790.0), 1);
         assert_eq!(trimmed.marks_passed(1790.0), 2);
+        let plain = FilmMeter::new(1050.0, 2800.0, Trim { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 });
+        assert_eq!(plain.marks_passed(800.0000005), 0);
+        assert_eq!(plain.marks_passed(800.00001), 1);
+        assert_eq!(plain.marks_passed(1800.0000005), 1);
         let landscape = FilmMeter::new(2800.0, 1050.0, Trim { left: 20.0, right: 0.0, top: 0.0, bottom: 0.0 });
         assert!(!landscape.long_is_y);
         assert_eq!(landscape.marks_passed(790.0), 1);
