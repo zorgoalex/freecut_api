@@ -767,7 +767,8 @@ struct FilmPacked {
 }
 
 /// Bottom-left position closest to the film start, or None when the part does
-/// not fit. `probes` counts clearance checks against placed parts.
+/// not fit or the probe budget is spent (the caller checks `probes`).
+/// `probes` counts clearance checks against placed parts.
 fn film_bottom_left(
     sheet: &[FilmPacked],
     along_size: f64,
@@ -797,6 +798,10 @@ fn film_bottom_left(
         for &across in &acrosses {
             if across + across_size > across_span + EPS {
                 break;
+            }
+            if *probes + sheet.len() > MIN_FILM_PROBES {
+                *probes = MIN_FILM_PROBES + 1;
+                return None;
             }
             *probes += sheet.len();
             let clear = sheet.iter().all(|packed| {
@@ -864,6 +869,9 @@ fn pack_film_order(
                     gap_mm,
                     probes,
                 ) else {
+                    if *probes > MIN_FILM_PROBES {
+                        return None;
+                    }
                     continue;
                 };
                 let rect = FilmRect {
@@ -879,9 +887,6 @@ fn pack_film_order(
                 if better {
                     best = Some((rect, rotated));
                 }
-            }
-            if *probes > MIN_FILM_PROBES {
-                return None;
             }
             if let Some((rect, rotated)) = best {
                 sheets[sheet_index].push(FilmPacked {
@@ -2499,5 +2504,47 @@ mod budget_tests {
     fn nested_width_first_has_a_hard_part_count_boundary() {
         assert!(nested_width_first_enabled(256));
         assert!(!nested_width_first_enabled(257));
+        assert!(min_film_search_enabled(256));
+        assert!(!min_film_search_enabled(257));
+    }
+
+    #[test]
+    fn min_film_packing_stops_at_the_probe_budget() {
+        let parts = (0..40)
+            .map(|seq| VacuumPart {
+                seq,
+                item_id: format!("p{seq}"),
+                instance: 1,
+                width_mm: 100.0,
+                height_mm: 100.0,
+                can_rotate: false,
+                pattern_direction: PatternDirection::None,
+            })
+            .collect::<Vec<_>>();
+        let order = (0..parts.len()).collect::<Vec<_>>();
+        let film = FilmMeter::new(1050.0, 2800.0, Trim { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 });
+        let mut probes = MIN_FILM_PROBES - 5;
+        let packed = pack_film_order(&parts, &order, &film, 1050.0, 2800.0, 10.0, 40, &mut probes);
+        assert!(packed.is_none());
+        assert!(probes <= MIN_FILM_PROBES + 1);
+
+        let mut probes = 0;
+        let (sheets, unplaced) =
+            pack_film_order(&parts, &order, &film, 1050.0, 2800.0, 10.0, 40, &mut probes)
+                .expect("a fresh budget packs 40 parts");
+        assert!(unplaced.is_empty());
+        assert_eq!(sheets.len(), 1);
+        assert!(probes < MIN_FILM_PROBES);
+    }
+
+    #[test]
+    fn film_meter_counts_marks_from_the_stock_edge() {
+        let trimmed = FilmMeter::new(1050.0, 2800.0, Trim { left: 5.0, right: 0.0, top: 20.0, bottom: 0.0 });
+        assert_eq!(trimmed.marks_passed(780.0), 0);
+        assert_eq!(trimmed.marks_passed(790.0), 1);
+        assert_eq!(trimmed.marks_passed(1790.0), 2);
+        let landscape = FilmMeter::new(2800.0, 1050.0, Trim { left: 20.0, right: 0.0, top: 0.0, bottom: 0.0 });
+        assert!(!landscape.long_is_y);
+        assert_eq!(landscape.marks_passed(790.0), 1);
     }
 }
