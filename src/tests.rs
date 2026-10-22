@@ -1766,6 +1766,179 @@ async fn optimize_vacuum_directional_textured_fills_sheet_tail_before_new_sheet(
     }));
 }
 
+/// Real «вдоль полотна» bath (order 2967): 18 textured parts, kerf 80 mm.
+fn film_bath_request(algorithm: Option<&str>) -> String {
+    let parts: [(&str, f64, f64); 18] = [
+        ("66347", 476.0, 907.0),
+        ("66349", 447.0, 907.0),
+        ("66348", 476.0, 397.0),
+        ("66350", 447.0, 397.0),
+        ("66342", 246.0, 397.0),
+        ("66346", 621.0, 397.0),
+        ("66353", 1025.0, 100.0),
+        ("66402", 900.0, 100.0),
+        ("66345", 621.0, 907.0),
+        ("66341", 246.0, 907.0),
+        ("66343", 597.0, 860.0),
+        ("66352", 325.0, 1410.0),
+        ("66340", 613.0, 757.0),
+        ("66344", 597.0, 397.0),
+        ("66351", 100.0, 1307.0),
+        ("66355", 850.0, 100.0),
+        ("66354", 616.0, 100.0),
+        ("66403", 550.0, 100.0),
+    ];
+    let mut vacuum = serde_json::json!({ "direction": "height" });
+    if let Some(algorithm) = algorithm {
+        vacuum["algorithm"] = Value::from(algorithm);
+    }
+    serde_json::json!({
+        "units": "mm",
+        "stock": [{ "id": "bath", "width_mm": 1050.0, "height_mm": 2800.0, "qty": 0 }],
+        "items": parts.iter().map(|(id, width, height)| serde_json::json!({
+            "id": format!("det-{id}"), "width_mm": width, "height_mm": height, "qty": 1,
+            "rotation": "forbid", "pattern_direction": "along_height"
+        })).collect::<Vec<_>>(),
+        "params": {
+            "kerf_mm": 80.0,
+            "spacing_mm": 0.0,
+            "trim_mm": { "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0 },
+            "objective": "min_sheets",
+            "layout_mode": "vacuum_table",
+            "vacuum": vacuum,
+            "include_svg": false
+        }
+    })
+    .to_string()
+}
+
+/// End of each sheet along the film (y on a portrait bath sheet).
+fn film_ends(json: &Value) -> Vec<f64> {
+    json.get("solutions")
+        .and_then(Value::as_array)
+        .expect("expected solutions")
+        .iter()
+        .map(|solution| {
+            solution
+                .get("placements")
+                .and_then(Value::as_array)
+                .expect("expected placements")
+                .iter()
+                .map(|placement| {
+                    placement.get("y_mm").and_then(Value::as_f64).unwrap()
+                        + placement.get("height_mm").and_then(Value::as_f64).unwrap()
+                })
+                .fold(0.0, f64::max)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn optimize_vacuum_min_film_ends_last_sheet_before_first_film_mark() {
+    // Standard planning ends all three sheets past 1.8 m (9.3 m of film); a
+    // hand-made layout reaches 937 mm on the last one (8.3 m). Min-film keeps
+    // three sheets and stops the last one before the 0.8 m mark (7.3 m).
+    let app = app_for_test();
+    let (status, json) =
+        post_json(&app, "/v1/optimize", &film_bath_request(Some("min_film"))).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    assert_eq!(
+        json.pointer("/summary/vacuum/strategy").and_then(Value::as_str),
+        Some("min_film_search")
+    );
+    assert_eq!(
+        json.pointer("/summary/vacuum/placed_count").and_then(Value::as_u64),
+        Some(18)
+    );
+    assert!(
+        json.pointer("/summary/vacuum/min_clearance_mm")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+            >= 80.0 - 0.001,
+        "body: {json}"
+    );
+    let ends = film_ends(&json);
+    assert_eq!(ends.len(), 3, "ends: {ends:?}");
+    assert!(ends[2] <= 800.0, "ends: {ends:?}");
+    let placements = json
+        .get("solutions")
+        .and_then(Value::as_array)
+        .unwrap()
+        .iter()
+        .flat_map(|solution| solution.get("placements").and_then(Value::as_array).unwrap())
+        .collect::<Vec<_>>();
+    assert!(placements.iter().all(|placement| {
+        let x = placement.get("x_mm").and_then(Value::as_f64).unwrap();
+        let width = placement.get("width_mm").and_then(Value::as_f64).unwrap();
+        placement.get("rotated").and_then(Value::as_bool) == Some(false)
+            && x >= 0.0
+            && x + width <= 1050.001
+    }));
+}
+
+#[tokio::test]
+async fn optimize_vacuum_standard_algorithm_is_the_default() {
+    let app = app_for_test();
+    let (_, implicit) = post_json(&app, "/v1/optimize", &film_bath_request(None)).await;
+    let (status, explicit) =
+        post_json(&app, "/v1/optimize", &film_bath_request(Some("standard"))).await;
+    assert_eq!(status, StatusCode::OK, "body: {explicit}");
+    assert_eq!(implicit.get("solutions"), explicit.get("solutions"));
+    assert_eq!(
+        explicit
+            .pointer("/summary/vacuum/strategy")
+            .and_then(Value::as_str),
+        Some("width_first_nested")
+    );
+    assert_eq!(film_ends(&explicit).len(), 3);
+}
+
+#[tokio::test]
+async fn optimize_vacuum_min_film_rotates_parts_that_allow_it() {
+    let app = app_for_test();
+    let body = serde_json::json!({
+        "units": "mm",
+        "stock": [{ "id": "bath", "width_mm": 1050.0, "height_mm": 2800.0, "qty": 0 }],
+        "items": [
+            { "id": "long", "width_mm": 2000.0, "height_mm": 500.0, "qty": 2, "rotation": "allow_90", "pattern_direction": "none" }
+        ],
+        "params": {
+            "kerf_mm": 20.0,
+            "spacing_mm": 0.0,
+            "trim_mm": { "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0 },
+            "objective": "min_sheets",
+            "layout_mode": "vacuum_table",
+            "vacuum": { "direction": "optimal", "algorithm": "min_film" },
+            "include_svg": false
+        }
+    })
+    .to_string();
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::OK, "body: {json}");
+    assert_eq!(
+        json.pointer("/summary/used_stock_count").and_then(Value::as_u64),
+        Some(1),
+        "body: {json}"
+    );
+    let placements = json
+        .pointer("/solutions/0/placements")
+        .and_then(Value::as_array)
+        .expect("expected placements");
+    assert_eq!(placements.len(), 2);
+    assert!(placements.iter().all(|placement| {
+        placement.get("width_mm").and_then(Value::as_f64) == Some(500.0)
+            && placement.get("height_mm").and_then(Value::as_f64) == Some(2000.0)
+    }));
+}
+
+#[tokio::test]
+async fn optimize_vacuum_unknown_algorithm_returns_422() {
+    let app = app_for_test();
+    let body = film_bath_request(Some("fastest"));
+    let (status, json) = post_json(&app, "/v1/optimize", &body).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {json}");
+}
+
 #[tokio::test]
 async fn optimize_vacuum_5000_instances_uses_bounded_fallback() {
     let app = app_for_test();

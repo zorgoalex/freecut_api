@@ -238,6 +238,8 @@ pub struct VacuumParams {
     /// axis before consuming table/film length.
     /// Optional, defaults to `optimal`.
     pub direction: Option<VacuumDirection>,
+    /// Plan selection on the vacuum table. Optional, defaults to `standard`.
+    pub algorithm: Option<VacuumAlgorithm>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]
@@ -246,6 +248,18 @@ pub enum VacuumDirection {
     Optimal,
     Width,
     Height,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VacuumAlgorithm {
+    /// Shelf rows and nested MaxRects, compared by sheets and feed.
+    #[default]
+    Standard,
+    /// Same candidates plus a multi-order bottom-left search; plans are compared
+    /// by sheets, then by film consumed along the long stock side (film marks at
+    /// 800 and 1800 mm), then by the total occupied length.
+    MinFilm,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]

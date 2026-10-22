@@ -10,7 +10,7 @@ use crate::models::{
     ProfilePoolParams, ProfilePoolPreset, ProfilePoolTelemetry, RemnantTelemetry,
     RestartPolicyTelemetry,
     RetryStrategy, RetryTelemetry, Rotation, SlaProfile, Solution, StockItem, Summary, Trim, Units,
-    UnplacedItem, VacuumDirection, VacuumParams, VacuumTelemetry, VacuumUsedBbox,
+    UnplacedItem, VacuumAlgorithm, VacuumDirection, VacuumParams, VacuumTelemetry, VacuumUsedBbox,
 };
 
 #[derive(OpenApi)]
@@ -30,6 +30,7 @@ use crate::models::{
             Params,
             VacuumParams,
             VacuumDirection,
+            VacuumAlgorithm,
             PortfolioParams,
             BeamParams,
             AlnsParams,
